@@ -1,0 +1,67 @@
+## Rust / Cargo
+target/
+Cargo.lock
+**/*.rs.bk
+
+## Soroban / Stellar
+.stellar/
+.soroban/
+.wasms/
+stellar.toml
+
+## Circom / SnarkJS
+circuit-keys/
+pot12_*.ptau
+*.zkey
+*.r1cs
+*.sym
+witness.wtns
+
+## WASM
+*.wasm
+
+## Node / JavaScript / TypeScript
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+lerna-debug.log*
+.env
+.env.local
+.env.*.local
+.next/
+.cache/
+dist/
+build/
+out/
+.eslintcache
+*.tsbuildinfo
+
+## IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+.ropeproject
+
+## Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+
+## Build / Misc
+*.log
+*.tmp
+*.bak
+*.orig
+dist/
+build/
+out/

@@ -1,0 +1,17 @@
+[package]
+name = "tiny-verifier"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = { version = "27.0.0-rc.1", default-features = false, features = ["alloc"] }
+tiny-types = { path = "../types" }
+
+[build-dependencies]
+ark-bn254 = "0.4"
+ark-ff = "0.4"
+num-bigint = "0.4"
+serde_json = "1"

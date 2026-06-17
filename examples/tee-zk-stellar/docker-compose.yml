@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  # ── TEE Prover Server ──────────────────────────────────────────────
+  # In production this runs inside GCP Confidential Space (AMD SEV-SNP).
+  # In dev mode it runs as a regular Docker container — same code, no HW TEE.
+  tee-prover:
+    build:
+      context: ./tee-prover
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_ENV=development
+      # In production, GCP sets these automatically via metadata server.
+      # In dev, we simulate the enclave without hardware attestation.
+      - SIMULATE_TEE=true
+    volumes:
+      # Mount the compiled circuit JSON so the prover can load it
+      - ./circuit/target:/circuit:ro
+    restart: unless-stopped
+    # Security: run as non-root
+    user: "node"
+
+  # ── Stellar Quickstart (local dev network) ──────────────────────────
+  # Optional: run a local Stellar network for testing.
+  # Uncomment to use instead of testnet.
+  #
+  # stellar:
+  #   image: stellar/quickstart:soroban-dev@sha256:...
+  #   ports:
+  #     - "8000:8000"  # RPC endpoint
+  #   command: [
+  #     "--local", "--enable-soroban-rpc",
+  #     "--enable-core-rpc",
+  #     "--enable-force-soroban-rpc-http"
+  #   ]

@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+  "contracts/verifier",
+  "crates/ultrahonk-soroban-verifier",
+]
+exclude = [
+  "examples",
+  "tiny",
+]

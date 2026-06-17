@@ -1,0 +1,22 @@
+[package]
+name = "stellar-verifier"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = "26.0.1"
+ultrahonk-soroban-verifier = { path = "../../crates/ultrahonk-soroban-verifier" }
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+lto = true
+codegen-units = 1
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
