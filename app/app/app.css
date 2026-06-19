@@ -1,0 +1,193 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'Berkeley Mono';
+  src: url('/fonts/TX-02-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Berkeley Mono';
+  src: url('/fonts/TX-02-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Berkeley Mono';
+  src: url('/fonts/TX-02-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --color-page: #000000;
+  --color-surface-primary: #0a0a12;
+  --color-surface-card: #0d0f1a;
+  --color-surface-hover: #15172a;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #e5e7eb;
+  --color-text-tertiary: #9ca3af;
+  --color-text-quaternary: #6b7280;
+  --color-bearish-red: #f23546;
+  --color-bullish-green: #0b9981;
+  --color-brand-violet: #807dfe;
+  --color-accent-light: #a5a3ff;
+  --color-warning: #ffdf9f;
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border-default: #1a1b2e;
+  --font-sans: 'Berkeley Mono', ui-monospace, monospace;
+  --font-display: 'Berkeley Mono', ui-monospace, monospace;
+  --font-mono: 'Berkeley Mono', ui-monospace, monospace;
+  --radius-badge: 4px;
+  --radius-pill: 9999px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #000;
+  color: #fff;
+  font-family: 'Berkeley Mono', ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button,
+a,
+select,
+input[type="button"],
+input[type="submit"],
+[role="button"],
+.cursor-pointer {
+  cursor: pointer !important;
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid #807dfe;
+  outline-offset: 2px;
+}
+
+.panel-widget:focus-within {
+  border-color: #807dfe;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #0d0f1a 25%, #15172a 50%, #0d0f1a 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+.react-grid-item > .react-resizable-handle {
+  z-index: 30;
+  opacity: 1;
+  background: none;
+  padding: 0;
+}
+
+.react-grid-item > .react-resizable-handle::after {
+  display: none;
+}
+
+.react-grid-item > .react-resizable-handle-e,
+.react-grid-item > .react-resizable-handle-w {
+  top: 0;
+  height: 100%;
+  width: 10px;
+  margin: 0;
+  transform: none;
+  cursor: ew-resize;
+}
+
+.react-grid-item > .react-resizable-handle-e { right: -2px; }
+.react-grid-item > .react-resizable-handle-w { left: -2px; }
+
+.react-grid-item > .react-resizable-handle-n,
+.react-grid-item > .react-resizable-handle-s {
+  left: 0;
+  width: 100%;
+  height: 10px;
+  margin: 0;
+  transform: none;
+  cursor: ns-resize;
+}
+
+.react-grid-item > .react-resizable-handle-n { top: -2px; }
+.react-grid-item > .react-resizable-handle-s { bottom: -2px; }
+
+.react-grid-item > .react-resizable-handle-se,
+.react-grid-item > .react-resizable-handle-sw,
+.react-grid-item > .react-resizable-handle-ne,
+.react-grid-item > .react-resizable-handle-nw {
+  width: 16px;
+  height: 16px;
+  transform: none;
+  z-index: 31;
+}
+
+.react-grid-item > .react-resizable-handle-se { bottom: 0; right: 0; cursor: se-resize; }
+.react-grid-item > .react-resizable-handle-sw { bottom: 0; left: 0; cursor: sw-resize; }
+.react-grid-item > .react-resizable-handle-ne { top: 0; right: 0; cursor: ne-resize; }
+.react-grid-item > .react-resizable-handle-nw { top: 0; left: 0; cursor: nw-resize; }
+
+.react-grid-item > .react-resizable-handle-se::before {
+  content: "";
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid rgba(255, 255, 255, 0.35);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.35);
+}
+
+.react-grid-item:hover > .react-resizable-handle-se::before {
+  border-color: rgba(255, 255, 255, 0.8);
+}
+
+.react-grid-item.react-draggable-dragging {
+  z-index: 100 !important;
+}
+
+.react-grid-item.react-grid-placeholder {
+  background: rgba(128, 125, 254, 0.14) !important;
+  border: 1px solid rgba(128, 125, 254, 0.4);
+  border-radius: 8px;
+  opacity: 1 !important;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

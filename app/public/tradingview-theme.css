@@ -1,0 +1,18 @@
+html,
+body {
+  background: #070810 !important;
+}
+
+.chart-page,
+.layout__area--center,
+.chart-container,
+.chart-widget,
+.tv-lightweight-charts {
+  background: #070810 !important;
+}
+
+.group,
+.button,
+.apply-common-tooltip {
+  border-radius: 6px !important;
+}

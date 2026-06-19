@@ -1,0 +1,35 @@
+{
+  "name": "cer-perp-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "react-router dev",
+    "build": "react-router build",
+    "typecheck": "react-router typegen && tsc --noEmit",
+    "typegen": "react-router typegen",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@tabler/icons-react": "^3.44.0",
+    "framer-motion": "^12.40.0",
+    "lightweight-charts": "^5.2.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-draggable": "4.6.0",
+    "react-grid-layout": "^2.2.3",
+    "react-resizable": "3.2.0",
+    "react-router": "^7.9.2"
+  },
+  "devDependencies": {
+    "@react-router/dev": "^7.9.2",
+    "@tailwindcss/vite": "^4.1.13",
+    "@types/node": "^22",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@types/react-grid-layout": "^2.1.0",
+    "tailwindcss": "^4.1.13",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7",
+    "vite-tsconfig-paths": "^5.1.4"
+  }
+}
