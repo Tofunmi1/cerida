@@ -2,31 +2,50 @@ pragma circom 2.2.2;
 
 include "poseidon2/poseidon2_hash.circom";
 
+// 7-field commitment: side, price, size, leverage, asset, nonce, secret
+// Uses Poseidon2(2) chain (only t=2,3,4 supported by constants)
 template OrderCommitment() {
     signal input side;
     signal input price;
     signal input size;
     signal input leverage;
-    signal input asset_id;
+    signal input asset;
     signal input nonce;
     signal input secret;
+
     signal output commitment;
 
-    component c1 = Poseidon2(4);
-    c1.inputs[0] <== side;
-    c1.inputs[1] <== price;
-    c1.inputs[2] <== size;
-    c1.inputs[3] <== leverage;
-    c1.domainSeparation <== 1;
+    component h1 = Poseidon2(2);
+    h1.inputs[0] <== side;
+    h1.inputs[1] <== price;
+    h1.domainSeparation <== 1;
 
-    component c2 = Poseidon2(4);
-    c2.inputs[0] <== asset_id;
-    c2.inputs[1] <== nonce;
-    c2.inputs[2] <== secret;
-    c2.inputs[3] <== c1.out;
-    c2.domainSeparation <== 2;
+    component h2 = Poseidon2(2);
+    h2.inputs[0] <== h1.out;
+    h2.inputs[1] <== size;
+    h2.domainSeparation <== 2;
 
-    commitment <== c2.out;
+    component h3 = Poseidon2(2);
+    h3.inputs[0] <== h2.out;
+    h3.inputs[1] <== leverage;
+    h3.domainSeparation <== 3;
+
+    component h4 = Poseidon2(2);
+    h4.inputs[0] <== h3.out;
+    h4.inputs[1] <== asset;
+    h4.domainSeparation <== 4;
+
+    component h5 = Poseidon2(2);
+    h5.inputs[0] <== h4.out;
+    h5.inputs[1] <== nonce;
+    h5.domainSeparation <== 5;
+
+    component h6 = Poseidon2(2);
+    h6.inputs[0] <== h5.out;
+    h6.inputs[1] <== secret;
+    h6.domainSeparation <== 6;
+
+    commitment <== h6.out;
 }
 
 component main = OrderCommitment();

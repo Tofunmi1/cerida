@@ -168,7 +168,8 @@ fn generate_keypair(name: &str) -> (String, String) {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_default();
     let addr = addr.trim().to_string();
-    (addr.clone(), addr)
+    let sk = if addr.is_empty() { name.to_string() } else { name.to_string() };
+    (addr, sk)
 }
 
 fn fund(pk: &str) {
@@ -185,7 +186,7 @@ fn deploy(wasm: &Path) -> Result<String> {
     let source_pk = source_pubkey()?;
     let id = precompute_id(&salt_hex, &source_pk)?;
     eprintln!("  Precomputed: {id}");
-    let _ = std::process::Command::new("stellar")
+    let output = std::process::Command::new("stellar")
         .args([
             "contract",
             "deploy",
@@ -198,22 +199,21 @@ fn deploy(wasm: &Path) -> Result<String> {
             "--salt",
             &salt_hex,
         ])
-        .output();
-    Ok(id)
-}
-
-fn source_pubkey() -> Result<String> {
-    let out = std::process::Command::new("stellar")
-        .args(["keys", "address", SOURCE])
         .output()
-        .map_err(|e| anyhow::anyhow!("Failed to get source key: {e}"))?;
-    if !out.status.success() {
-        anyhow::bail!("Identity '{SOURCE}' not found. Run: stellar keys generate {SOURCE} --network testnet --fund");
+        .map_err(|e| anyhow::anyhow!("deploy cmd: {e}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if let Some(tx_hash) = extract_tx_hash(&stderr) {
+        eprintln!("  deploy TX: {tx_hash}");
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if let Some(_result) = poll_tx(&tx_hash)? {
+                eprintln!("  deploy confirmed");
+                return Ok(id);
+            }
+        }
+        anyhow::bail!("deploy TX {tx_hash} not confirmed after 120s");
     }
-    Ok(String::from_utf8(out.stdout)
-        .map_err(|_| anyhow::anyhow!("Invalid UTF-8"))?
-        .trim()
-        .to_string())
+    anyhow::bail!("deploy failed: could not extract tx hash:\n{stderr}");
 }
 
 fn precompute_id(salt_hex: &str, source_pk: &str) -> Result<String> {
@@ -239,6 +239,22 @@ fn precompute_id(salt_hex: &str, source_pk: &str) -> Result<String> {
         .trim()
         .to_string())
 }
+
+fn source_pubkey() -> Result<String> {
+    let out = std::process::Command::new("stellar")
+        .args(["keys", "address", SOURCE])
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to get source key: {e}"))?;
+    if !out.status.success() {
+        anyhow::bail!("Identity '{SOURCE}' not found. Run: stellar keys generate {SOURCE} --network testnet --fund");
+    }
+    Ok(String::from_utf8(out.stdout)
+        .map_err(|_| anyhow::anyhow!("Invalid UTF-8"))?
+        .trim()
+        .to_string())
+}
+
+
 
 fn invoke(contract_id: &str, source: &str, args: &[&str]) -> Result<String> {
     let mut cmd = std::process::Command::new("stellar");

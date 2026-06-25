@@ -93,10 +93,12 @@ fn g2_bytes(pt: &Value) -> [u8; 128] {
     let arr = pt.as_array().expect("G2 point must be a JSON array");
     let x = arr[0].as_array().expect("G2.x must be array");
     let y = arr[1].as_array().expect("G2.y must be array");
-    let x_c1: num_bigint::BigUint = x[0].as_str().expect("x.c0 must be string").parse().expect("invalid x.c0");
-    let x_c0: num_bigint::BigUint = x[1].as_str().expect("x.c1 must be string").parse().expect("invalid x.c1");
-    let y_c1: num_bigint::BigUint = y[0].as_str().expect("y.c0 must be string").parse().expect("invalid y.c0");
-    let y_c0: num_bigint::BigUint = y[1].as_str().expect("y.c1 must be string").parse().expect("invalid y.c1");
+    // snarkjs JSON: [x_c0, x_c1], [y_c0, y_c1]
+    // Soroban/SDK encoding: x.c1 || x.c0 || y.c1 || y.c0
+    let x_c0: num_bigint::BigUint = x[0].as_str().expect("x_c0 must be a string").parse().expect("invalid x_c0");
+    let x_c1: num_bigint::BigUint = x[1].as_str().expect("x_c1 must be a string").parse().expect("invalid x_c1");
+    let y_c0: num_bigint::BigUint = y[0].as_str().expect("y_c0 must be a string").parse().expect("invalid y_c0");
+    let y_c1: num_bigint::BigUint = y[1].as_str().expect("y_c1 must be a string").parse().expect("invalid y_c1");
     let mut out = [0u8; 128];
     out[..32].copy_from_slice(&to_be_32(&x_c1));
     out[32..64].copy_from_slice(&to_be_32(&x_c0));
