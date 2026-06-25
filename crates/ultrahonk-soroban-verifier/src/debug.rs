@@ -1,5 +1,6 @@
+use core::fmt::Write;
 use crate::field::Bn254Fr;
-use soroban_sdk::xdr::ToXdr;
+use alloc::string::String;
 use soroban_sdk::Env;
 
 pub struct Debug;

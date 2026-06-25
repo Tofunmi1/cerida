@@ -25,6 +25,29 @@
 }
 
 @theme {
+  --color-page: #f3f5f9;
+  --color-surface-primary: #ffffff;
+  --color-surface-card: #f7f8fc;
+  --color-surface-hover: #eef1f7;
+  --color-text-primary: #111827;
+  --color-text-secondary: #374151;
+  --color-text-tertiary: #6b7280;
+  --color-text-quaternary: #9ca3af;
+  --color-bearish-red: #f23546;
+  --color-bullish-green: #00967d;
+  --color-brand-violet: #807dfe;
+  --color-accent-light: #a5a3ff;
+  --color-warning: #ffdf9f;
+  --color-border-subtle: rgba(17, 24, 39, 0.10);
+  --color-border-default: #d7dce8;
+  --font-sans: 'Berkeley Mono', ui-monospace, monospace;
+  --font-display: 'Berkeley Mono', ui-monospace, monospace;
+  --font-mono: 'Berkeley Mono', ui-monospace, monospace;
+  --radius-badge: 4px;
+  --radius-pill: 9999px;
+}
+
+:root[data-theme="dark"] {
   --color-page: #000000;
   --color-surface-primary: #0a0a12;
   --color-surface-card: #0d0f1a;
@@ -33,18 +56,9 @@
   --color-text-secondary: #e5e7eb;
   --color-text-tertiary: #9ca3af;
   --color-text-quaternary: #6b7280;
-  --color-bearish-red: #f23546;
   --color-bullish-green: #0b9981;
-  --color-brand-violet: #807dfe;
-  --color-accent-light: #a5a3ff;
-  --color-warning: #ffdf9f;
   --color-border-subtle: rgba(255, 255, 255, 0.06);
   --color-border-default: #1a1b2e;
-  --font-sans: 'Berkeley Mono', ui-monospace, monospace;
-  --font-display: 'Berkeley Mono', ui-monospace, monospace;
-  --font-mono: 'Berkeley Mono', ui-monospace, monospace;
-  --radius-badge: 4px;
-  --radius-pill: 9999px;
 }
 
 *,
@@ -61,8 +75,8 @@ body {
 }
 
 body {
-  background: #000;
-  color: #fff;
+  background: var(--color-page);
+  color: var(--color-text-primary);
   font-family: 'Berkeley Mono', ui-monospace, monospace;
   font-size: 13px;
   line-height: 1.45;
@@ -100,7 +114,7 @@ input[type="submit"],
 }
 
 .skeleton {
-  background: linear-gradient(90deg, #0d0f1a 25%, #15172a 50%, #0d0f1a 75%);
+  background: linear-gradient(90deg, #eef1f7 25%, #f8fafc 50%, #eef1f7 75%);
   background-size: 200% 100%;
   animation: shimmer 1.6s ease-in-out infinite;
 }
@@ -164,12 +178,12 @@ input[type="submit"],
   bottom: 5px;
   width: 7px;
   height: 7px;
-  border-right: 2px solid rgba(255, 255, 255, 0.35);
-  border-bottom: 2px solid rgba(255, 255, 255, 0.35);
+  border-right: 2px solid rgba(17, 24, 39, 0.28);
+  border-bottom: 2px solid rgba(17, 24, 39, 0.28);
 }
 
 .react-grid-item:hover > .react-resizable-handle-se::before {
-  border-color: rgba(255, 255, 255, 0.8);
+  border-color: rgba(17, 24, 39, 0.7);
 }
 
 .react-grid-item.react-draggable-dragging {

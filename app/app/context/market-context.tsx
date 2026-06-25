@@ -28,11 +28,26 @@ interface MarketContextValue extends MarketState {
 
 const MarketContext = createContext<MarketContextValue | undefined>(undefined)
 
-const START_PRICE: Record<string, number> = {
-  'BTC-PERP': 63347.1,
-  'ETH-PERP': 3412.5,
-  'SOL-PERP': 142.8,
+export interface MarketDefinition {
+  symbol: string
+  name: string
+  category: 'Crypto' | 'RWA'
+  basePrice: number
+  icon: string
+  color: string
 }
+
+export const MARKET_CATALOG: MarketDefinition[] = [
+  { symbol: 'BTC-PERP', name: 'Bitcoin', category: 'Crypto', basePrice: 63347.1, icon: '₿', color: '#f7931a' },
+  { symbol: 'ETH-PERP', name: 'Ethereum', category: 'Crypto', basePrice: 3412.5, icon: 'Ξ', color: '#627eea' },
+  { symbol: 'SOL-PERP', name: 'Solana', category: 'Crypto', basePrice: 142.8, icon: '◎', color: '#14f195' },
+  { symbol: 'SPACEX-PERP', name: 'SpaceX', category: 'RWA', basePrice: 216.4, icon: 'X', color: '#111827' },
+  { symbol: 'TSLA-PERP', name: 'Tesla', category: 'RWA', basePrice: 184.75, icon: 'T', color: '#e82127' },
+  { symbol: 'OIL-PERP', name: 'Crude Oil', category: 'RWA', basePrice: 78.42, icon: 'O', color: '#0f766e' },
+  { symbol: 'GOLD-PERP', name: 'Gold', category: 'RWA', basePrice: 2328.6, icon: 'Au', color: '#d4a017' },
+]
+
+const START_PRICE = Object.fromEntries(MARKET_CATALOG.map((market) => [market.symbol, market.basePrice]))
 
 function seededNoise(seed: number) {
   const x = Math.sin(seed * 12.9898) * 43758.5453

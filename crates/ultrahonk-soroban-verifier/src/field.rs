@@ -1,8 +1,4 @@
 use soroban_sdk::Env;
-use soroban_sdk::Val;
-use soroban_sdk::xdr::FromXdr;
-use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::IntoVal;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bn254Fr(pub [u8; 32]);
@@ -41,7 +37,7 @@ impl Bn254Fr {
             result[i] = sum as u8;
             carry = sum >> 8;
         }
-        if carry > 0 || Self::cmp(&result, modulus) >= 0 {
+        if carry > 0 || Self::cmp(&result, modulus) != core::cmp::Ordering::Less {
             let mut borrow = 0i64;
             for i in (0..32).rev() {
                 let diff = result[i] as i64 - modulus[i] as i64 - borrow;
@@ -135,7 +131,7 @@ impl Bn254Fr {
         }
         let mut result = [0u8; 32];
         result.copy_from_slice(&product[32..64]);
-        if Self::cmp(&result, &Self::MODULUS) >= 0 {
+        if Self::cmp(&result, &Self::MODULUS) != core::cmp::Ordering::Less {
             let mut borrow = 0i64;
             for i in (0..32).rev() {
                 let diff = result[i] as i64 - Self::MODULUS[i] as i64 - borrow;

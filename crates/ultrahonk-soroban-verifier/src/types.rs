@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use crate::field::Bn254Fr;
 
 #[derive(Clone, Copy, Debug)]

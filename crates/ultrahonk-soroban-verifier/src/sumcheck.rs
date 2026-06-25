@@ -1,11 +1,12 @@
+use alloc::vec::Vec;
 use crate::field::Bn254Fr;
-use crate::relations::evaluate_gate_constraints;
-use crate::types::{RelationParameters, VerificationKey};
+use crate::types::RelationParameters;
 
 pub struct Sumcheck;
 
 impl Sumcheck {
     pub fn verify(
+        env: &soroban_sdk::Env,
         univariates: &[Bn254Fr],
         evaluations: &[Bn254Fr],
         target_total: usize,
@@ -42,7 +43,7 @@ impl Sumcheck {
             }
 
             let challenge = Bn254Fr::from_bytes_be(&crate::hash::keccak256(
-                &soroban_sdk::Env::default(),
+                env,
                 &partial[0].to_bytes_be(),
             ));
             round_challenges.push(challenge);

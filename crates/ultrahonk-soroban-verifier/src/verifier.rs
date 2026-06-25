@@ -1,10 +1,9 @@
-use crate::ec::G1Point;
+use alloc::vec::Vec;
 use crate::field::Bn254Fr;
-use crate::relations::evaluate_gate_constraints;
 use crate::shplemini::Shplemini;
 use crate::sumcheck::Sumcheck;
 use crate::transcript::Transcript;
-use crate::types::{RelationParameters, VerificationKey, Proof, NUM_RELATIONS};
+use crate::types::{RelationParameters, VerificationKey, Proof};
 use soroban_sdk::Env;
 
 pub struct UltraHonkVerifier;
@@ -53,6 +52,7 @@ impl UltraHonkVerifier {
         alpha: Bn254Fr,
     ) -> bool {
         let sumcheck_ok = Sumcheck::verify(
+            env,
             &proof.sumcheck_univariates,
             &proof.sumcheck_evaluations.iter().map(|g| g.x).collect::<Vec<_>>(),
             vk.circuit_size,
@@ -77,13 +77,14 @@ impl UltraHonkVerifier {
 
         let rho = transcript.get_challenge();
 
-        let batch_opening_commitments = vec![
-            vk.qm, vk.qc, vk.ql, vk.qr, vk.qo, vk.q4,
-            vk.qlookup, vk.qdelta, vk.qecc,
-            vk.s1, vk.s2, vk.s3, vk.s4,
-            vk.t1, vk.t2, vk.t3, vk.t4,
-            vk.id1, vk.id2, vk.id3, vk.id4,
-            vk.lagrange_1,
+        let batch_opening_commitments: Vec<crate::types::G1Commitment> = alloc::vec![
+            vk.qm.clone(), vk.qc.clone(), vk.ql.clone(), vk.qr.clone(),
+            vk.qo.clone(), vk.q4.clone(),
+            vk.qlookup.clone(), vk.qdelta.clone(), vk.qecc.clone(),
+            vk.s1.clone(), vk.s2.clone(), vk.s3.clone(), vk.s4.clone(),
+            vk.t1.clone(), vk.t2.clone(), vk.t3.clone(), vk.t4.clone(),
+            vk.id1.clone(), vk.id2.clone(), vk.id3.clone(), vk.id4.clone(),
+            vk.lagrange_1.clone(),
         ];
 
         let batch_evaluations = proof.sumcheck_evaluations.iter().map(|g| g.x).collect::<Vec<_>>();

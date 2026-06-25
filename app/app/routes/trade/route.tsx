@@ -5,6 +5,7 @@ import 'react-grid-layout/css/styles.css'
 import { IconPlus, IconX } from '@tabler/icons-react'
 import { LevelsProvider } from '../../context/levels-context'
 import { MarketProvider } from '../../context/market-context'
+import { ThemeProvider } from '../../context/theme-context'
 import MarketBar from '../../components/trade/market-bar'
 import Sidebar from '../../components/trade/sidebar'
 
@@ -401,10 +402,12 @@ function TradeBoard() {
 
 export default function TradeRoute() {
   return (
-    <MarketProvider>
-      <LevelsProvider>
-        <TradeBoard />
-      </LevelsProvider>
-    </MarketProvider>
+    <ThemeProvider>
+      <MarketProvider>
+        <LevelsProvider>
+          <TradeBoard />
+        </LevelsProvider>
+      </MarketProvider>
+    </ThemeProvider>
   )
 }

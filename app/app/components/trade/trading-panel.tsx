@@ -145,7 +145,7 @@ function LeverageSlider({
                 width: 2,
                 height: h,
                 transform: 'translateX(-1px)',
-                backgroundColor: active ? '#9998ff' : 'rgba(255,255,255,0.08)',
+                backgroundColor: active ? '#807dfe' : 'rgba(17,24,39,0.12)',
                 pointerEvents: 'none',
                 transition: 'background-color 0.1s',
               }}
@@ -162,7 +162,7 @@ function LeverageSlider({
                 width: 1.5,
                 height: h,
                 transform: 'translateX(-0.75px)',
-                backgroundColor: 'rgba(255,255,255,0.08)',
+                backgroundColor: 'rgba(17,24,39,0.10)',
                 opacity: 0.5,
                 pointerEvents: 'none',
               }}
@@ -179,7 +179,7 @@ function LeverageSlider({
                 width: 1.5,
                 height: 5,
                 transform: 'translateX(-0.75px)',
-                backgroundColor: active ? '#9998ff' : 'rgba(255,255,255,0.8)',
+                backgroundColor: active ? '#807dfe' : 'rgba(17,24,39,0.35)',
                 opacity: active ? 0.7 : 0.8,
                 pointerEvents: 'none',
               }}
@@ -196,7 +196,7 @@ function LeverageSlider({
                 width: 1.5,
                 height: 5,
                 transform: 'translateX(-0.75px)',
-                backgroundColor: 'rgba(255,255,255,0.08)',
+                backgroundColor: 'rgba(17,24,39,0.10)',
                 opacity: 0.4,
                 pointerEvents: 'none',
               }}
@@ -318,10 +318,10 @@ function LeverageSlider({
                 fontWeight: lev === value ? 600 : 500,
                 color:
                   lev > maxValue
-                    ? 'rgba(255,255,255,0.12)'
+                    ? 'rgba(17,24,39,0.18)'
                     : lev === value
-                      ? '#9998ff'
-                      : 'rgba(255,255,255,0.35)',
+                      ? '#807dfe'
+                      : 'rgba(17,24,39,0.48)',
                 padding: 0,
                 lineHeight: 1,
                 transition: 'color 0.15s',

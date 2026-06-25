@@ -22,17 +22,33 @@ import {
   IconTrendingUp,
 } from '@tabler/icons-react'
 import { useLevels } from '../../context/levels-context'
-import { type Candle as MarketCandle, useMarket } from '../../context/market-context'
+import { MARKET_CATALOG, type Candle as MarketCandle, useMarket } from '../../context/market-context'
+import { useTheme } from '../../context/theme-context'
 
-const UP = '#19e6bd'
+const UP = '#00967d'
 const DOWN = '#f23546'
-const PANEL = '#06070d'
-const TOOLBAR = '#0a0b12'
-const GRID = 'rgba(255,255,255,0.04)'
-const GRID_OFF = 'rgba(255,255,255,0)'
 const ENTRY = '#807dfe'
-const MA_FAST = '#ffdf9f'
-const MA_SLOW = '#a5a3ff'
+const MA_FAST = '#b7791f'
+const MA_SLOW = '#6d68f2'
+
+const chartTheme = {
+  light: {
+    panel: '#ffffff',
+    toolbar: 'bg-surface-primary',
+    grid: 'rgba(17,24,39,0.075)',
+    gridOff: 'rgba(17,24,39,0)',
+    text: 'rgba(17,24,39,0.68)',
+    border: 'rgba(17,24,39,0.10)',
+  },
+  dark: {
+    panel: '#06070d',
+    toolbar: 'bg-[#0a0b12]',
+    grid: 'rgba(255,255,255,0.04)',
+    gridOff: 'rgba(255,255,255,0)',
+    text: 'rgba(255,255,255,0.70)',
+    border: 'rgba(255,255,255,0.08)',
+  },
+} as const
 
 const INTERVALS = [
   { label: '15m', bucket: 60 * 15 },
@@ -139,6 +155,9 @@ export default function PriceChart() {
   const [hollowCandles, setHollowCandles] = useState(true)
   const { symbol, candles, index, funding } = useMarket()
   const { tp, sl, entry } = useLevels()
+  const { theme } = useTheme()
+  const colors = chartTheme[theme]
+  const market = MARKET_CATALOG.find((item) => item.symbol === symbol) ?? MARKET_CATALOG[0]!
 
   const tpLine = usePriceLine(candleRef, UP, 'TP')
   const slLine = usePriceLine(candleRef, DOWN, 'SL')
@@ -150,37 +169,37 @@ export default function PriceChart() {
     const chart = createChart(wrapRef.current, {
       autoSize: true,
       layout: {
-        background: { type: ColorType.Solid, color: PANEL },
-        textColor: 'rgba(255,255,255,0.70)',
+        background: { type: ColorType.Solid, color: colors.panel },
+        textColor: colors.text,
         fontFamily: 'var(--font-mono)',
         fontSize: 11,
         attributionLogo: false,
       },
       grid: {
-        vertLines: { color: GRID },
-        horzLines: { color: GRID },
+        vertLines: { color: colors.grid },
+        horzLines: { color: colors.grid },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: {
-          color: 'rgba(128,125,254,0.58)',
+          color: 'rgba(128,125,254,0.55)',
           width: 1,
           style: LineStyle.Dashed,
           labelBackgroundColor: ENTRY,
         },
         horzLine: {
-          color: 'rgba(128,125,254,0.58)',
+          color: 'rgba(128,125,254,0.55)',
           width: 1,
           style: LineStyle.Dashed,
           labelBackgroundColor: ENTRY,
         },
       },
       rightPriceScale: {
-        borderColor: 'rgba(255,255,255,0.08)',
+        borderColor: colors.border,
         scaleMargins: { top: 0.1, bottom: 0.22 },
       },
       timeScale: {
-        borderColor: 'rgba(255,255,255,0.08)',
+        borderColor: colors.border,
         timeVisible: true,
         secondsVisible: false,
         rightOffset: 6,
@@ -236,6 +255,21 @@ export default function PriceChart() {
   }, [])
 
   useEffect(() => {
+    chartRef.current?.applyOptions({
+      layout: {
+        background: { type: ColorType.Solid, color: colors.panel },
+        textColor: colors.text,
+      },
+      grid: {
+        vertLines: { color: showGrid ? colors.grid : colors.gridOff },
+        horzLines: { color: showGrid ? colors.grid : colors.gridOff },
+      },
+      rightPriceScale: { borderColor: colors.border },
+      timeScale: { borderColor: colors.border },
+    })
+  }, [colors, showGrid])
+
+  useEffect(() => {
     const data = bucketCandles(candles, interval.bucket)
     if (!data.length) return
 
@@ -251,7 +285,7 @@ export default function PriceChart() {
           ? data.map((candle) => ({
               time: candle.time,
               value: candle.volume,
-              color: candle.close >= candle.open ? 'rgba(25,230,189,0.16)' : 'rgba(242,53,70,0.18)',
+              color: candle.close >= candle.open ? 'rgba(0,150,125,0.18)' : 'rgba(242,53,70,0.20)',
             }))
           : [],
       )
@@ -264,7 +298,7 @@ export default function PriceChart() {
         volumeRef.current?.update({
           time: latest.time,
           value: latest.volume,
-          color: latest.close >= latest.open ? 'rgba(25,230,189,0.16)' : 'rgba(242,53,70,0.18)',
+          color: latest.close >= latest.open ? 'rgba(0,150,125,0.18)' : 'rgba(242,53,70,0.20)',
         })
       }
       if (showMA) {
@@ -292,11 +326,11 @@ export default function PriceChart() {
   useEffect(() => {
     chartRef.current?.applyOptions({
       grid: {
-        vertLines: { color: showGrid ? GRID : GRID_OFF },
-        horzLines: { color: showGrid ? GRID : GRID_OFF },
+        vertLines: { color: showGrid ? colors.grid : colors.gridOff },
+        horzLines: { color: showGrid ? colors.grid : colors.gridOff },
       },
     })
-  }, [showGrid])
+  }, [colors, showGrid])
 
   useEffect(() => {
     tpLine.set(tp)
@@ -313,11 +347,16 @@ export default function PriceChart() {
   const tvSymbol = symbol.replace('-PERP', 'USD')
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#06070d]">
-      <div className="flex min-h-[78px] shrink-0 flex-col border-b border-white/[0.07] bg-[#0a0b12]">
+    <div className="flex h-full min-h-0 flex-col bg-surface-primary">
+      <div className={`flex min-h-[78px] shrink-0 flex-col border-b border-border-subtle ${colors.toolbar}`}>
         <div className="flex h-10 items-center gap-3 px-3 text-[13px] text-text-secondary">
-          <div className="flex items-center gap-2 rounded-[7px] bg-white/[0.045] px-2.5 py-1.5">
-            <span className="h-4 w-4 rounded-full bg-[#f7931a]" />
+          <div className="flex items-center gap-2 rounded-[7px] border border-border-subtle bg-surface-card px-2.5 py-1.5">
+            <span
+              className="grid h-4 w-4 place-items-center rounded-full text-[8px] font-bold text-white"
+              style={{ backgroundColor: market.color }}
+            >
+              {market.icon.length <= 2 ? market.icon : ''}
+            </span>
             <span className="text-[13px] font-semibold text-text-primary">{tvSymbol}</span>
           </div>
 
@@ -329,7 +368,7 @@ export default function PriceChart() {
                 className={`rounded-[6px] px-2.5 py-1.5 transition-colors ${
                   interval.label === item.label
                     ? 'bg-brand-violet text-white'
-                    : 'text-text-tertiary hover:bg-white/[0.07] hover:text-text-primary'
+                    : 'text-text-tertiary hover:bg-surface-hover hover:text-text-primary'
                 }`}
               >
                 {item.label}
@@ -419,8 +458,8 @@ function ToolButton({
       title={title}
       className={`flex h-7 items-center gap-1 rounded-[6px] px-2 text-[11px] font-medium transition-colors ${
         active
-          ? 'bg-white/[0.10] text-text-primary'
-          : 'text-text-tertiary hover:bg-white/[0.07] hover:text-text-primary'
+          ? 'bg-surface-hover text-text-primary'
+          : 'text-text-tertiary hover:bg-surface-hover hover:text-text-primary'
       }`}
     >
       {children}

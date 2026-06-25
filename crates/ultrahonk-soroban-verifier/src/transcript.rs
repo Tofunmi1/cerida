@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use crate::field::Bn254Fr;
 use crate::hash::keccak256;
 use soroban_sdk::Env;
