@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "types",
+    "verifier-groth16",
+    "orderbook",
+]
+
+[workspace.dependencies]
+soroban-sdk = { version = "27.0.0-rc.1", default-features = false, features = ["alloc"] }
