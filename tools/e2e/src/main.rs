@@ -207,7 +207,12 @@ fn main() -> Result<()> {
             eprintln!("  Orders: {orders_per_mm}/MM + {orders_per_trader}/T");
             eprintln!("  Market: center={center_price} spread={spread_pct}% size={order_size}");
 
-            let _report = benchmark::run_benchmark(wasm_dir, keys_dir)?;
+            let cfg = benchmark::BenchmarkConfig {
+                mm_count: mms, trader_count: traders,
+                orders_per_mm, orders_per_trader,
+                server_addr, center_price, spread_pct, order_size,
+            };
+            let _report = benchmark::run_benchmark(wasm_dir, keys_dir, cfg)?;
 
             eprintln!("\n━━━ BENCHMARK COMPLETE ({:.2}s) ━━━", global_start.elapsed().as_secs_f64());
         }

@@ -76,8 +76,7 @@ pub struct BenchmarkReport {
     pub total_elapsed: std::time::Duration,
 }
 
-pub fn run_benchmark(wasm_dir: &Path, _keys_dir: &Path) -> Result<BenchmarkReport> {
-    let cfg = BenchmarkConfig::default();
+pub fn run_benchmark(wasm_dir: &Path, _keys_dir: &Path, cfg: BenchmarkConfig) -> Result<BenchmarkReport> {
     let global_start = Instant::now();
     eprintln!("\n{}", "━".repeat(60));
     eprintln!("━━━ TEE E2E Benchmark ━━━");
