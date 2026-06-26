@@ -91,6 +91,35 @@ pub fn run_e2e(
     )?;
     eprintln!("  order B status: {st_b}");
 
+    // ── Deposit collateral into perp engine ─────────────────────────────
+    eprintln!("\n=== Deposit collateral (Alice) ===");
+    invoke(
+        &perp_id,
+        &alice.1,
+        &[
+            "deposit", "--who", &alice.0, "--amount", &COLLATERAL.to_string(),
+        ],
+    )?;
+    let bal_a = invoke_view(
+        &perp_id, &alice.0,
+        &["get_balance", "--who", &alice.0],
+    )?;
+    eprintln!("  Alice balance: {bal_a}");
+
+    eprintln!("\n=== Deposit collateral (Bob) ===");
+    invoke(
+        &perp_id,
+        &bob.1,
+        &[
+            "deposit", "--who", &bob.0, "--amount", &COLLATERAL.to_string(),
+        ],
+    )?;
+    let bal_b = invoke_view(
+        &perp_id, &bob.0,
+        &["get_balance", "--who", &bob.0],
+    )?;
+    eprintln!("  Bob balance: {bal_b}");
+
     // ── Perp engine: open positions ────────────────────────────────────────
     eprintln!("\n=== Open position A (Alice) ===");
     invoke(
@@ -259,7 +288,7 @@ fn deploy(wasm: &Path) -> Result<String> {
             std::thread::sleep(std::time::Duration::from_secs(2));
             if let Some(_result) = poll_tx(&tx_hash)? {
                 // Verify the contract actually exists
-                for attempt in 0..10 {
+                for attempt in 0..30 {
                     if contract_exists(&id)? {
                         return Ok(id);
                     }

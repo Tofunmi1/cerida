@@ -79,6 +79,7 @@ pub enum DataKey {
     Config,
     Position(BytesN<32>),
     Nullifier(BytesN<32>),
+    Balance(Address),
 }
 
 #[contracttype]
@@ -126,6 +127,46 @@ impl PerpEngine {
             .set(&DataKey::Config, &Config { admin, token });
     }
 
+    pub fn deposit(env: Env, who: Address, amount: i128) {
+        who.require_auth();
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+        let cfg = Self::config(&env);
+        TokenClient::new(&env, &cfg.token)
+            .transfer(&who, &env.current_contract_address(), &amount);
+        let key = DataKey::Balance(who.clone());
+        let bal = Self::read_balance(&env, &who);
+        env.storage().persistent().set(&key, &(bal + amount));
+    }
+
+    pub fn withdraw(env: Env, who: Address, amount: i128) {
+        who.require_auth();
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+        let key = DataKey::Balance(who.clone());
+        let bal = Self::read_balance(&env, &who);
+        if bal < amount {
+            panic!("insufficient balance");
+        }
+        env.storage().persistent().set(&key, &(bal - amount));
+        let cfg = Self::config(&env);
+        TokenClient::new(&env, &cfg.token)
+            .transfer(&env.current_contract_address(), &who, &amount);
+    }
+
+    pub fn get_balance(env: Env, who: Address) -> i128 {
+        Self::read_balance(&env, &who)
+    }
+
+    fn read_balance(env: &Env, who: &Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get::<_, i128>(&DataKey::Balance(who.clone()))
+            .unwrap_or(0)
+    }
+
     pub fn open_position(
         env: Env,
         owner: Address,
@@ -160,9 +201,13 @@ impl PerpEngine {
             _ => panic!("invalid commitment proof"),
         }
 
-        let cfg = Self::config(&env);
-        TokenClient::new(&env, &cfg.token)
-            .transfer(&owner, &env.current_contract_address(), &collateral);
+        let bal = Self::read_balance(&env, &owner);
+        if bal < collateral {
+            panic!("insufficient balance");
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(owner.clone()), &(bal - collateral));
 
         let meta = PositionMeta {
             owner,
@@ -219,9 +264,10 @@ impl PerpEngine {
         env.storage().persistent().set(&pos_key, &meta);
         env.storage().persistent().set(&null_key, &true);
 
-        let cfg = Self::config(&env);
-        TokenClient::new(&env, &cfg.token)
-            .transfer(&env.current_contract_address(), &meta.owner, &meta.collateral);
+        let bal = Self::read_balance(&env, &meta.owner);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(meta.owner.clone()), &(bal + meta.collateral));
         env.storage()
             .persistent()
             .extend_ttl(&pos_key, 17280, 17280);
@@ -358,9 +404,10 @@ impl PerpEngine {
             .persistent()
             .extend_ttl(&null_key, 17280, 17280);
 
-        let cfg = Self::config(&env);
-        TokenClient::new(&env, &cfg.token)
-            .transfer(&env.current_contract_address(), &owner, &settlement);
+        let bal = Self::read_balance(&env, &owner);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(owner.clone()), &(bal + settlement));
 
         #[allow(deprecated)]
         env.events().publish(
@@ -409,11 +456,13 @@ impl PerpEngine {
         let reward = meta.collateral / 20;
         let to_owner = settlement.saturating_sub(reward).max(0);
 
-        let owner_addr = meta.owner.clone();
+        let bal = Self::read_balance(&env, &meta.owner);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(meta.owner.clone()), &(bal + to_owner));
         let cfg = Self::config(&env);
-        let tkn = TokenClient::new(&env, &cfg.token);
-        tkn.transfer(&env.current_contract_address(), &owner_addr, &to_owner);
-        tkn.transfer(&env.current_contract_address(), &liquidator, &reward);
+        TokenClient::new(&env, &cfg.token)
+            .transfer(&env.current_contract_address(), &liquidator, &reward);
 
         meta.status = PositionStatus::Liquidated;
         env.storage().persistent().set(&pos_key, &meta);
