@@ -61,7 +61,9 @@ fn g2_to_soroban_bytes(p: &G2Affine) -> [u8; 128] {
 fn parse_fq_decimal(value: &str) -> Result<ark_bn254::Fq, String> {
     let bigint = BigUint::parse_bytes(value.as_bytes(), 10)
         .ok_or_else(|| format!("invalid decimal field element: {value}"))?;
-    Ok(ark_bn254::Fq::from_be_bytes_mod_order(&bigint.to_bytes_be()))
+    Ok(ark_bn254::Fq::from_be_bytes_mod_order(
+        &bigint.to_bytes_be(),
+    ))
 }
 
 fn fq2_from_decimals(c0: &str, c1: &str) -> Result<ark_bn254::Fq2, String> {

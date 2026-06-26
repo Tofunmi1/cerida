@@ -4,9 +4,9 @@ CONTRACT_TARGET := $(ROOT)/contracts/target/wasm32v1-none/release
 
 .PHONY: all clean \
 	circuit-setup \
-	build-contracts build-orderbook \
+	build-contracts build-orderbook build-perp-engine \
 	build-tools \
-	deploy deploy-orderbook \
+	deploy deploy-orderbook deploy-perp-engine \
 	e2e
 
 all: circuit-setup build-contracts build-tools
@@ -23,22 +23,35 @@ build-orderbook: circuit-setup
 	  cargo build --target wasm32v1-none --release -p orderbook -p verifier-groth16 -p types
 	ls -la $(CONTRACT_TARGET)/orderbook.wasm
 
-build-contracts: build-orderbook
+build-perp-engine: circuit-setup
+	VK_COMMIT_JSON=$(CIRCUIT_KEYS)/order_commitment_vk.json \
+	VK_CANCEL_JSON=$(CIRCUIT_KEYS)/order_cancel_vk.json \
+	VK_MATCH_JSON=$(CIRCUIT_KEYS)/order_match_vk.json \
+	  cargo build --target wasm32v1-none --release -p perp-engine
+	ls -la $(ROOT)/target/wasm32v1-none/release/perp_engine.wasm
+
+build-contracts: build-orderbook build-perp-engine
 
 # ======== Tools ========
 build-tools:
-	cargo build --release -p prover
-	cargo build --release -p e2e
+	cargo build --release --manifest-path tools/prover/Cargo.toml
+	cargo build --release --manifest-path tools/e2e/Cargo.toml
 
 # ======== Deploy ========
 deploy-orderbook: build-orderbook
 	cargo run --release -p e2e -- deploy
 
-deploy: deploy-orderbook
+deploy-perp-engine: build-perp-engine
+	stellar contract deploy \
+	  --wasm $(ROOT)/target/wasm32v1-none/release/perp_engine.wasm \
+	  --source e2e \
+	  --network testnet
+
+deploy: deploy-orderbook deploy-perp-engine
 
 # ======== E2E ========
 e2e: build-contracts build-tools
-	cargo run --release -p e2e -- full
+	cargo run --release --manifest-path tools/e2e/Cargo.toml -- full
 
 # ======== Clean ========
 clean:

@@ -92,5 +92,4 @@ use soroban_sdk::Address;
 pub enum OrderStatus {
     Open = 0,
     Cancelled = 1,
-    Filled = 2,
 }

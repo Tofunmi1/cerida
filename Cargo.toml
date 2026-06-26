@@ -1,10 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-  "contracts/verifier",
+  "contracts/types",
+  "contracts/orderbook",
+  "contracts/verifier-groth16",
+  "contracts/perp-engine",
   "crates/ultrahonk-soroban-verifier",
 ]
 exclude = [
   "examples",
   "tiny",
+  "tools",
 ]
