@@ -1,7 +1,8 @@
 use crate::client::ServerClient;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 pub struct BenchmarkConfig {
@@ -13,126 +14,187 @@ pub struct BenchmarkConfig {
     pub order_size: u64,
 }
 
-struct OrderEntry {
+#[derive(Clone, Serialize, Deserialize)]
+struct OrderCache {
     cmt: String,
     addr: String,
     identity: String,
     side: u64,
     price: u64,
     size: u64,
+    proof_json: String,
 }
 
-pub fn run_benchmark(wasm_dir: &Path, _keys_dir: &Path, cfg: BenchmarkConfig) -> Result<()> {
+#[derive(Serialize, Deserialize)]
+struct Cache {
+    orders: Vec<OrderCache>,
+    orderbook_id: Option<String>,
+    perp_id: Option<String>,
+    native_token: Option<String>,
+}
+
+fn cache_path(keys_dir: &Path) -> PathBuf {
+    keys_dir.join("benchmark-cache.json")
+}
+
+fn load_cache(keys_dir: &Path) -> Option<Cache> {
+    let path = cache_path(keys_dir);
+    let data = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+fn save_cache(keys_dir: &Path, cache: &Cache) -> Result<()> {
+    let path = cache_path(keys_dir);
+    let data = serde_json::to_string_pretty(cache)?;
+    std::fs::write(&path, data)?;
+    Ok(())
+}
+
+pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> Result<()> {
     let start = Instant::now();
     eprintln!("\n━━━ Real-World CLOB + E2E Benchmark ━━━");
     eprintln!("  {} MMs × {} orders, {} Traders", cfg.mm_count, cfg.orders_per_mm, cfg.trader_count);
     eprintln!("  Center price: {}, size: {}", cfg.center_price, cfg.order_size);
-    eprintln!("  Strategy: seed limit orders → deploy → run market orders → auto-match on-chain → show book");
     eprintln!("{}", "━".repeat(60));
 
     let mut client = ServerClient::new(&cfg.server_addr);
     let source_pk = crate::stellar::source_pubkey()?;
+    let cached = load_cache(keys_dir);
 
-    // ── Step 1: Create identities + init orders ─────────────────────────
-    eprint!("\n[1/6] Creating identities & init orders… ");
-    let t1 = Instant::now();
+    // ── Step 1–3: Identities, fund, proofs (skip if cached) ──────────────
+    let orders: Vec<OrderCache>;
+    let perp_id: String;
 
-    let identities: Vec<(String, String)> = (0..cfg.mm_count)
-        .map(|i| crate::stellar::generate_keypair(&format!("bm-mm-{i}")))
-        .chain((0..cfg.trader_count)
-            .map(|i| crate::stellar::generate_keypair(&format!("bm-tr-{i}"))))
-        .collect();
+    if let Some(ref c) = cached {
+        if !c.orders.is_empty() {
+            eprintln!("[1–3] Using cached {} orders (skip init/fund/proofs)", c.orders.len());
+            orders = c.orders.clone();
+            let _orderbook_id = c.orderbook_id.clone().unwrap_or_default();
+            perp_id = c.perp_id.clone().unwrap_or_default();
+            let _native_token = c.native_token.clone().unwrap_or_default();
+            if !perp_id.is_empty() && !source_pk.is_empty() {
+                client.set_onchain(&perp_id, &source_pk);
+            }
+            if c.orderbook_id.is_none() {
+                return Err(anyhow::anyhow!("Cache exists but no contract IDs — delete cache and re-run"));
+            }
+        } else {
+            return Err(anyhow::anyhow!("Empty cache — delete cache file and re-run"));
+        }
+    } else {
+        // ── Step 1: Create identities + init orders ──────────────────────
+        eprint!("\n[1/6] Creating identities & init orders… ");
+        let t1 = Instant::now();
 
-    let mut orders: Vec<OrderEntry> = Vec::new();
-    let mut nonce = 0u64;
+        let identities: Vec<(String, String)> = (0..cfg.mm_count)
+            .map(|i| crate::stellar::generate_keypair(&format!("bm-mm-{i}")))
+            .chain((0..cfg.trader_count)
+                .map(|i| crate::stellar::generate_keypair(&format!("bm-tr-{i}"))))
+            .collect();
 
-    // MMs: limit orders alternating bid/ask around center
-    for (mm_idx, (addr, identity)) in identities.iter().enumerate().take(cfg.mm_count) {
-        for j in 0..cfg.orders_per_mm {
-            let side = (j % 2) as u64;
-            let shift = ((j / 2) as i64 + 1) * 2000;
-            let price = if side == 0 {
-                cfg.center_price.saturating_sub(shift as u64)
-            } else {
-                cfg.center_price.saturating_add(shift as u64)
-            };
-            let cmt = client.init_raw(side, price, cfg.order_size, 1, 0, nonce, nonce + 999)?;
-            orders.push(OrderEntry { cmt, addr: addr.clone(), identity: identity.clone(), side, price, size: cfg.order_size });
+        let mut raw_orders: Vec<OrderCache> = Vec::new();
+        let mut nonce = 0u64;
+
+        for (mm_idx, (addr, identity)) in identities.iter().enumerate().take(cfg.mm_count) {
+            for j in 0..cfg.orders_per_mm {
+                let side = (j % 2) as u64;
+                let shift = ((j / 2) as i64 + 1) * 2000;
+                let price = if side == 0 {
+                    cfg.center_price.saturating_sub(shift as u64)
+                } else {
+                    cfg.center_price.saturating_add(shift as u64)
+                };
+                let cmt = client.init_raw(side, price, cfg.order_size, 1, 0, nonce, nonce + 999)?;
+                raw_orders.push(OrderCache { cmt, addr: addr.clone(), identity: identity.clone(), side, price, size: cfg.order_size, proof_json: String::new() });
+                nonce += 1;
+            }
+        }
+        for (tr_idx, (addr, identity)) in identities.iter().enumerate().skip(cfg.mm_count) {
+            let side = (tr_idx % 2) as u64;
+            let cmt = client.init_raw(side, 0, cfg.order_size * 2, 1, 0, nonce, nonce + 999)?;
+            raw_orders.push(OrderCache { cmt, addr: addr.clone(), identity: identity.clone(), side, price: 0, size: cfg.order_size * 2, proof_json: String::new() });
             nonce += 1;
         }
-    }
-    // Traders: market orders (price=0)
-    for (tr_idx, (addr, identity)) in identities.iter().enumerate().skip(cfg.mm_count) {
-        let side = (tr_idx % 2) as u64;
-        let cmt = client.init_raw(side, 0, cfg.order_size * 2, 1, 0, nonce, nonce + 999)?;
-        orders.push(OrderEntry { cmt, addr: addr.clone(), identity: identity.clone(), side, price: 0, size: cfg.order_size * 2 });
-        nonce += 1;
-    }
-    eprintln!("{} orders in {:.1}s", orders.len(), t1.elapsed().as_secs_f64());
+        eprintln!("{} orders in {:.1}s", raw_orders.len(), t1.elapsed().as_secs_f64());
 
-    // ── Step 2: Fund ────────────────────────────────────────────────────
-    eprint!("[2/6] Funding participants… ");
-    let t2 = Instant::now();
-    for (addr, _) in &identities {
-        crate::stellar::fund(addr, "");
-    }
-    eprintln!("{:.1}s", t2.elapsed().as_secs_f64());
-
-    // ── Step 3: Generate commit proofs in parallel ──────────────────────
-    eprint!("[3/6] Generating commit proofs (parallel)… ");
-    let t3 = Instant::now();
-    let tmp_dir = std::env::temp_dir().join("tee-benchmark");
-    std::fs::create_dir_all(&tmp_dir)?;
-
-    let proof_results: Vec<Result<(String, String)>> = std::thread::scope(|s| {
-        let mut handles = Vec::new();
-        for o in &orders {
-            let cmt = o.cmt.clone();
-            let addr = cfg.server_addr.clone();
-            let out_path = tmp_dir.join(format!("proof_{}.json", &cmt[..16]));
-            handles.push(s.spawn(move || -> Result<(String, String)> {
-                let c = ServerClient::new(&addr);
-                c.commit_proof(&cmt, &out_path)?;
-                let json = std::fs::read_to_string(&out_path)?;
-                Ok((cmt, json))
-            }));
+        // ── Step 2: Fund ────────────────────────────────────────────────
+        eprint!("[2/6] Funding participants… ");
+        let t2 = Instant::now();
+        for (addr, _) in &identities {
+            crate::stellar::fund(addr, "");
         }
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
-    });
+        eprintln!("{:.1}s", t2.elapsed().as_secs_f64());
 
-    let mut proofs: HashMap<String, String> = HashMap::new();
-    for r in proof_results {
-        let (cmt, json) = r?;
-        proofs.insert(cmt, json);
+        // ── Step 3: Generate commit proofs in parallel ──────────────────
+        eprint!("[3/6] Generating commit proofs (parallel)… ");
+        let t3 = Instant::now();
+        let tmp_dir = std::env::temp_dir().join("tee-benchmark");
+        std::fs::create_dir_all(&tmp_dir)?;
+
+        let proof_results: Vec<Result<(String, String)>> = std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for o in &raw_orders {
+                let cmt = o.cmt.clone();
+                let addr = cfg.server_addr.clone();
+                let out_path = tmp_dir.join(format!("proof_{}.json", &cmt[..16]));
+                handles.push(s.spawn(move || -> Result<(String, String)> {
+                    let c = ServerClient::new(&addr);
+                    c.commit_proof(&cmt, &out_path)?;
+                    let json = std::fs::read_to_string(&out_path)?;
+                    Ok((cmt, json))
+                }));
+            }
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        let mut proofs: HashMap<String, String> = HashMap::new();
+        for r in proof_results {
+            let (cmt, json) = r?;
+            proofs.insert(cmt, json);
+        }
+        eprintln!("{} proofs in {:.1}s", proofs.len(), t3.elapsed().as_secs_f64());
+
+        // Fill proofs into orders
+        for o in &mut raw_orders {
+            o.proof_json = proofs.remove(&o.cmt).unwrap_or_default();
+        }
+
+        // ── Step 4: Deploy + place limit orders on-chain ────────────────
+        eprint!("[4/6] Deploying & placing limit orders on-chain… ");
+        let t4 = Instant::now();
+        let (ob_id, pe_id, _src_pk, nt) = crate::stellar::deploy_contracts(wasm_dir)?;
+        client.set_onchain(&pe_id, &source_pk);
+        crate::stellar::init_perp_engine(&pe_id, &source_pk, &nt)?;
+
+        for o in &raw_orders {
+            if o.side > 1 { continue; }
+            crate::stellar::invoke(&ob_id, &o.identity, &[
+                "place_order", "--owner", &o.addr, "--commitment", &o.cmt,
+                "--hint", &o.price.to_string(), "--proof", &o.proof_json,
+            ])?;
+            crate::stellar::invoke(&pe_id, &o.identity, &[
+                "deposit", "--who", &o.addr, "--amount", "1000000000",
+            ])?;
+            crate::stellar::invoke(&pe_id, &o.identity, &[
+                "open_position", "--owner", &o.addr, "--commitment", &o.cmt,
+                "--collateral", "1000000000",
+                "--hint_price", &o.price.to_string(),
+                "--hint_side", &o.side.to_string(),
+                "--hint_leverage", "1", "--proof", &o.proof_json,
+            ])?;
+        }
+        eprintln!("{:.1}s", t4.elapsed().as_secs_f64());
+
+        // Save cache
+        perp_id = pe_id;
+        orders = raw_orders;
+        save_cache(keys_dir, &Cache {
+            orders: orders.clone(),
+            orderbook_id: Some(ob_id),
+            perp_id: Some(perp_id.clone()),
+            native_token: Some(nt),
+        })?;
     }
-    eprintln!("{} proofs in {:.1}s", proofs.len(), t3.elapsed().as_secs_f64());
-
-    // ── Step 4: Deploy + place limit orders on-chain ────────────────────
-    eprint!("[4/6] Deploying & placing limit orders on-chain… ");
-    let t4 = Instant::now();
-    let (orderbook_id, perp_id, _source_pk, native_token) = crate::stellar::deploy_contracts(wasm_dir)?;
-    client.set_onchain(&perp_id, &source_pk);
-    crate::stellar::init_perp_engine(&perp_id, &source_pk, &native_token)?;
-
-    for o in &orders {
-        if o.side > 1 { continue; } // skip market orders (reserved for step 6)
-        let pj = proofs.get(&o.cmt).unwrap();
-        crate::stellar::invoke(&orderbook_id, &o.identity, &[
-            "place_order", "--owner", &o.addr, "--commitment", &o.cmt,
-            "--hint", &o.price.to_string(), "--proof", pj,
-        ])?;
-        crate::stellar::invoke(&perp_id, &o.identity, &[
-            "deposit", "--who", &o.addr, "--amount", "1000000000",
-        ])?;
-        crate::stellar::invoke(&perp_id, &o.identity, &[
-            "open_position", "--owner", &o.addr, "--commitment", &o.cmt,
-            "--collateral", "1000000000",
-            "--hint_price", &o.price.to_string(),
-            "--hint_side", &o.side.to_string(),
-            "--hint_leverage", "1", "--proof", pj,
-        ])?;
-    }
-    eprintln!("{:.1}s", t4.elapsed().as_secs_f64());
 
     // ── Step 5: Seed CLOB with limit orders ─────────────────────────────
     eprint!("[5/6] Seeding CLOB orderbook… ");
