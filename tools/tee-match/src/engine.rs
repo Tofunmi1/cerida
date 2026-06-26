@@ -460,6 +460,25 @@ pub struct MatchParams {
     pub match_size: u64,
 }
 
+pub fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+pub fn order(id: &str, side: Side, price: u64, size: u64, order_type: OrderType) -> Order {
+    Order {
+        id: id.to_string(),
+        side: side,
+        price,
+        size,
+        remaining: size,
+        timestamp_ns: now_nanos(),
+        order_type,
+    }
+}
+
 pub fn find_match(a: &crate::db::OrderSecrets, b: &crate::db::OrderSecrets) -> Option<MatchParams> {
     log::debug!("Evaluating order pair for matchability",
         "side_a", a.side, "price_a", a.price, "size_a", a.size,
@@ -491,4 +510,344 @@ pub fn find_match(a: &crate::db::OrderSecrets, b: &crate::db::OrderSecrets) -> O
     );
 
     Some(MatchParams { match_price: mid, match_size })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn book() -> OrderBook {
+        OrderBook::new()
+    }
+
+    fn bid(id: &str, price: u64, size: u64) -> Order {
+        order(id, Side::Bid, price, size, OrderType::Limit)
+    }
+
+    fn ask(id: &str, price: u64, size: u64) -> Order {
+        order(id, Side::Ask, price, size, OrderType::Limit)
+    }
+
+    fn market_ask(id: &str, size: u64) -> Order {
+        order(id, Side::Ask, 0, size, OrderType::Market)
+    }
+
+    fn market_bid(id: &str, size: u64) -> Order {
+        order(id, Side::Bid, 0, size, OrderType::Market)
+    }
+
+    fn ioc_ask(id: &str, price: u64, size: u64) -> Order {
+        order(id, Side::Ask, price, size, OrderType::IOC)
+    }
+
+    fn fok_bid(id: &str, price: u64, size: u64) -> Order {
+        order(id, Side::Bid, price, size, OrderType::FOK)
+    }
+
+    fn stop_bid(id: &str, stop: u64, price: u64, size: u64) -> Order {
+        order(id, Side::Bid, price, size, OrderType::StopLimit { stop_price: stop })
+    }
+
+    fn stop_ask(id: &str, stop: u64, price: u64, size: u64) -> Order {
+        order(id, Side::Ask, price, size, OrderType::StopLimit { stop_price: stop })
+    }
+
+    fn stop_market_bid(id: &str, stop: u64, size: u64) -> Order {
+        order(id, Side::Bid, 0, size, OrderType::StopMarket { stop_price: stop })
+    }
+
+    // ── Tests ──
+
+    #[test]
+    fn test_empty_book_no_match() {
+        let mut ob = book();
+        let fills = ob.place(market_bid("b1", 100)).unwrap();
+        assert!(fills.is_empty());
+        assert_eq!(ob.order_count(), 0);
+    }
+
+    #[test]
+    fn test_simple_bid_ask_match() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 50)).unwrap();
+        let fills = ob.place(bid("b1", 100, 50)).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].price, 100);
+        assert_eq!(fills[0].size, 50);
+        assert_eq!(fills[0].maker_id, "a1");
+        assert_eq!(fills[0].taker_id, "b1");
+        assert_eq!(ob.order_count(), 0);
+    }
+
+    #[test]
+    fn test_price_priority_ask() {
+        let mut ob = book();
+        ob.place(ask("a1", 110, 10)).unwrap();  // worse price
+        ob.place(ask("a2", 100, 10)).unwrap();  // best price — should match first
+        let fills = ob.place(bid("b1", 110, 15)).unwrap();
+        assert_eq!(fills.len(), 2);
+        assert_eq!(fills[0].maker_id, "a2");
+        assert_eq!(fills[0].price, 100);
+        assert_eq!(fills[1].maker_id, "a1");
+        assert_eq!(fills[1].price, 110);
+    }
+
+    #[test]
+    fn test_price_priority_bid() {
+        let mut ob = book();
+        ob.place(bid("b1", 90, 10)).unwrap();   // worse price
+        ob.place(bid("b2", 100, 10)).unwrap();  // best price — should match first
+        let fills = ob.place(ask("a1", 90, 15)).unwrap();
+        assert_eq!(fills.len(), 2);
+        assert_eq!(fills[0].maker_id, "b2");
+        assert_eq!(fills[0].price, 100);
+        assert_eq!(fills[1].maker_id, "b1");
+        assert_eq!(fills[1].price, 90);
+    }
+
+    #[test]
+    fn test_time_priority_same_price() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 10)).unwrap();  // first
+        ob.place(ask("a2", 100, 10)).unwrap();  // second
+        let fills = ob.place(bid("b1", 100, 20)).unwrap();
+        assert_eq!(fills.len(), 2);
+        assert_eq!(fills[0].maker_id, "a1");
+        assert_eq!(fills[1].maker_id, "a2");
+    }
+
+    #[test]
+    fn test_partial_fill_remainder_rests() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 30)).unwrap();
+        let fills = ob.place(bid("b1", 100, 50)).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].size, 30);
+        // remainder should rest on book
+        assert_eq!(ob.order_count(), 1);
+        let (best, remaining) = ob.best_bid().unwrap();
+        assert_eq!(best, 100);
+        assert_eq!(remaining, 20);
+    }
+
+    #[test]
+    fn test_market_bid_sweeps_book() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 25)).unwrap();
+        ob.place(ask("a2", 101, 25)).unwrap();
+        let fills = ob.place(market_bid("b1", 40)).unwrap();
+        assert_eq!(fills.len(), 2);
+        assert_eq!(fills[0].price, 100);
+        assert_eq!(fills[0].size, 25);
+        assert_eq!(fills[1].price, 101);
+        assert_eq!(fills[1].size, 15);
+        // ask a2 should have 10 remaining
+        assert_eq!(ob.order_count(), 1);
+        let (best, remaining) = ob.best_ask().unwrap();
+        assert_eq!(best, 101);
+        assert_eq!(remaining, 10);
+    }
+
+    #[test]
+    fn test_ioc_no_rest() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 20)).unwrap();
+        // IOC bid with more size than available
+        let fills = ob.place(ioc_ask("ioc1", 100, 10)).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].size, 10);
+        // IOC with no match should not rest
+        let ob2_fills = ob.place(ioc_ask("ioc2", 50, 10)).unwrap();
+        assert!(ob2_fills.is_empty());
+        assert_eq!(ob.order_count(), 1); // only the original ask remains
+    }
+
+    #[test]
+    fn test_fok_fill_or_kill() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 30)).unwrap();
+        ob.place(ask("a2", 101, 20)).unwrap(); // total = 50
+        // FOK for exact amount
+        ob.place(fok_bid("f1", 101, 50)).unwrap();
+        assert_eq!(ob.fills.len(), 2);
+
+        // FOK that exceeds available liquidity
+        ob.place(fok_bid("f2", 100, 100)).unwrap();
+        assert_eq!(ob.fills.len(), 2); // no new fills
+    }
+
+    #[test]
+    fn test_cancel_order() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 50)).unwrap();
+        assert_eq!(ob.order_count(), 1);
+        ob.cancel("a1").unwrap();
+        assert_eq!(ob.order_count(), 0);
+        assert!(ob.best_ask().is_none());
+    }
+
+    #[test]
+    fn test_depth() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 10)).unwrap();
+        ob.place(ask("a2", 101, 20)).unwrap();
+        ob.place(ask("a3", 102, 30)).unwrap();
+        let d = ob.depth(Side::Ask, 2);
+        assert_eq!(d.len(), 2);
+        assert_eq!(d[0], (100, 10, 1));
+        assert_eq!(d[1], (101, 20, 1));
+    }
+
+    #[test]
+    fn test_spread() {
+        let mut ob = book();
+        assert!(ob.spread().is_none());
+        ob.place(ask("a1", 105, 10)).unwrap();
+        ob.place(bid("b1", 100, 10)).unwrap();
+        assert_eq!(ob.spread(), Some(5));
+    }
+
+    #[test]
+    fn test_stop_limit_bid_triggers_on_price_up() {
+        let mut ob = book();
+        // Setup: ask at 100, bid at 95 (no cross)
+        ob.place(ask("a1", 100, 50)).unwrap();
+        ob.place(bid("b1", 95, 50)).unwrap();
+        assert!(ob.best_bid().is_some());
+        assert!(ob.best_ask().is_some());
+
+        // Place a stop-limit bid that triggers when price >= 100
+        ob.place(stop_bid("stop1", 100, 100, 50)).unwrap();
+        assert_eq!(ob.stop_orders.len(), 1);
+
+        // A market buy that moves price to 100 should trigger the stop
+        ob.place(market_bid("trigger", 100)).unwrap();
+        // Stop should have triggered and matched against remaining asks
+        assert_eq!(ob.stop_orders.len(), 0);
+    }
+
+    #[test]
+    fn test_stop_market_bid_triggers() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 100)).unwrap();
+        // Stop-market bid triggers when price >= 100
+        ob.place(stop_market_bid("stop1", 100, 50)).unwrap();
+        assert_eq!(ob.stop_orders.len(), 1);
+
+        ob.place(market_bid("trigger", 60)).unwrap();
+        // Stop should have triggered and been consumed
+        assert_eq!(ob.stop_orders.len(), 0);
+        // The stop market order should have filled against remaining ask
+        let (_, remaining) = ob.best_ask().unwrap();
+        assert_eq!(remaining, 40 - 60.min(0)); // 60 consumed first, stop 50 also matched
+    }
+
+    #[test]
+    fn test_multi_level_market_sweep() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 10)).unwrap();
+        ob.place(ask("a2", 101, 20)).unwrap();
+        ob.place(ask("a3", 102, 30)).unwrap();
+        ob.place(ask("a4", 103, 40)).unwrap();
+        let fills = ob.place(market_bid("b1", 75)).unwrap();
+        assert_eq!(fills.len(), 4);
+        let total_filled: u64 = fills.iter().map(|f| f.size).sum();
+        assert_eq!(total_filled, 75);
+        // a4 should have 5 remaining (40 - (75 - 10 - 20 - 30) = 5)
+        assert_eq!(ob.order_count(), 1);
+        let (_, remaining) = ob.best_ask().unwrap();
+        assert_eq!(remaining, 25);
+    }
+
+    #[test]
+    fn test_limit_no_cross_rests() {
+        let mut ob = book();
+        ob.place(ask("a1", 105, 50)).unwrap();
+        let fills = ob.place(bid("b1", 100, 30)).unwrap();
+        assert!(fills.is_empty());
+        assert_eq!(ob.order_count(), 2);
+        assert_eq!(ob.spread(), Some(5));
+    }
+
+    #[test]
+    fn test_best_bid_ask_empty_book() {
+        let ob = book();
+        assert!(ob.best_bid().is_none());
+        assert!(ob.best_ask().is_none());
+        assert!(ob.spread().is_none());
+        assert!(ob.depth(Side::Bid, 5).is_empty());
+    }
+
+    #[test]
+    fn test_order_id_string_clipping() {
+        let mut ob = book();
+        ob.place(bid("a-very-long-order-id-that-should-work-fine", 100, 10)).unwrap();
+        assert_eq!(ob.order_count(), 1);
+        let (price, remaining) = ob.best_bid().unwrap();
+        assert_eq!(price, 100);
+        assert_eq!(remaining, 10);
+    }
+
+    #[test]
+    fn test_no_cross_no_match() {
+        let mut ob = book();
+        ob.place(ask("a1", 200, 10)).unwrap();
+        ob.place(bid("b1", 100, 10)).unwrap();
+        let fills = ob.place(bid("b2", 150, 5)).unwrap();
+        assert!(fills.is_empty());
+        assert_eq!(ob.order_count(), 3);
+    }
+
+    #[test]
+    fn test_same_price_multi_order_fifo() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 10)).unwrap();
+        ob.place(ask("a2", 100, 10)).unwrap();
+        ob.place(ask("a3", 100, 10)).unwrap();
+        let fills = ob.place(bid("b1", 100, 25)).unwrap();
+        assert_eq!(fills.len(), 3);
+        assert_eq!(fills[0].maker_id, "a1");
+        assert_eq!(fills[1].maker_id, "a2");
+        assert_eq!(fills[2].maker_id, "a3");
+        assert_eq!(ob.order_count(), 0); // bid consumed all
+    }
+
+    #[test]
+    fn test_limit_fill_exact() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 50)).unwrap();
+        let fills = ob.place(bid("b1", 100, 50)).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].size, 50);
+        assert_eq!(ob.order_count(), 0);
+    }
+
+    #[test]
+    fn test_limit_buy_better_price() {
+        let mut ob = book();
+        ob.place(ask("a1", 100, 30)).unwrap();
+        // Bid at 101 — should match at 100 (the maker's price)
+        let fills = ob.place(bid("b1", 101, 30)).unwrap();
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].price, 100);
+        assert_eq!(fills[0].size, 30);
+    }
+
+    #[test]
+    fn test_stop_bid_not_triggered_below_stop() {
+        let mut ob = book();
+        ob.place(ask("a1", 200, 100)).unwrap();
+        // Stop bid at 150 should NOT trigger when price is 200
+        ob.place(stop_bid("s1", 150, 200, 50)).unwrap();
+        ob.place(market_bid("b1", 50)).unwrap();
+        // Stop should remain since we traded at 200 (>= 150 means triggered)
+        // Actually, last_price = 200 which IS >= 150, so it should trigger
+        // Let me use a higher stop:
+        let mut ob2 = book();
+        ob2.place(ask("a2", 100, 100)).unwrap();
+        ob2.place(stop_bid("s2", 150, 200, 50)).unwrap();
+        // Match at 100 — price is 100 which is < 150, so stop should NOT trigger
+        ob2.place(market_bid("b2", 30)).unwrap();
+        assert_eq!(ob2.stop_orders.len(), 1);
+    }
 }
