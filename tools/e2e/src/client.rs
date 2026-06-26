@@ -154,27 +154,6 @@ impl ServerClient {
         resp.commitment.ok_or_else(|| anyhow::anyhow!("no commitment in response"))
     }
 
-    /// Generate a match proof JSON string without submitting on-chain
-    pub fn match_proof_json(&self, cmt_a: &str, cmt_b: &str, perp: &str, source: &str) -> Result<String> {
-        let req = Request {
-            cmd: "match".to_string(),
-            cmt_a: Some(cmt_a.to_string()),
-            cmt_b: Some(cmt_b.to_string()),
-            perp: Some(perp.to_string()),
-            source: Some(source.to_string()),
-            side: None, price: None, size: None, leverage: None,
-            asset: None, nonce: None, secret: None,
-            cmt: None, out: None,
-        };
-        let _resp = self.send(&req)?;
-        // Build a proof JSON from the response match fields
-        Ok(serde_json::json!({
-            "a": ["0", "0"],
-            "b": [["0", "0"], ["0", "0"]],
-            "c": ["0", "0"],
-        }).to_string())
-    }
-
     pub fn match_orders(&self, cmt_a: &str, cmt_b: &str, perp: &str, source: &str) -> Result<MatchResult> {
         eprintln!("  [client] match: cmt_a={}… cmt_b={}… perp={} source={}",
             &cmt_a[..16], &cmt_b[..16], &perp[..8], source);

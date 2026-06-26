@@ -303,13 +303,13 @@ pub fn run_benchmark(wasm_dir: &Path, _keys_dir: &Path, cfg: BenchmarkConfig) ->
     report.phases.push(PhaseTiming { label: "On-chain setup", elapsed: t5.elapsed() });
     eprintln!("  ✓ {} orders placed/setup ({:.2}s)", all_placed.len(), t5.elapsed().as_secs_f64());
 
-    // ── Phase 6: Match on-chain ─────────────────────────────────────────
-    eprintln!("\n── Phase 6/6: Matching orders on-chain ──");
+    // ── Phase 6: Match via server (server generates proof + submits on-chain) ──
+    eprintln!("\n── Phase 6/6: Matching orders on-chain via server ──");
 
     let t6 = Instant::now();
     let mut total_fills = 0;
 
-    // Match pairs: iterate bids vs asks
+    // Crossed pairs: bids with price >= ask price
     let bids: Vec<_> = all_placed.iter()
         .filter(|(_, p)| p.side == 0)
         .collect();
@@ -317,51 +317,42 @@ pub fn run_benchmark(wasm_dir: &Path, _keys_dir: &Path, cfg: BenchmarkConfig) ->
         .filter(|(_, p)| p.side == 1)
         .collect();
 
-    eprintln!("  Matching {} bids × {} asks", bids.len(), asks.len());
-
-    for (bid_cmt, bid_p) in &bids {
-        for (ask_cmt, ask_p) in &asks {
-            if bid_p.price < ask_p.price {
-                continue; // spread not crossed
+    eprintln!("  Scanning {} bids × {} asks for crosses", bids.len(), asks.len());
+    let matches: Vec<(_, _)> = bids.iter().flat_map(|b| {
+        asks.iter().filter_map(move |a| {
+            if b.1.price >= a.1.price {
+                Some((b, a))
+            } else {
+                None
             }
-            // Compute match params
-            let mp = (bid_p.price + ask_p.price) / 2;
-            let ms = bid_p.size.min(ask_p.size);
-            if ms == 0 { continue; }
+        })
+    }).collect();
+    eprintln!("  Found {} crossed pairs, submitting up to {}", matches.len(), 100.min(matches.len()));
 
-            eprintln!("  [match] bid={}… price={} × ask={}… price={} → mp={} ms={}",
-                &bid_cmt[..12], bid_p.price, &ask_cmt[..12], ask_p.price, mp, ms);
+    for (bid, ask) in matches.iter().take(100) {
+        let bid_cmt = &bid.0;
+        let ask_cmt = &ask.0;
+        eprintln!("  [match] bid={}… (price={}) × ask={}… (price={})",
+            &bid_cmt[..12], bid.1.price, &ask_cmt[..12], ask.1.price);
 
-            // Generate match proof via server
-            let match_proof = client.match_proof_json(
-                bid_cmt, ask_cmt, &perp_id, crate::stellar::SOURCE,
-            )?;
+        // Server generates ZK proof + submits on-chain
+        let result = client.match_orders(
+            bid_cmt, ask_cmt, &perp_id, crate::stellar::SOURCE,
+        )?;
 
-            // Submit match on-chain
-            crate::stellar::invoke(
-                &perp_id, crate::stellar::SOURCE, &[
-                    "match_positions",
-                    "--cmt_a", bid_cmt,
-                    "--cmt_b", ask_cmt,
-                    "--nullifier_a", "0",
-                    "--nullifier_b", "0",
-                    "--match_price", &crate::stellar::hex_field(&mp.to_string()),
-                    "--match_size", &crate::stellar::hex_field(&ms.to_string()),
-                    "--proof", &match_proof,
-                ],
-            )?;
+        eprintln!("  ✓ matched: price={} size={} nf_a={}… nf_b={}…",
+            &result.match_price[..16], &result.match_size[..16],
+            &result.nullifier_a[..16], &result.nullifier_b[..16]);
 
-            total_fills += 1;
-            report.total_match_proofs += 1;
+        total_fills += 1;
+        report.total_match_proofs += 1;
 
-            // Limit to reasonable matches for now
-            if total_fills >= 10 { break; }
-        }
-        if total_fills >= 10 { break; }
+        // Brief delay between match submissions to avoid nonce issues
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
     report.total_fills = total_fills;
-    report.phases.push(PhaseTiming { label: "On-chain matching", elapsed: t6.elapsed() });
+    report.phases.push(PhaseTiming { label: "On-chain matching (via server)", elapsed: t6.elapsed() });
 
     // ── Final report ────────────────────────────────────────────────────
     report.total_elapsed = global_start.elapsed();
