@@ -2,6 +2,10 @@ use crate::log;
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
+pub(crate) fn short_id(id: &str) -> &str {
+    if id.len() > 16 { &id[..16] } else { id }
+}
+
 // ── Types ──
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,8 +109,9 @@ impl OrderBook {
             }
             OrderType::IOC => {
                 log::debug!("Placing IOC order", "side", order.side as u64, "price", order.price, "size", order.size);
-                self.match_limit(Order { remaining: order.size, ..order });
-                // IOC never rests — anything left is cancelled
+                let prev_fills = self.fills.len();
+                // Match but don't rest — use match_limit_inner which respects remaining
+                self.match_against_book(Order { remaining: order.size, ..order }, false);
             }
             OrderType::FOK => {
                 log::debug!("Placing FOK order", "side", order.side as u64, "price", order.price, "size", order.size);
@@ -149,7 +154,7 @@ impl OrderBook {
     pub fn cancel(&mut self, id: &str) -> Result<bool> {
         if let Some(order) = self.orders.remove(id) {
             self.remove_from_level(order.side, order.price, id);
-            log::debug!("Order cancelled", "id", &id[..16], "side", order.side as u64, "price", order.price);
+            log::debug!("Order cancelled", "id", short_id(id), "side", order.side as u64, "price", order.price);
             Ok(true)
         } else {
             Ok(false)
@@ -173,7 +178,7 @@ impl OrderBook {
                     book.remove(&stop_price);
                 }
             }
-            log::debug!("Stop order cancelled", "id", &id[..16]);
+            log::debug!("Stop order cancelled", "id", short_id(id));
             Ok(true)
         } else {
             Ok(false)
@@ -253,14 +258,20 @@ impl OrderBook {
             }
         }
         if order.remaining > 0 {
-            log::debug!("Market order partially filled", "id", &order.id[..16],
+            log::debug!("Market order partially filled", "id", short_id(&order.id),
                 "filled", order.size - order.remaining, "unfilled", order.remaining);
         }
     }
 
     // ── Limit Matching ──
 
-    fn match_limit(&mut self, mut order: Order) {
+    fn match_limit(&mut self, order: Order) {
+        self.match_against_book(order, true);
+    }
+
+    /// Core matching loop. Matches `order` against the opposite book.
+    /// If `rest` is true, any unfilled remainder is added to the book.
+    fn match_against_book(&mut self, mut order: Order, rest: bool) {
         while order.remaining > 0 {
             let best = self.peek_best(order.side.opposite());
             let best = match best {
@@ -285,7 +296,7 @@ impl OrderBook {
                 self.orders.remove(&best.id);
             }
         }
-        if order.remaining > 0 {
+        if order.remaining > 0 && rest {
             self.add_to_book(Order { remaining: order.remaining, ..order });
         }
     }
@@ -323,7 +334,7 @@ impl OrderBook {
                         ..order
                     };
                     log::debug!("Stop bid triggered",
-                        "id", &id[..16], "stop_price", stop_price, "last_price", p);
+                        "id", short_id(&id), "stop_price", stop_price, "last_price", p);
                     self.match_market(Order { remaining: trigger.size, ..trigger });
                 }
             }
@@ -343,7 +354,7 @@ impl OrderBook {
                         ..order
                     };
                     log::debug!("Stop ask triggered",
-                        "id", &id[..16], "stop_price", stop_price, "last_price", p);
+                        "id", short_id(id), "stop_price", stop_price, "last_price", p);
                     self.match_market(Order { remaining: trigger.size, ..trigger });
                 }
             }
@@ -536,8 +547,8 @@ mod tests {
         order(id, Side::Bid, 0, size, OrderType::Market)
     }
 
-    fn ioc_ask(id: &str, price: u64, size: u64) -> Order {
-        order(id, Side::Ask, price, size, OrderType::IOC)
+    fn ioc_bid(id: &str, price: u64, size: u64) -> Order {
+        order(id, Side::Bid, price, size, OrderType::IOC)
     }
 
     fn fok_bid(id: &str, price: u64, size: u64) -> Order {
@@ -652,14 +663,16 @@ mod tests {
     fn test_ioc_no_rest() {
         let mut ob = book();
         ob.place(ask("a1", 100, 20)).unwrap();
-        // IOC bid with more size than available
-        let fills = ob.place(ioc_ask("ioc1", 100, 10)).unwrap();
+        // IOC bid at 100 — matches the ask, consumes 10, does NOT rest
+        let fills = ob.place(ioc_bid("ioc1", 100, 10)).unwrap();
         assert_eq!(fills.len(), 1);
         assert_eq!(fills[0].size, 10);
-        // IOC with no match should not rest
-        let ob2_fills = ob.place(ioc_ask("ioc2", 50, 10)).unwrap();
-        assert!(ob2_fills.is_empty());
-        assert_eq!(ob.order_count(), 1); // only the original ask remains
+        // Ask a1 should have 10 remaining
+        assert_eq!(ob.order_count(), 1);
+        // IOC bid with no match — should NOT rest
+        let fills2 = ob.place(ioc_bid("ioc2", 50, 10)).unwrap();
+        assert!(fills2.is_empty());
+        assert_eq!(ob.order_count(), 1); // only a1 remains
     }
 
     #[test]
@@ -807,9 +820,12 @@ mod tests {
         let fills = ob.place(bid("b1", 100, 25)).unwrap();
         assert_eq!(fills.len(), 3);
         assert_eq!(fills[0].maker_id, "a1");
+        assert_eq!(fills[0].size, 10);
         assert_eq!(fills[1].maker_id, "a2");
+        assert_eq!(fills[1].size, 10);
         assert_eq!(fills[2].maker_id, "a3");
-        assert_eq!(ob.order_count(), 0); // bid consumed all
+        assert_eq!(fills[2].size, 5);  // partial fill
+        assert_eq!(ob.order_count(), 1); // a3 has 5 remaining
     }
 
     #[test]
