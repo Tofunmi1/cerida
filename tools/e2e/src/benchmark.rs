@@ -244,6 +244,7 @@ pub fn run_benchmark(wasm_dir: &Path, _keys_dir: &Path) -> Result<BenchmarkRepor
     let t4 = Instant::now();
     let (orderbook_id, perp_id, source_pk, native_token) = crate::stellar::deploy_contracts(wasm_dir)?;
     crate::stellar::init_perp_engine(&perp_id, &source_pk, &native_token)?;
+    eprintln!("  ✓ perp engine initialized");
     eprintln!("  ✓ orderbook: {}", orderbook_id);
     eprintln!("  ✓ perp: {}", perp_id);
 

@@ -329,10 +329,23 @@ pub fn deploy_contracts(wasm_dir: &Path) -> Result<(String, String, String, Stri
     Ok((orderbook_id, perp_id, source_pk, native_token))
 }
 
-/// Initialize perp-engine with admin and token.
-pub fn init_perp_engine(perp_id: &str, admin: &str, token: &str) -> Result<()> {
-    invoke(perp_id, SOURCE, &["initialize", "--admin", admin, "--token", token])?;
-    Ok(())
+/// Initialize perp-engine with admin and token (retries on contract-not-found).
+pub fn init_perp_engine(perp_id: &str, admin: &str, token: &str) -> Result<String> {
+    for attempt in 0..5 {
+        match invoke(perp_id, SOURCE, &["initialize", "--admin", admin, "--token", token]) {
+            Ok(r) => return Ok(r),
+            Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("contract not found") && attempt < 4 {
+                    eprintln!("  [init] contract not yet propagated, retrying in 5s... (attempt {})", attempt + 1);
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+    unreachable!()
 }
 
 pub fn hex_field(decimal: &str) -> String {
