@@ -5,6 +5,7 @@ mod stellar;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::time::Instant;
 
 #[derive(Parser)]
 #[command(name = "e2e")]
@@ -128,6 +129,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let keys_dir = &cli.keys_dir;
     let wasm_dir = &cli.wasm_dir;
+    let global_start = Instant::now();
 
     match cli.command {
         Command::GenProofs {
@@ -135,6 +137,13 @@ fn main() -> Result<()> {
             side_b, price_b, size_b, leverage_b, nonce_b, secret_b,
             match_price, match_size,
         } => {
+            eprintln!("━━━ GenProofs ━━━");
+            eprintln!("  Order A: side={} price={} size={} leverage={} nonce={}",
+                side_a, price_a, size_a, leverage_a, nonce_a);
+            eprintln!("  Order B: side={} price={} size={} leverage={} nonce={}",
+                side_b, price_b, size_b, leverage_b, nonce_b);
+            eprintln!("  Match: price={} size={}", match_price, match_size);
+
             let p_a = proof::gen_commitment(
                 keys_dir, side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
             )?;
@@ -174,7 +183,12 @@ fn main() -> Result<()> {
             side_b, price_b, size_b, leverage_b, nonce_b, secret_b,
             match_price, match_size,
         } => {
-            eprintln!("=== Generating proofs ===");
+            eprintln!("━━━ Full E2E (local ZK proofs) ━━━");
+            eprintln!("  Orders: A(price={},side={},size={})  B(price={},side={},size={})",
+                price_a, side_a, size_a, price_b, side_b, size_b);
+            eprintln!("  Match: price={} size={}", match_price, match_size);
+
+            eprintln!("── Generating ZK proofs ──");
             let p_a = proof::gen_commitment(
                 keys_dir, side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
             )?;
@@ -191,8 +205,8 @@ fn main() -> Result<()> {
             let cmt_a_hex = decimal_to_hex(&p_a.public_inputs[0]);
             let cmt_b_hex = decimal_to_hex(&p_b.public_inputs[0]);
 
-            eprintln!("  commitment A: {}", cmt_a_hex);
-            eprintln!("  commitment B: {}", cmt_b_hex);
+            eprintln!("  commitment A: {} ({} hex chars)", &cmt_a_hex[..16], cmt_a_hex.len());
+            eprintln!("  commitment B: {} ({} hex chars)", &cmt_b_hex[..16], cmt_b_hex.len());
 
             stellar::run_e2e(wasm_dir, &p_a, &p_b, &p_match, &cmt_a_hex, &cmt_b_hex)?;
         }
@@ -202,51 +216,69 @@ fn main() -> Result<()> {
             side_b, price_b, size_b, leverage_b, nonce_b, secret_b,
             match_price: _, match_size: _,
         } => {
+            eprintln!("━━━ E2E via TEE Match Server ━━━");
+            eprintln!("  Server: {server_addr}");
+            eprintln!("  Order A: side={} price={} size={} leverage={} nonce={}",
+                side_a, price_a, size_a, leverage_a, nonce_a);
+            eprintln!("  Order B: side={} price={} size={} leverage={} nonce={}",
+                side_b, price_b, size_b, leverage_b, nonce_b);
+
             let client = client::ServerClient::new(&server_addr);
 
-            eprintln!("=== Initializing order A via server ===");
+            // ── Step 1: Init orders via server ──
+            eprintln!("\n── Step 1/5: Init orders via server ──");
             let cmt_a_hex = client.init(
                 side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
             )?;
-            eprintln!("  commitment A: {}", cmt_a_hex);
+            eprintln!("  ✓ commitment A: {}", &cmt_a_hex[..16]);
 
-            eprintln!("=== Initializing order B via server ===");
             let cmt_b_hex = client.init(
                 side_b, price_b, size_b, leverage_b, 0, nonce_b, secret_b,
             )?;
-            eprintln!("  commitment B: {}", cmt_b_hex);
+            eprintln!("  ✓ commitment B: {}", &cmt_b_hex[..16]);
 
+            // ── Step 2: Generate place_order proofs via server ──
+            eprintln!("\n── Step 2/5: Generate placement proofs via server ──");
             let tmp_a = std::env::temp_dir().join("e2e_proof_a.json");
             let tmp_b = std::env::temp_dir().join("e2e_proof_b.json");
 
-            eprintln!("=== Generating commit proof A via server ===");
             client.commit_proof(&cmt_a_hex, &tmp_a)?;
-
-            eprintln!("=== Generating commit proof B via server ===");
             client.commit_proof(&cmt_b_hex, &tmp_b)?;
 
             let proof_a_json = std::fs::read_to_string(&tmp_a)?;
             let proof_b_json = std::fs::read_to_string(&tmp_b)?;
+            eprintln!("  ✓ proof A: {} bytes", proof_a_json.len());
+            eprintln!("  ✓ proof B: {} bytes", proof_b_json.len());
 
+            // ── Step 3: Deploy contracts, place orders, deposit, open positions ──
+            eprintln!("\n── Step 3/5: Deploy and setup ──");
             let ctx = stellar::deploy_and_place(
                 wasm_dir,
                 &proof_a_json, &proof_b_json,
                 &cmt_a_hex, &cmt_b_hex,
                 price_a, price_b, "0", "1",
             )?;
-            eprintln!("  orderbook: {}", ctx.orderbook_id);
-            eprintln!("  perp: {}", ctx.perp_id);
+            eprintln!("  ✓ orderbook: {}", ctx.orderbook_id);
+            eprintln!("  ✓ perp: {}", ctx.perp_id);
+            eprintln!("  ✓ admin: {}", ctx.source_pk);
+            eprintln!("  ✓ alice: {}", ctx.alice.0);
+            eprintln!("  ✓ bob: {}", ctx.bob.0);
 
-            eprintln!("\n=== Matching via server ===");
+            // ── Step 4: Match via server (server generates proof + submits on-chain) ──
+            eprintln!("\n── Step 4/5: Match via server ──");
             let result = client.match_orders(
                 &cmt_a_hex, &cmt_b_hex, &ctx.perp_id, stellar::SOURCE,
             )?;
-            eprintln!("  match_price: {}", result.match_price);
-            eprintln!("  match_size: {}", result.match_size);
-            eprintln!("  nullifier_a: {}", result.nullifier_a);
-            eprintln!("  nullifier_b: {}", result.nullifier_b);
+            eprintln!("  ✓ match_price: {}", &result.match_price);
+            eprintln!("  ✓ match_size:  {}", &result.match_size);
+            eprintln!("  ✓ nullifier_a: {}", &result.nullifier_a);
+            eprintln!("  ✓ nullifier_b: {}", &result.nullifier_b);
 
+            // ── Step 5: Verify on-chain ──
+            eprintln!("\n── Step 5/5: Verify on-chain ──");
             stellar::verify_match(&ctx, &result.nullifier_a, &result.nullifier_b)?;
+
+            eprintln!("\n━━━ E2E COMPLETE ({:.2}s) ━━━", global_start.elapsed().as_secs_f64());
         }
     }
 

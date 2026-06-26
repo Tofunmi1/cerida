@@ -1,11 +1,20 @@
+use crate::log;
 use crate::proof::MatchProof;
 use anyhow::Result;
+use std::time::Instant;
 
 pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof: &MatchProof) -> Result<()> {
+    let start = Instant::now();
+
     let hex = |dec: &str| -> String {
         let n: num_bigint::BigUint = dec.parse().expect("Invalid decimal");
         format!("{:0>64x}", n)
     };
+
+    let nullifier_a_hex = hex(&proof.public_inputs[4]);
+    let nullifier_b_hex = hex(&proof.public_inputs[5]);
+    let match_price_hex = hex(&proof.public_inputs[2]);
+    let match_size_hex = hex(&proof.public_inputs[3]);
 
     let proof_json = serde_json::json!({
         "a": proof.proof.a,
@@ -27,22 +36,58 @@ pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof
         "match_positions",
         "--cmt_a", cmt_a,
         "--cmt_b", cmt_b,
-        "--nullifier_a", &hex(&proof.public_inputs[4]),
-        "--nullifier_b", &hex(&proof.public_inputs[5]),
-        "--match_price", &hex(&proof.public_inputs[2]),
-        "--match_size", &hex(&proof.public_inputs[3]),
+        "--nullifier_a", &nullifier_a_hex,
+        "--nullifier_b", &nullifier_b_hex,
+        "--match_price", &match_price_hex,
+        "--match_size", &match_size_hex,
         "--proof-file-path", &tmp.to_string_lossy(),
     ]);
 
+    log::debug!("Executing stellar CLI command",
+        "contract", &perp_id[..8],
+        "source", source,
+        "method", "match_positions",
+        "cmt_a", &cmt_a[..16],
+        "cmt_b", &cmt_b[..16]
+    );
+
+    let exec_start = Instant::now();
     let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar invoke: {e}"))?;
+    let exec_duration = exec_start.elapsed();
     let _ = std::fs::remove_file(&tmp);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("xdr processing error") || stderr.contains("Transaction hash is") {
+            // Extract tx hash from stderr for logging
+            let tx_hash = stderr.lines()
+                .find_map(|l| l.strip_prefix("Transaction hash is "))
+                .or_else(|| stderr.lines().find_map(|l| l.strip_prefix("Signing transaction: ")))
+                .map(|h| h.trim().to_string());
+            log::info!("Match transaction submitted",
+                "contract", &perp_id[..8],
+                "tx_hash", tx_hash.as_deref().unwrap_or("unknown"),
+                "exec_time", log::duration_secs(&exec_duration),
+                "total_time", log::duration_secs(&start.elapsed()),
+                "nullifier_a", &nullifier_a_hex[..16],
+                "nullifier_b", &nullifier_b_hex[..16],
+                "match_price", &match_price_hex,
+                "match_size", &match_size_hex
+            );
             return Ok(());
         }
+        log::error!("Match transaction failed",
+            "contract", &perp_id[..8],
+            "stderr", &stderr[..stderr.len().min(500)]
+        );
         anyhow::bail!("match failed:\n{stderr}");
     }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    log::info!("Match transaction submitted successfully",
+        "contract", &perp_id[..8],
+        "stdout", stdout.trim(),
+        "total_time", log::duration_secs(&start.elapsed())
+    );
     Ok(())
 }

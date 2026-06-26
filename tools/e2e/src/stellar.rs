@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rand::Rng;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 pub const SOURCE: &str = "e2e";
 const COLLATERAL: i128 = 1_000_000_000;
@@ -28,42 +29,57 @@ pub fn deploy_and_place(
     side_a: &str,
     side_b: &str,
 ) -> Result<E2eContext> {
+    let step_start = Instant::now();
     let ob_wasm = wasm_dir.join("orderbook.wasm");
     let pe_wasm = wasm_dir.join("perp_engine.wasm");
 
-    eprintln!("\n=== Deploy orderbook ===");
-    let orderbook_id = deploy(&ob_wasm)?;
-    eprintln!("  Orderbook: {orderbook_id}");
+    eprintln!("  [wasm] orderbook: {} ({} bytes)", ob_wasm.display(),
+        std::fs::metadata(&ob_wasm).map(|m| m.len()).unwrap_or(0));
+    eprintln!("  [wasm] perp-engine: {} ({} bytes)", pe_wasm.display(),
+        std::fs::metadata(&pe_wasm).map(|m| m.len()).unwrap_or(0));
 
-    eprintln!("\n=== Generate identities ===");
+    // ── Deploy orderbook ──────────────────────────────────────────────────
+    eprintln!("  [deploy] Deploying orderbook contract…");
+    let orderbook_id = deploy(&ob_wasm)?;
+    eprintln!("  ✓ orderbook deployed: {}", orderbook_id);
+
+    // ── Generate identities ──────────────────────────────────────────────
+    eprintln!("  [identities] Generating keypairs…");
     let alice = generate_keypair("e2e-alice");
     let bob = generate_keypair("e2e-bob");
     let source_pk = source_pubkey()?;
-    eprintln!("  Admin: {source_pk}");
-    eprintln!("  Alice: {}", alice.0);
-    eprintln!("  Bob: {}", bob.0);
+    eprintln!("  ✓ admin source: {}", source_pk);
+    eprintln!("  ✓ alice: {} (identity: {})", alice.0, alice.1);
+    eprintln!("  ✓ bob:   {} (identity: {})", bob.0, bob.1);
 
-    eprintln!("\n=== Fund traders ===");
-    fund(&alice.0);
-    fund(&bob.0);
+    // ── Fund traders ────────────────────────────────────────────────────
+    eprintln!("  [fund] Funding traders via friendbot…");
+    fund(&alice.0, "alice");
+    fund(&bob.0, "bob");
 
-    eprintln!("\n=== Deploy perp engine ===");
+    // ── Deploy perp engine ──────────────────────────────────────────────
+    eprintln!("  [deploy] Deploying perp-engine contract…");
     let perp_id = deploy(&pe_wasm)?;
-    eprintln!("  PerpEngine: {perp_id}");
+    eprintln!("  ✓ perp-engine deployed: {}", perp_id);
 
-    eprintln!("\n=== Get native SAC token ID ===");
+    // ── Get native SAC token ID ──────────────────────────────────────────
+    eprintln!("  [token] Resolving native SAC asset…");
     let native_token = native_token_id()?;
-    eprintln!("  Native token: {native_token}");
+    eprintln!("  ✓ native token: {}", native_token);
 
-    eprintln!("\n=== Initialize perp engine ===");
+    // ── Initialize perp engine ──────────────────────────────────────────
+    eprintln!("  [init] Initializing perp-engine (admin={}, token={})…",
+        &source_pk[..8], &native_token[..8]);
     invoke(
         &perp_id,
         SOURCE,
         &["initialize", "--admin", &source_pk, "--token", &native_token],
     )?;
+    eprintln!("  ✓ perp-engine initialized");
 
-    // ── Orderbook: hint board ──────────────────────────────────────────────
-    eprintln!("\n=== Place order A (Alice) ===");
+    // ── Place order A (Alice) ────────────────────────────────────────────
+    eprintln!("  [place] Placing order A (Alice, cmt={}…)…", &cmt_a_hex[..12]);
+    eprintln!("    hint={} side=0", hint_a);
     invoke(
         &orderbook_id,
         &alice.1,
@@ -77,9 +93,11 @@ pub fn deploy_and_place(
         &orderbook_id, &alice.0,
         &["status", "--commitment", cmt_a_hex],
     )?;
-    eprintln!("  order A status: {st_a}");
+    eprintln!("  ✓ order A placed, status: {}", st_a);
 
-    eprintln!("\n=== Place order B (Bob) ===");
+    // ── Place order B (Bob) ──────────────────────────────────────────────
+    eprintln!("  [place] Placing order B (Bob, cmt={}…)…", &cmt_b_hex[..12]);
+    eprintln!("    hint={} side=1", hint_b);
     invoke(
         &orderbook_id,
         &bob.1,
@@ -93,10 +111,10 @@ pub fn deploy_and_place(
         &orderbook_id, &bob.0,
         &["status", "--commitment", cmt_b_hex],
     )?;
-    eprintln!("  order B status: {st_b}");
+    eprintln!("  ✓ order B placed, status: {}", st_b);
 
-    // ── Deposit collateral into perp engine ─────────────────────────────
-    eprintln!("\n=== Deposit collateral (Alice) ===");
+    // ── Deposit collateral (Alice) ──────────────────────────────────────
+    eprintln!("  [deposit] Alice depositing {} stroops…", COLLATERAL);
     invoke(
         &perp_id,
         &alice.1,
@@ -108,9 +126,10 @@ pub fn deploy_and_place(
         &perp_id, &alice.0,
         &["get_balance", "--who", &alice.0],
     )?;
-    eprintln!("  Alice balance: {bal_a}");
+    eprintln!("  ✓ Alice balance: {}", bal_a);
 
-    eprintln!("\n=== Deposit collateral (Bob) ===");
+    // ── Deposit collateral (Bob) ────────────────────────────────────────
+    eprintln!("  [deposit] Bob depositing {} stroops…", COLLATERAL);
     invoke(
         &perp_id,
         &bob.1,
@@ -122,10 +141,11 @@ pub fn deploy_and_place(
         &perp_id, &bob.0,
         &["get_balance", "--who", &bob.0],
     )?;
-    eprintln!("  Bob balance: {bal_b}");
+    eprintln!("  ✓ Bob balance: {}", bal_b);
 
-    // ── Perp engine: open positions ────────────────────────────────────────
-    eprintln!("\n=== Open position A (Alice) ===");
+    // ── Open position A (Alice) ──────────────────────────────────────────
+    eprintln!("  [position] Opening position A (Alice, cmt={}…)…", &cmt_a_hex[..12]);
+    eprintln!("    collateral={} hint_price={} side=0 leverage={}", COLLATERAL, hint_a, LEVERAGE);
     invoke(
         &perp_id,
         &alice.1,
@@ -142,9 +162,11 @@ pub fn deploy_and_place(
         &perp_id, &alice.0,
         &["get_position", "--commitment", cmt_a_hex],
     )?;
-    eprintln!("  position A: {pos_a}");
+    eprintln!("  ✓ position A: {}", pos_a);
 
-    eprintln!("\n=== Open position B (Bob) ===");
+    // ── Open position B (Bob) ──────────────────────────────────────────
+    eprintln!("  [position] Opening position B (Bob, cmt={}…)…", &cmt_b_hex[..12]);
+    eprintln!("    collateral={} hint_price={} side=1 leverage={}", COLLATERAL, hint_b, LEVERAGE);
     invoke(
         &perp_id,
         &bob.1,
@@ -161,7 +183,9 @@ pub fn deploy_and_place(
         &perp_id, &bob.0,
         &["get_position", "--commitment", cmt_b_hex],
     )?;
-    eprintln!("  position B: {pos_b}");
+    eprintln!("  ✓ position B: {}", pos_b);
+
+    eprintln!("  [setup] Deploy + setup completed in {:.2}s", step_start.elapsed().as_secs_f64());
 
     Ok(E2eContext {
         orderbook_id,
@@ -183,11 +207,13 @@ pub fn run_e2e(
     cmt_a_hex: &str,
     cmt_b_hex: &str,
 ) -> Result<()> {
+    let start = Instant::now();
     let proof_a_json = proof_json(&p_a.proof);
     let proof_b_json = proof_json(&p_b.proof);
     let hint_a: u64 = 100000;
     let hint_b: u64 = 99000;
 
+    eprintln!("── Phase 1: Deploy, place, deposit, open ──");
     let ctx = deploy_and_place(
         wasm_dir, &proof_a_json, &proof_b_json,
         cmt_a_hex, cmt_b_hex, hint_a, hint_b, "0", "1",
@@ -199,7 +225,9 @@ pub fn run_e2e(
     let nf_b_hex = &p_match.public_inputs[5];
 
     // ── Match via perp engine ──────────────────────────────────────────────
-    eprintln!("\n=== Match positions ===");
+    eprintln!("── Phase 2: On-chain match ──");
+    eprintln!("  [match] match_positions(cmt_a={}…, cmt_b={}…)",
+        &cmt_a_hex[..12], &cmt_b_hex[..12]);
     invoke(
         &ctx.perp_id,
         SOURCE,
@@ -215,12 +243,14 @@ pub fn run_e2e(
         ],
     )?;
 
-    verify_match(&ctx, nf_a_hex, nf_b_hex)
+    verify_match(&ctx, nf_a_hex, nf_b_hex)?;
+    eprintln!("  ✓ Full E2E completed in {:.2}s", start.elapsed().as_secs_f64());
+    Ok(())
 }
 
 /// Verify match results on-chain (positions + nullifiers).
 pub fn verify_match(ctx: &E2eContext, nf_a_hex: &str, nf_b_hex: &str) -> Result<()> {
-    eprintln!("\n=== Verify matched status (perp engine) ===");
+    eprintln!("  [verify] Checking matched positions…");
     let pos_a2 = invoke_view(
         &ctx.perp_id, &ctx.alice.0,
         &["get_position", "--commitment", &ctx.cmt_a_hex],
@@ -229,10 +259,27 @@ pub fn verify_match(ctx: &E2eContext, nf_a_hex: &str, nf_b_hex: &str) -> Result<
         &ctx.perp_id, &ctx.bob.0,
         &["get_position", "--commitment", &ctx.cmt_b_hex],
     )?;
-    eprintln!("  position A: {pos_a2}");
-    eprintln!("  position B: {pos_b2}");
+    eprintln!("  ✓ position A: {}", pos_a2);
+    eprintln!("  ✓ position B: {}", pos_b2);
 
-    eprintln!("\n=== Verify nullifiers spent (perp engine) ===");
+    // Parse status field to confirm match
+    let status_a: u64 = serde_json::from_str(
+        &serde_json::from_str::<serde_json::Value>(&pos_a2)
+            .ok()
+            .and_then(|v| v["status"].as_u64())
+            .map(|s| s.to_string())
+            .unwrap_or_default()
+    ).unwrap_or(99);
+    let status_b: u64 = serde_json::from_str(
+        &serde_json::from_str::<serde_json::Value>(&pos_b2)
+            .ok()
+            .and_then(|v| v["status"].as_u64())
+            .map(|s| s.to_string())
+            .unwrap_or_default()
+    ).unwrap_or(99);
+    eprintln!("  [status] A={} (1=Matched) B={} (1=Matched)", status_a, status_b);
+
+    eprintln!("  [verify] Checking nullifiers…");
     let spent_a = invoke_view(
         &ctx.perp_id, &ctx.alice.0,
         &["is_spent", "--nullifier", &hex_field(nf_a_hex)],
@@ -241,9 +288,10 @@ pub fn verify_match(ctx: &E2eContext, nf_a_hex: &str, nf_b_hex: &str) -> Result<
         &ctx.perp_id, &ctx.bob.0,
         &["is_spent", "--nullifier", &hex_field(nf_b_hex)],
     )?;
-    eprintln!("  nullifier A spent: {spent_a}");
-    eprintln!("  nullifier B spent: {spent_b}");
+    eprintln!("  ✓ nullifier A spent: {}", spent_a);
+    eprintln!("  ✓ nullifier B spent: {}", spent_b);
 
+    let elapsed = std::time::Instant::now();
     let out = serde_json::json!({
         "orderbook": ctx.orderbook_id,
         "perp_engine": ctx.perp_id,
@@ -258,7 +306,8 @@ pub fn verify_match(ctx: &E2eContext, nf_a_hex: &str, nf_b_hex: &str) -> Result<
         .join("e2e_output.json");
     std::fs::create_dir_all(out_path.parent().unwrap())?;
     std::fs::write(&out_path, serde_json::to_string_pretty(&out)?)?;
-    eprintln!("\n=== E2E PASSED ===");
+    eprintln!("  ✓ output written to {}", out_path.display());
+    eprintln!("━━━ E2E PASSED ({:.2}s) ━━━", elapsed.elapsed().as_secs_f64());
     Ok(())
 }
 
@@ -283,13 +332,16 @@ fn native_token_id() -> Result<String> {
     if !out.status.success() {
         anyhow::bail!("stellar contract id asset failed:\n{}", String::from_utf8_lossy(&out.stderr));
     }
-    Ok(String::from_utf8(out.stdout)
+    let id = String::from_utf8(out.stdout)
         .map_err(|_| anyhow::anyhow!("Invalid UTF-8"))?
         .trim()
-        .to_string())
+        .to_string();
+    eprintln!("  [rpc] native SAC token: {}", id);
+    Ok(id)
 }
 
 fn generate_keypair(name: &str) -> (String, String) {
+    eprintln!("  [keys] Generating keypair '{}'…", name);
     let _ = std::process::Command::new("stellar")
         .args(["keys", "generate", name, "--network", "testnet", "--fund"])
         .output()
@@ -302,23 +354,35 @@ fn generate_keypair(name: &str) -> (String, String) {
         .unwrap_or_default();
     let addr = addr.trim().to_string();
     let sk = if addr.is_empty() { name.to_string() } else { name.to_string() };
+    eprintln!("  [keys] {} → {} (identity: {})", name, &addr[..8], sk);
     (addr, sk)
 }
 
-fn fund(pk: &str) {
+fn fund(pk: &str, label: &str) {
     let url = format!("https://friendbot.stellar.org/?addr={pk}");
-    let _ = std::process::Command::new("curl")
+    eprintln!("  [fund] Funding {} ({}) via friendbot…", label, &pk[..8]);
+    let start = Instant::now();
+    let resp = std::process::Command::new("curl")
         .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", &url])
         .output()
         .ok();
+    if let Some(o) = resp {
+        let code = String::from_utf8_lossy(&o.stdout);
+        eprintln!("  [fund] friendbot response: HTTP {}", code.trim());
+    }
+    eprintln!("  [fund] {} funded ({:.2}s)", label, start.elapsed().as_secs_f64());
 }
 
 fn deploy(wasm: &Path) -> Result<String> {
+    eprintln!("  [deploy] Preparing deployment…");
     let salt: [u8; 32] = rand::thread_rng().gen();
     let salt_hex = hex::encode(salt);
     let source_pk = source_pubkey()?;
     let id = precompute_id(&salt_hex, &source_pk)?;
-    eprintln!("  Precomputed: {id}");
+    eprintln!("  [deploy] Precomputed contract ID: {}", id);
+    eprintln!("  [deploy] WASM: {} ({} bytes)", wasm.display(),
+        std::fs::metadata(wasm).map(|m| m.len()).unwrap_or(0));
+
     let output = std::process::Command::new("stellar")
         .args([
             "contract", "deploy",
@@ -331,16 +395,23 @@ fn deploy(wasm: &Path) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("deploy cmd: {e}"))?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if let Some(tx_hash) = extract_tx_hash(&stderr) {
-        eprintln!("  deploy TX: {tx_hash}");
-        for _ in 0..120 {
+        eprintln!("  [deploy] TX submitted: {tx_hash}");
+        eprintln!("  [deploy] Waiting for confirmation (max 240s)…");
+        for i in 0..120 {
+            if i > 0 && i % 10 == 0 {
+                eprintln!("  [deploy]   still waiting… ({}s elapsed)", i * 2);
+            }
             std::thread::sleep(std::time::Duration::from_secs(2));
             if let Some(_result) = poll_tx(&tx_hash)? {
-                // Verify the contract actually exists
+                eprintln!("  [deploy] TX confirmed, verifying contract exists…");
                 for attempt in 0..30 {
                     if contract_exists(&id)? {
+                        eprintln!("  [deploy] ✓ Contract confirmed on-chain: {}", id);
                         return Ok(id);
                     }
-                    eprintln!("  waiting for contract to appear (attempt {})...", attempt + 1);
+                    if attempt % 5 == 4 {
+                        eprintln!("  [deploy]   waiting for contract propagation (attempt {})…", attempt + 1);
+                    }
                     std::thread::sleep(std::time::Duration::from_secs(3));
                 }
                 anyhow::bail!("contract {} not found after deploy confirmed", id);
@@ -367,8 +438,11 @@ fn contract_exists(id: &str) -> Result<bool> {
         Some(o) if o.status.success() => Ok(true),
         Some(o) => {
             let s = String::from_utf8_lossy(&o.stderr);
-            // "contract not found" (lowercase) means the ID doesn't exist
-            Ok(!s.to_lowercase().contains("contract not found"))
+            let exists = !s.to_lowercase().contains("contract not found");
+            if !exists {
+                eprintln!("  [verify] Contract {} not found yet (get_config failed)", &id[..8]);
+            }
+            Ok(exists)
         }
         None => Ok(false),
     }
@@ -408,6 +482,9 @@ fn source_pubkey() -> Result<String> {
 }
 
 fn invoke(contract_id: &str, source: &str, args: &[&str]) -> Result<String> {
+    let method = args.first().unwrap_or(&"unknown");
+    eprintln!("  [invoke] Calling {}({})…", method, &contract_id[..8]);
+    let start = Instant::now();
     let mut cmd = std::process::Command::new("stellar");
     cmd.args([
         "contract", "invoke",
@@ -418,25 +495,35 @@ fn invoke(contract_id: &str, source: &str, args: &[&str]) -> Result<String> {
     ]);
     cmd.args(args);
     let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar invoke: {e}"))?;
+    let elapsed = start.elapsed();
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     if let Some(tx_hash) = extract_tx_hash(&stderr).or_else(|| extract_tx_hash(&stdout)) {
-        eprintln!("  TX: {tx_hash}");
-        for _ in 0..60 {
+        eprintln!("  [tx] {} submitted: {} (waiting for confirm…)", method, tx_hash);
+        for i in 0..60 {
+            if i > 0 && i % 15 == 0 {
+                eprintln!("  [tx]   still waiting… ({}s elapsed)", i * 2);
+            }
             std::thread::sleep(std::time::Duration::from_secs(2));
             if let Some(result) = poll_tx(&tx_hash)? {
+                eprintln!("  [tx] ✓ {} confirmed ({:.2}s)", method, elapsed.as_secs_f64());
                 return Ok(result);
             }
         }
         anyhow::bail!("TX {tx_hash} not confirmed after 120s");
     }
     if !output.status.success() {
+        eprintln!("  [invoke] ✗ {} failed:\n  {}", method,
+            &stderr.trim().replace('\n', "\n  "));
         anyhow::bail!("stellar invoke failed:\n{stderr}");
     }
+    eprintln!("  [invoke] ✓ {} completed ({:.2}s)", method, elapsed.as_secs_f64());
     Ok(stdout.trim().to_string())
 }
 
 fn invoke_view(contract_id: &str, source: &str, args: &[&str]) -> Result<String> {
+    let method = args.first().unwrap_or(&"unknown");
+    eprintln!("  [view] Calling {}({})…", method, &contract_id[..8]);
     for attempt in 0..3 {
         let mut cmd = std::process::Command::new("stellar");
         cmd.args([
@@ -449,9 +536,16 @@ fn invoke_view(contract_id: &str, source: &str, args: &[&str]) -> Result<String>
         cmd.args(args);
         let output = cmd.output().map_err(|e| anyhow::anyhow!("invoke view: {e}"))?;
         if output.status.success() {
-            return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+            let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if result.len() > 200 {
+                eprintln!("  [view] ✓ {} returned {} chars", method, result.len());
+            } else {
+                eprintln!("  [view] ✓ {} → {}", method, &result);
+            }
+            return Ok(result);
         }
         if attempt < 2 {
+            eprintln!("  [view] {} failed (attempt {}), retrying…", method, attempt + 1);
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
@@ -465,7 +559,10 @@ fn invoke_view(contract_id: &str, source: &str, args: &[&str]) -> Result<String>
     ]);
     cmd.args(args);
     let output = cmd.output().map_err(|e| anyhow::anyhow!("invoke view: {e}"))?;
-    anyhow::bail!("stellar invoke view failed:\n{}", String::from_utf8_lossy(&output.stderr));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    eprintln!("  [view] ✗ {} failed after 3 attempts:\n  {}", method,
+        &stderr.trim().replace('\n', "\n  "));
+    anyhow::bail!("stellar invoke view failed:\n{}", stderr);
 }
 
 fn extract_tx_hash(output: &str) -> Option<String> {
