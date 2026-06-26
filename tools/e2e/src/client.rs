@@ -5,7 +5,7 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::time::Instant;
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 pub struct Request {
     cmd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -33,7 +33,9 @@ pub struct Request {
     #[serde(skip_serializing_if = "Option::is_none")]
     perp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    source: Option<String>,
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -44,7 +46,44 @@ struct Response {
     match_size: Option<String>,
     nullifier_a: Option<String>,
     nullifier_b: Option<String>,
+    fills: Option<Vec<FillJson>>,
+    best_bid: Option<String>,
+    best_ask: Option<String>,
+    spread: Option<u64>,
+    order_count: Option<usize>,
+    depth: Option<Vec<LevelJson>>,
+    bids: Option<Vec<LevelJson>>,
+    asks: Option<Vec<LevelJson>>,
     error: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct FillJson {
+    pub maker_id: String,
+    pub price: u64,
+    pub size: u64,
+    pub match_price: Option<String>,
+    pub match_size: Option<String>,
+    pub nullifier_a: Option<String>,
+    pub nullifier_b: Option<String>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct LevelJson {
+    pub price: u64,
+    pub size: u64,
+    pub orders: usize,
+}
+
+pub struct MarketResponse {
+    pub best_bid: Option<String>,
+    pub best_ask: Option<String>,
+    pub spread: Option<u64>,
+    pub order_count: usize,
+    pub fills: Option<Vec<FillJson>>,
+    pub depth: Option<Vec<LevelJson>>,
+    pub bids: Option<Vec<LevelJson>>,
+    pub asks: Option<Vec<LevelJson>>,
 }
 
 pub struct MatchResult {
@@ -56,12 +95,19 @@ pub struct MatchResult {
 
 pub struct ServerClient {
     addr: String,
+    pub perp: Option<String>,
+    pub source: Option<String>,
 }
 
 impl ServerClient {
     pub fn new(addr: &str) -> Self {
         eprintln!("  [client] Connecting to tee-match server at {addr}");
-        Self { addr: addr.to_string() }
+        Self { addr: addr.to_string(), perp: None, source: None }
+    }
+
+    pub fn set_onchain(&mut self, perp: &str, source: &str) {
+        self.perp = Some(perp.to_string());
+        self.source = Some(source.to_string());
     }
 
     fn send(&self, req: &Request) -> Result<Response> {
@@ -107,8 +153,7 @@ impl ServerClient {
             side: Some(side), price: Some(price), size: Some(size),
             leverage: Some(leverage), asset: Some(asset),
             nonce: Some(nonce), secret: Some(secret),
-            cmt: None, out: None,
-            cmt_a: None, cmt_b: None, perp: None, source: None,
+            ..Default::default()
         };
         let resp = self.send(&req)?;
         let cmt = resp.commitment.ok_or_else(|| anyhow::anyhow!("no commitment in response"))?;
@@ -123,9 +168,7 @@ impl ServerClient {
             cmd: "commit-proof".to_string(),
             cmt: Some(cmt.to_string()),
             out: Some(out.to_string_lossy().to_string()),
-            side: None, price: None, size: None, leverage: None,
-            asset: None, nonce: None, secret: None,
-            cmt_a: None, cmt_b: None, perp: None, source: None,
+            ..Default::default()
         };
         self.send(&req)?;
         // Verify file was written
@@ -147,11 +190,77 @@ impl ServerClient {
             side: Some(side), price: Some(price), size: Some(size),
             leverage: Some(leverage), asset: Some(asset),
             nonce: Some(nonce), secret: Some(secret),
-            cmt: None, out: None,
-            cmt_a: None, cmt_b: None, perp: None, source: None,
+            ..Default::default()
         };
         let resp = self.send(&req)?;
         resp.commitment.ok_or_else(|| anyhow::anyhow!("no commitment in response"))
+    }
+
+    /// Place a limit order in the CLOB engine via server
+    pub fn place_order(&self, cmt: &str, order_type: &str, price: u64, size: u64) -> Result<MarketResponse> {
+        let req = Request {
+            cmd: "place".to_string(),
+            cmt: Some(cmt.to_string()),
+            order_type: Some(order_type.to_string()),
+            price: Some(price),
+            size: Some(size),
+            perp: self.perp.clone(),
+            source: self.source.clone(),
+            ..Default::default()
+        };
+        let resp = self.send(&req)?;
+        Ok(MarketResponse {
+            best_bid: resp.best_bid,
+            best_ask: resp.best_ask,
+            spread: resp.spread,
+            order_count: resp.order_count.unwrap_or(0),
+            fills: resp.fills,
+            depth: resp.depth,
+            bids: resp.bids,
+            asks: resp.asks,
+        })
+    }
+
+    /// Place a market order in the CLOB engine via server
+    pub fn place_market(&self, cmt: &str, size: u64) -> Result<MarketResponse> {
+        let req = Request {
+            cmd: "market".to_string(),
+            cmt: Some(cmt.to_string()),
+            size: Some(size),
+            perp: self.perp.clone(),
+            source: self.source.clone(),
+            ..Default::default()
+        };
+        let resp = self.send(&req)?;
+        Ok(MarketResponse {
+            best_bid: resp.best_bid,
+            best_ask: resp.best_ask,
+            spread: resp.spread,
+            order_count: resp.order_count.unwrap_or(0),
+            fills: resp.fills,
+            depth: resp.depth,
+            bids: resp.bids,
+            asks: resp.asks,
+        })
+    }
+
+    /// Get current market state from CLOB engine
+    pub fn get_market(&self) -> Result<MarketResponse> {
+        let req = Request {
+            cmd: "get_market".to_string(),
+            ..Default::default()
+        };
+        let resp = self.send(&req)?;
+        Ok(MarketResponse {
+            best_bid: resp.best_bid,
+            best_ask: resp.best_ask,
+            spread: resp.spread,
+            order_count: resp.order_count.unwrap_or(0),
+            fills: resp.fills,
+            depth: resp.depth,
+            bids: resp.bids,
+            asks: resp.asks,
+        })
     }
 
     pub fn match_orders(&self, cmt_a: &str, cmt_b: &str, perp: &str, source: &str) -> Result<MatchResult> {
@@ -163,9 +272,7 @@ impl ServerClient {
             cmt_b: Some(cmt_b.to_string()),
             perp: Some(perp.to_string()),
             source: Some(source.to_string()),
-            side: None, price: None, size: None, leverage: None,
-            asset: None, nonce: None, secret: None,
-            cmt: None, out: None,
+            ..Default::default()
         };
         let resp = self.send(&req)?;
         let result = MatchResult {

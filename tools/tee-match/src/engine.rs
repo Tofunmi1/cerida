@@ -503,19 +503,23 @@ pub fn find_match(a: &crate::db::OrderSecrets, b: &crate::db::OrderSecrets) -> O
 
     let (buy, sell) = if a.side == 0 { (a, b) } else { (b, a) };
 
-    if buy.price < sell.price {
-        let spread = sell.price - buy.price;
+    // For market orders (price=0), use the resting order's price
+    let buy_price = if buy.price == 0 { sell.price } else { buy.price };
+    let sell_price = if sell.price == 0 { buy.price } else { sell.price };
+
+    if buy_price < sell_price {
+        let spread = sell_price - buy_price;
         log::debug!("Buyer price below seller price — no match possible",
-            "buy_price", buy.price, "sell_price", sell.price, "spread", spread);
+            "buy_price", buy_price, "sell_price", sell_price, "spread", spread);
         return None;
     }
 
-    let spread = buy.price - sell.price;
-    let mid = (buy.price + sell.price) / 2;
+    let spread = buy_price - sell_price;
+    let mid = (buy_price + sell_price) / 2;
     let match_size = buy.size.min(sell.size);
 
     log::info!("Order pair is matchable",
-        "buy_price", buy.price, "sell_price", sell.price,
+        "buy_price", buy_price, "sell_price", sell_price,
         "spread", spread, "mid_price", mid,
         "match_size", match_size
     );

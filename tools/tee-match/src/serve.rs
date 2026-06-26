@@ -55,6 +55,10 @@ struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     depth: Option<Vec<LevelJson>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    bids: Option<Vec<LevelJson>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    asks: Option<Vec<LevelJson>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -63,6 +67,21 @@ struct FillJson {
     maker_id: String,
     price: u64,
     size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_price: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_size: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nullifier_a: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nullifier_b: Option<String>,
+}
+
+struct MatchResultData {
+    match_price: String,
+    match_size: String,
+    nullifier_a: String,
+    nullifier_b: String,
 }
 
 #[derive(Serialize)]
@@ -159,9 +178,9 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
                 "init" => handle_init(&store, &keys, &req),
                 "commit-proof" => handle_commit_proof(&store, &keys, &req),
                 "match" => handle_match(&store, &keys, &req),
-                "place" => handle_place(&store, &book, &req),
+                "place" => handle_place(&store, &book, &keys, &req),
                 "cancel" => handle_cancel(&book, &req),
-                "market" => handle_market(&store, &book, &req),
+                "market" => handle_market(&store, &book, &keys, &req),
                 "get_market" => handle_get_market(&book),
                 other => {
                     log::warning!("Unknown command", "cmd", other, "peer", &peer);
@@ -350,114 +369,28 @@ fn handle_match(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respo
         "source", source
     );
 
-    log::debug!("Loading order A from DB", "cmt_a", &cmt_a[..16]);
-    let a = match store.get(cmt_a) {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            log::error!("Order A secrets not found in DB", "cmt_a", &cmt_a[..16]);
-            return err(format!("secrets not found for cmt_a"));
-        }
-        Err(e) => {
-            log::error!("DB lookup failed for order A", "cmt_a", &cmt_a[..16], "err", e.to_string());
-            return err(e);
-        }
-    };
-
-    log::debug!("Loading order B from DB", "cmt_b", &cmt_b[..16]);
-    let b = match store.get(cmt_b) {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            log::error!("Order B secrets not found in DB", "cmt_b", &cmt_b[..16]);
-            return err(format!("secrets not found for cmt_b"));
-        }
-        Err(e) => {
-            log::error!("DB lookup failed for order B", "cmt_b", &cmt_b[..16], "err", e.to_string());
-            return err(e);
-        }
-    };
-
-    log::info!("Both orders loaded from DB",
-        "order_a",
-        format!("side={} price={} size={} leverage={}", a.side, a.price, a.size, a.leverage),
-        "order_b",
-        format!("side={} price={} size={} leverage={}", b.side, b.price, b.size, b.leverage),
-        "db_lookup_time", log::duration_secs(&start.elapsed())
-    );
-
-    log::info!("Running matching engine", "side_a", a.side, "price_a", a.price, "side_b", b.side, "price_b", b.price);
-    let params = match engine::find_match(&a, &b) {
-        Some(p) => p,
-        None => {
-            log::warning!("Orders are not matchable",
-                "price_a", a.price, "side_a", a.side,
-                "price_b", b.price, "side_b", b.side
+    match do_match(store, keys, cmt_a, cmt_b, perp, source) {
+        Some(r) => {
+            log::info!("Match confirmed on-chain",
+                "elapsed", log::duration_secs(&start.elapsed())
             );
-            return err("orders are not matchable");
+            Response {
+                ok: true,
+                match_price: Some(r.match_price),
+                match_size: Some(r.match_size),
+                nullifier_a: Some(r.nullifier_a),
+                nullifier_b: Some(r.nullifier_b),
+                ..Default::default()
+            }
         }
-    };
-
-    log::info!("Match parameters computed",
-        "match_price", params.match_price,
-        "match_size", params.match_size,
-        "match_notional", params.match_price as u128 * params.match_size as u128
-    );
-
-    log::debug!("Generating Groth16 match proof via Circom",
-        "circuit", "order_match",
-        "side_a", a.side, "price_a", a.price,
-        "side_b", b.side, "price_b", b.price,
-        "mp", params.match_price,
-        "ms", params.match_size
-    );
-
-    let out = match proof::gen_match_proof(keys, &a, &b, params.match_price, params.match_size) {
-        Ok(o) => o,
-        Err(e) => {
-            log::error!("Match proof generation failed", "err", e.to_string());
-            return err(e);
+        None => {
+            log::error!("Match failed",
+                "cmt_a", log::hex_snippet(cmt_a, 12),
+                "cmt_b", log::hex_snippet(cmt_b, 12),
+                "elapsed", log::duration_secs(&start.elapsed())
+            );
+            err("match failed")
         }
-    };
-
-    let proof_size = out.proof.a.len() + out.proof.b.len() + out.proof.c.len();
-    log::info!("ZK match proof generated",
-        "proof_a", format!("{} hex chars", out.proof.a.len()),
-        "proof_b", format!("{} hex chars", out.proof.b.len()),
-        "proof_c", format!("{} hex chars", out.proof.c.len()),
-        "proof_total", log::bytes_label(proof_size / 2),
-        "proof_gen_time", log::duration_secs(&start.elapsed())
-    );
-
-    log::warning!("Submitting match to Soroban testnet",
-        "contract", &perp[..8],
-        "source", source,
-        "cmt_a", log::hex_snippet(cmt_a, 10),
-        "cmt_b", log::hex_snippet(cmt_b, 10),
-        "match_price", params.match_price,
-        "match_size", params.match_size
-    );
-
-    if let Err(e) = stellar::submit_match(perp, source, cmt_a, cmt_b, &out) {
-        log::error!("On-chain match submission failed",
-            "contract", &perp[..8],
-            "err", e.to_string()
-        );
-        return err(e);
-    }
-
-    log::info!("Match confirmed on-chain",
-        "elapsed", log::duration_secs(&start.elapsed())
-    );
-
-    let hex = |i: usize| -> String {
-        format!("{:0>64x}", out.public_inputs[i].parse::<num_bigint::BigUint>().unwrap())
-    };
-    Response {
-        ok: true,
-        match_price: Some(hex(2)),
-        match_size: Some(hex(3)),
-        nullifier_a: Some(hex(4)),
-        nullifier_b: Some(hex(5)),
-        ..Default::default()
     }
 }
 
@@ -489,7 +422,7 @@ fn secrets_to_order(cmt: &str, secrets: &db::OrderSecrets, order_type: engine::O
     }
 }
 
-fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, req: &Request) -> Response {
+fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: &PathBuf, req: &Request) -> Response {
     let start = Instant::now();
     let cmt = match req.cmt.as_ref() {
         Some(c) => c,
@@ -515,32 +448,60 @@ fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, req: &
     };
 
     let order = secrets_to_order(cmt, &secrets, ot);
-    let mut book = book.lock().unwrap();
-    let fills = match book.place(order) {
-        Ok(f) => f,
-        Err(e) => return err(format!("place failed: {e}")),
+
+    // Do CLOB match and collect book state, then release lock
+    let (fills, best_bid, best_ask, spread, order_count) = {
+        let mut book = book.lock().unwrap();
+        let fills = match book.place(order) {
+            Ok(f) => f,
+            Err(e) => return err(format!("place failed: {e}")),
+        };
+        let bb = book.best_bid().map(|(p, s)| format!("{p}x{s}"));
+        let ba = book.best_ask().map(|(p, s)| format!("{p}x{s}"));
+        let sp = book.spread();
+        let oc = book.order_count();
+        (fills, bb, ba, sp, oc)
     };
 
-    let fill_json: Vec<FillJson> = fills.iter().map(|f| FillJson {
-        maker_id: engine::short_id(&f.maker_id).to_string(),
-        price: f.price,
-        size: f.size,
+    let perp = req.perp.as_ref();
+    let source = req.source.as_ref();
+
+    let fill_json: Vec<FillJson> = fills.into_iter().map(|f| {
+        let mut fj = FillJson {
+            maker_id: engine::short_id(&f.maker_id).to_string(),
+            price: f.price,
+            size: f.size,
+            match_price: None,
+            match_size: None,
+            nullifier_a: None,
+            nullifier_b: None,
+        };
+        if let (Some(perp), Some(source)) = (perp, source) {
+            if let Some(result) = do_match(store, keys, cmt, &f.maker_id, perp, source) {
+                fj.match_price = Some(result.match_price);
+                fj.match_size = Some(result.match_size);
+                fj.nullifier_a = Some(result.nullifier_a);
+                fj.nullifier_b = Some(result.nullifier_b);
+            }
+        }
+        fj
     }).collect();
 
     log::info!("Order placed in book",
         "cmt", engine::short_id(cmt),
         "type", ot_str,
-        "fills", fills.len(),
+        "fills", fill_json.len(),
+        "auto_matched", perp.is_some(),
         "took", log::duration_secs(&start.elapsed())
     );
 
     Response {
         ok: true,
         fills: Some(fill_json),
-        best_bid: book.best_bid().map(|(p, s)| format!("{p}x{s}")),
-        best_ask: book.best_ask().map(|(p, s)| format!("{p}x{s}")),
-        spread: book.spread(),
-        order_count: Some(book.order_count()),
+        best_bid,
+        best_ask,
+        spread,
+        order_count: Some(order_count),
         ..Default::default()
     }
 }
@@ -564,7 +525,7 @@ fn handle_cancel(book: &Mutex<engine::OrderBook>, req: &Request) -> Response {
     }
 }
 
-fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, req: &Request) -> Response {
+fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: &PathBuf, req: &Request) -> Response {
     let start = Instant::now();
     let cmt = match req.cmt.as_ref() {
         Some(c) => c,
@@ -577,31 +538,59 @@ fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, req: 
     };
 
     let order = secrets_to_order(cmt, &secrets, engine::OrderType::Market);
-    let mut book = book.lock().unwrap();
-    let fills = match book.place(order) {
-        Ok(f) => f,
-        Err(e) => return err(format!("market order failed: {e}")),
+
+    // Do CLOB match and collect book state, then release lock
+    let (fills, best_bid, best_ask, spread, order_count) = {
+        let mut book = book.lock().unwrap();
+        let fills = match book.place(order) {
+            Ok(f) => f,
+            Err(e) => return err(format!("market order failed: {e}")),
+        };
+        let bb = book.best_bid().map(|(p, s)| format!("{p}x{s}"));
+        let ba = book.best_ask().map(|(p, s)| format!("{p}x{s}"));
+        let sp = book.spread();
+        let oc = book.order_count();
+        (fills, bb, ba, sp, oc)
     };
 
-    let fill_json: Vec<FillJson> = fills.iter().map(|f| FillJson {
-        maker_id: engine::short_id(&f.maker_id).to_string(),
-        price: f.price,
-        size: f.size,
+    let perp = req.perp.as_ref();
+    let source = req.source.as_ref();
+
+    let fill_json: Vec<FillJson> = fills.into_iter().map(|f| {
+        let mut fj = FillJson {
+            maker_id: engine::short_id(&f.maker_id).to_string(),
+            price: f.price,
+            size: f.size,
+            match_price: None,
+            match_size: None,
+            nullifier_a: None,
+            nullifier_b: None,
+        };
+        if let (Some(perp), Some(source)) = (perp, source) {
+            if let Some(result) = do_match(store, keys, cmt, &f.maker_id, perp, source) {
+                fj.match_price = Some(result.match_price);
+                fj.match_size = Some(result.match_size);
+                fj.nullifier_a = Some(result.nullifier_a);
+                fj.nullifier_b = Some(result.nullifier_b);
+            }
+        }
+        fj
     }).collect();
 
     log::info!("Market order executed",
         "cmt", engine::short_id(cmt),
-        "fills", fills.len(),
+        "fills", fill_json.len(),
+        "auto_matched", perp.is_some(),
         "took", log::duration_secs(&start.elapsed())
     );
 
     Response {
         ok: true,
         fills: Some(fill_json),
-        best_bid: book.best_bid().map(|(p, s)| format!("{p}x{s}")),
-        best_ask: book.best_ask().map(|(p, s)| format!("{p}x{s}")),
-        spread: book.spread(),
-        order_count: Some(book.order_count()),
+        best_bid,
+        best_ask,
+        spread,
+        order_count: Some(order_count),
         ..Default::default()
     }
 }
@@ -615,8 +604,48 @@ fn handle_get_market(book: &Mutex<engine::OrderBook>) -> Response {
         spread: book.spread(),
         order_count: Some(book.order_count()),
         depth: Some(book.depth(engine::Side::Bid, 5).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
+        bids: Some(book.depth(engine::Side::Bid, 10).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
+        asks: Some(book.depth(engine::Side::Ask, 10).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
         ..Default::default()
     }
+}
+
+// ── Auto-match helper (proof + on-chain submission) ──────────────────────
+fn do_match(
+    store: &db::SecretStore,
+    keys: &PathBuf,
+    cmt_a: &str,
+    cmt_b: &str,
+    perp: &str,
+    source: &str,
+) -> Option<MatchResultData> {
+    let a = store.get(cmt_a).ok()??;
+    let b = store.get(cmt_b).ok()??;
+    let params = engine::find_match(&a, &b)?;
+
+    let out = match proof::gen_match_proof(keys, &a, &b, params.match_price, params.match_size) {
+        Ok(o) => o,
+        Err(e) => {
+            log::error!("Auto-match: proof generation failed", "cmt_a", &cmt_a[..16], "err", e.to_string());
+            return None;
+        }
+    };
+
+    if let Err(e) = stellar::submit_match(perp, source, cmt_a, cmt_b, &out) {
+        log::error!("Auto-match: on-chain submission failed", "cmt_a", &cmt_a[..16], "err", e.to_string());
+        return None;
+    }
+
+    let hex = |i: usize| -> String {
+        format!("{:0>64x}", out.public_inputs[i].parse::<num_bigint::BigUint>().unwrap())
+    };
+
+    Some(MatchResultData {
+        match_price: hex(2),
+        match_size: hex(3),
+        nullifier_a: hex(4),
+        nullifier_b: hex(5),
+    })
 }
 
 fn err(s: impl std::fmt::Display) -> Response {
