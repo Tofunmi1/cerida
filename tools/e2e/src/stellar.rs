@@ -1,20 +1,33 @@
-use crate::proof::RawProof;
 use anyhow::Result;
 use rand::Rng;
 use std::path::{Path, PathBuf};
 
-const SOURCE: &str = "e2e";
+pub const SOURCE: &str = "e2e";
 const COLLATERAL: i128 = 1_000_000_000;
 const LEVERAGE: u64 = 1;
 
-pub fn run_e2e(
+pub struct E2eContext {
+    pub orderbook_id: String,
+    pub perp_id: String,
+    pub source_pk: String,
+    pub alice: (String, String),
+    pub bob: (String, String),
+    pub cmt_a_hex: String,
+    pub cmt_b_hex: String,
+}
+
+/// Deploy contracts, place orders, deposit, open positions (all before match).
+pub fn deploy_and_place(
     wasm_dir: &Path,
-    p_a: &RawProof,
-    p_b: &RawProof,
-    p_match: &RawProof,
+    proof_a_json: &str,
+    proof_b_json: &str,
     cmt_a_hex: &str,
     cmt_b_hex: &str,
-) -> Result<()> {
+    hint_a: u64,
+    hint_b: u64,
+    side_a: &str,
+    side_b: &str,
+) -> Result<E2eContext> {
     let ob_wasm = wasm_dir.join("orderbook.wasm");
     let pe_wasm = wasm_dir.join("perp_engine.wasm");
 
@@ -49,15 +62,6 @@ pub fn run_e2e(
         &["initialize", "--admin", &source_pk, "--token", &native_token],
     )?;
 
-    let hint_a: u64 = 100000;
-    let hint_b: u64 = 99000;
-    let side_a = "0";
-    let side_b = "1";
-    let match_price_hex = &p_match.public_inputs[2];
-    let match_size_hex = &p_match.public_inputs[3];
-    let nf_a_hex = &p_match.public_inputs[4];
-    let nf_b_hex = &p_match.public_inputs[5];
-
     // ── Orderbook: hint board ──────────────────────────────────────────────
     eprintln!("\n=== Place order A (Alice) ===");
     invoke(
@@ -66,7 +70,7 @@ pub fn run_e2e(
         &[
             "place_order", "--owner", &alice.0, "--commitment", cmt_a_hex,
             "--hint", &hint_a.to_string(),
-            "--proof", &proof_json(&p_a.proof),
+            "--proof", proof_a_json,
         ],
     )?;
     let st_a = invoke_view(
@@ -82,7 +86,7 @@ pub fn run_e2e(
         &[
             "place_order", "--owner", &bob.0, "--commitment", cmt_b_hex,
             "--hint", &hint_b.to_string(),
-            "--proof", &proof_json(&p_b.proof),
+            "--proof", proof_b_json,
         ],
     )?;
     let st_b = invoke_view(
@@ -131,7 +135,7 @@ pub fn run_e2e(
             "--hint_price", &hint_a.to_string(),
             "--hint_side", side_a,
             "--hint_leverage", &LEVERAGE.to_string(),
-            "--proof", &proof_json(&p_a.proof),
+            "--proof", proof_a_json,
         ],
     )?;
     let pos_a = invoke_view(
@@ -150,7 +154,7 @@ pub fn run_e2e(
             "--hint_price", &hint_b.to_string(),
             "--hint_side", side_b,
             "--hint_leverage", &LEVERAGE.to_string(),
-            "--proof", &proof_json(&p_b.proof),
+            "--proof", proof_b_json,
         ],
     )?;
     let pos_b = invoke_view(
@@ -159,10 +163,45 @@ pub fn run_e2e(
     )?;
     eprintln!("  position B: {pos_b}");
 
+    Ok(E2eContext {
+        orderbook_id,
+        perp_id,
+        source_pk,
+        alice,
+        bob,
+        cmt_a_hex: cmt_a_hex.to_string(),
+        cmt_b_hex: cmt_b_hex.to_string(),
+    })
+}
+
+/// Full e2e: deploy, place, deposit, open, match, verify (local proof gen).
+pub fn run_e2e(
+    wasm_dir: &Path,
+    p_a: &crate::proof::RawProof,
+    p_b: &crate::proof::RawProof,
+    p_match: &crate::proof::RawProof,
+    cmt_a_hex: &str,
+    cmt_b_hex: &str,
+) -> Result<()> {
+    let proof_a_json = proof_json(&p_a.proof);
+    let proof_b_json = proof_json(&p_b.proof);
+    let hint_a: u64 = 100000;
+    let hint_b: u64 = 99000;
+
+    let ctx = deploy_and_place(
+        wasm_dir, &proof_a_json, &proof_b_json,
+        cmt_a_hex, cmt_b_hex, hint_a, hint_b, "0", "1",
+    )?;
+
+    let match_price_hex = &p_match.public_inputs[2];
+    let match_size_hex = &p_match.public_inputs[3];
+    let nf_a_hex = &p_match.public_inputs[4];
+    let nf_b_hex = &p_match.public_inputs[5];
+
     // ── Match via perp engine ──────────────────────────────────────────────
     eprintln!("\n=== Match positions ===");
     invoke(
-        &perp_id,
+        &ctx.perp_id,
         SOURCE,
         &[
             "match_positions",
@@ -176,38 +215,43 @@ pub fn run_e2e(
         ],
     )?;
 
+    verify_match(&ctx, nf_a_hex, nf_b_hex)
+}
+
+/// Verify match results on-chain (positions + nullifiers).
+pub fn verify_match(ctx: &E2eContext, nf_a_hex: &str, nf_b_hex: &str) -> Result<()> {
     eprintln!("\n=== Verify matched status (perp engine) ===");
     let pos_a2 = invoke_view(
-        &perp_id, &alice.0,
-        &["get_position", "--commitment", cmt_a_hex],
+        &ctx.perp_id, &ctx.alice.0,
+        &["get_position", "--commitment", &ctx.cmt_a_hex],
     )?;
     let pos_b2 = invoke_view(
-        &perp_id, &bob.0,
-        &["get_position", "--commitment", cmt_b_hex],
+        &ctx.perp_id, &ctx.bob.0,
+        &["get_position", "--commitment", &ctx.cmt_b_hex],
     )?;
     eprintln!("  position A: {pos_a2}");
     eprintln!("  position B: {pos_b2}");
 
     eprintln!("\n=== Verify nullifiers spent (perp engine) ===");
     let spent_a = invoke_view(
-        &perp_id, &alice.0,
+        &ctx.perp_id, &ctx.alice.0,
         &["is_spent", "--nullifier", &hex_field(nf_a_hex)],
     )?;
     let spent_b = invoke_view(
-        &perp_id, &bob.0,
+        &ctx.perp_id, &ctx.bob.0,
         &["is_spent", "--nullifier", &hex_field(nf_b_hex)],
     )?;
     eprintln!("  nullifier A spent: {spent_a}");
     eprintln!("  nullifier B spent: {spent_b}");
 
     let out = serde_json::json!({
-        "orderbook": orderbook_id,
-        "perp_engine": perp_id,
-        "admin": source_pk,
-        "alice": alice.0,
-        "bob": bob.0,
-        "commitment_a": cmt_a_hex,
-        "commitment_b": cmt_b_hex,
+        "orderbook": ctx.orderbook_id,
+        "perp_engine": ctx.perp_id,
+        "admin": ctx.source_pk,
+        "alice": ctx.alice.0,
+        "bob": ctx.bob.0,
+        "commitment_a": ctx.cmt_a_hex,
+        "commitment_b": ctx.cmt_b_hex,
     });
     let out_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../deployments/testnet")
@@ -219,6 +263,10 @@ pub fn run_e2e(
 }
 
 fn hex_field(decimal: &str) -> String {
+    // Already 64-char hex? Pass through.
+    if decimal.len() == 64 && decimal.chars().all(|c| c.is_ascii_hexdigit()) {
+        return decimal.to_string();
+    }
     let n: num_bigint::BigUint = decimal.parse().expect("Invalid decimal in hex_field");
     format!("{:0>64x}", n)
 }

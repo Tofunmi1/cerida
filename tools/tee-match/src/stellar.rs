@@ -42,7 +42,7 @@ pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof
         if stderr.contains("xdr processing error") || stderr.contains("Transaction hash is") {
             return Ok(());
         }
-        anyhow::bail!("{} match failed:\n{stderr}", crate::log::red("✗"));
+        anyhow::bail!("match failed:\n{stderr}");
     }
     Ok(())
 }
