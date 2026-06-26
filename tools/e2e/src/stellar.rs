@@ -311,7 +311,31 @@ pub fn verify_match(ctx: &E2eContext, nf_a_hex: &str, nf_b_hex: &str) -> Result<
     Ok(())
 }
 
-fn hex_field(decimal: &str) -> String {
+/// Deploy both contracts (orderbook + perp-engine) without identity setup.
+pub fn deploy_contracts(wasm_dir: &Path) -> Result<(String, String, String, String)> {
+    let ob_wasm = wasm_dir.join("orderbook.wasm");
+    let pe_wasm = wasm_dir.join("perp_engine.wasm");
+
+    eprintln!("  [wasm] orderbook: {} ({} bytes)", ob_wasm.display(),
+        std::fs::metadata(&ob_wasm).map(|m| m.len()).unwrap_or(0));
+    eprintln!("  [wasm] perp-engine: {} ({} bytes)", pe_wasm.display(),
+        std::fs::metadata(&pe_wasm).map(|m| m.len()).unwrap_or(0));
+
+    let source_pk = source_pubkey()?;
+    let orderbook_id = deploy(&ob_wasm)?;
+    let perp_id = deploy(&pe_wasm)?;
+    let native_token = native_token_id()?;
+
+    Ok((orderbook_id, perp_id, source_pk, native_token))
+}
+
+/// Initialize perp-engine with admin and token.
+pub fn init_perp_engine(perp_id: &str, admin: &str, token: &str) -> Result<()> {
+    invoke(perp_id, SOURCE, &["initialize", "--admin", admin, "--token", token])?;
+    Ok(())
+}
+
+pub fn hex_field(decimal: &str) -> String {
     // Already 64-char hex? Pass through.
     if decimal.len() == 64 && decimal.chars().all(|c| c.is_ascii_hexdigit()) {
         return decimal.to_string();
@@ -340,10 +364,23 @@ fn native_token_id() -> Result<String> {
     Ok(id)
 }
 
-fn generate_keypair(name: &str) -> (String, String) {
+pub fn generate_keypair(name: &str) -> (String, String) {
+    eprintln!("  [keys] Ensuring keypair '{}'…", name);
+    // Check if key already exists
+    let existing = std::process::Command::new("stellar")
+        .args(["keys", "address", name])
+        .output()
+        .ok()
+        .and_then(|o| (o.status.success()).then(|| String::from_utf8_lossy(&o.stdout).trim().to_string()));
+    if let Some(addr) = existing {
+        if !addr.is_empty() {
+            eprintln!("  [keys] {} → {} (identity: {}, reused)", name, &addr[..8], name);
+            return (addr, name.to_string());
+        }
+    }
     eprintln!("  [keys] Generating keypair '{}'…", name);
     let _ = std::process::Command::new("stellar")
-        .args(["keys", "generate", name, "--network", "testnet", "--fund"])
+        .args(["keys", "generate", name, "--network", "testnet"])
         .output()
         .ok();
     let addr = std::process::Command::new("stellar")
@@ -353,12 +390,31 @@ fn generate_keypair(name: &str) -> (String, String) {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_default();
     let addr = addr.trim().to_string();
-    let sk = if addr.is_empty() { name.to_string() } else { name.to_string() };
-    eprintln!("  [keys] {} → {} (identity: {})", name, &addr[..8], sk);
-    (addr, sk)
+    eprintln!("  [keys] {} → {} (identity: {})", name, &addr[..8], name);
+    (addr, name.to_string())
 }
 
-fn fund(pk: &str, label: &str) {
+/// Check if an account exists on testnet (has any balance = funded).
+pub fn account_exists(pk: &str) -> bool {
+    let url = format!("https://horizon-testnet.stellar.org/accounts/{pk}");
+    let resp = std::process::Command::new("curl")
+        .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", &url])
+        .output()
+        .ok();
+    match resp {
+        Some(o) => {
+            let code = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            code == "200"
+        }
+        None => false,
+    }
+}
+
+pub fn fund(pk: &str, label: &str) {
+    if account_exists(pk) {
+        eprintln!("  [fund] {} ({}) already funded, skipping", label, &pk[..8]);
+        return;
+    }
     let url = format!("https://friendbot.stellar.org/?addr={pk}");
     eprintln!("  [fund] Funding {} ({}) via friendbot…", label, &pk[..8]);
     let start = Instant::now();
@@ -467,7 +523,7 @@ fn precompute_id(salt_hex: &str, source_pk: &str) -> Result<String> {
         .to_string())
 }
 
-fn source_pubkey() -> Result<String> {
+pub fn source_pubkey() -> Result<String> {
     let out = std::process::Command::new("stellar")
         .args(["keys", "address", SOURCE])
         .output()
@@ -481,7 +537,7 @@ fn source_pubkey() -> Result<String> {
         .to_string())
 }
 
-fn invoke(contract_id: &str, source: &str, args: &[&str]) -> Result<String> {
+pub fn invoke(contract_id: &str, source: &str, args: &[&str]) -> Result<String> {
     let method = args.first().unwrap_or(&"unknown");
     eprintln!("  [invoke] Calling {}({})…", method, &contract_id[..8]);
     let start = Instant::now();

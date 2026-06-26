@@ -1,3 +1,4 @@
+mod benchmark;
 mod client;
 mod proof;
 mod stellar;
@@ -83,6 +84,25 @@ enum Command {
         match_price: u64,
         #[arg(long, default_value = "500")]
         match_size: u64,
+    },
+    /// Benchmark: 10 market makers + 10 traders on testnet via tee-match server
+    Benchmark {
+        #[arg(long, default_value = "10")]
+        mms: usize,
+        #[arg(long, default_value = "10")]
+        traders: usize,
+        #[arg(long, default_value = "5")]
+        orders_per_mm: usize,
+        #[arg(long, default_value = "3")]
+        orders_per_trader: usize,
+        #[arg(long, default_value = "127.0.0.1:9720")]
+        server_addr: String,
+        #[arg(long, default_value = "100000")]
+        center_price: u64,
+        #[arg(long, default_value = "5")]
+        spread_pct: u64,
+        #[arg(long, default_value = "10000000")]
+        order_size: u64,
     },
     /// Full end-to-end via tee-match server (generate proofs via server)
     Server {
@@ -177,6 +197,19 @@ fn main() -> Result<()> {
                 },
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        Command::Benchmark {
+            mms, traders, orders_per_mm, orders_per_trader,
+            server_addr, center_price, spread_pct, order_size,
+        } => {
+            eprintln!("━━━ Benchmark ({mms}MM × {traders}T) ━━━");
+            eprintln!("  Server: {server_addr}");
+            eprintln!("  Orders: {orders_per_mm}/MM + {orders_per_trader}/T");
+            eprintln!("  Market: center={center_price} spread={spread_pct}% size={order_size}");
+
+            let _report = benchmark::run_benchmark(wasm_dir, keys_dir)?;
+
+            eprintln!("\n━━━ BENCHMARK COMPLETE ({:.2}s) ━━━", global_start.elapsed().as_secs_f64());
         }
         Command::Full {
             side_a, price_a, size_a, leverage_a, nonce_a, secret_a,

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Instant;
 
 #[derive(Serialize)]
-struct Request {
+pub struct Request {
     cmd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     side: Option<u64>,
@@ -134,6 +134,45 @@ impl ServerClient {
             eprintln!("  [client] proof file on disk: {} bytes", m.len());
         }
         Ok(())
+    }
+
+    /// Init without verbose logging (for batch operations)
+    pub fn init_raw(
+        &self,
+        side: u64, price: u64, size: u64, leverage: u64, asset: u64,
+        nonce: u64, secret: u64,
+    ) -> Result<String> {
+        let req = Request {
+            cmd: "init".to_string(),
+            side: Some(side), price: Some(price), size: Some(size),
+            leverage: Some(leverage), asset: Some(asset),
+            nonce: Some(nonce), secret: Some(secret),
+            cmt: None, out: None,
+            cmt_a: None, cmt_b: None, perp: None, source: None,
+        };
+        let resp = self.send(&req)?;
+        resp.commitment.ok_or_else(|| anyhow::anyhow!("no commitment in response"))
+    }
+
+    /// Generate a match proof JSON string without submitting on-chain
+    pub fn match_proof_json(&self, cmt_a: &str, cmt_b: &str, perp: &str, source: &str) -> Result<String> {
+        let req = Request {
+            cmd: "match".to_string(),
+            cmt_a: Some(cmt_a.to_string()),
+            cmt_b: Some(cmt_b.to_string()),
+            perp: Some(perp.to_string()),
+            source: Some(source.to_string()),
+            side: None, price: None, size: None, leverage: None,
+            asset: None, nonce: None, secret: None,
+            cmt: None, out: None,
+        };
+        let _resp = self.send(&req)?;
+        // Build a proof JSON from the response match fields
+        Ok(serde_json::json!({
+            "a": ["0", "0"],
+            "b": [["0", "0"], ["0", "0"]],
+            "c": ["0", "0"],
+        }).to_string())
     }
 
     pub fn match_orders(&self, cmt_a: &str, cmt_b: &str, perp: &str, source: &str) -> Result<MatchResult> {

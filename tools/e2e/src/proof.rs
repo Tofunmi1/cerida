@@ -40,7 +40,7 @@ fn g2_to_hex(g2: &G2Affine) -> String {
     )
 }
 
-fn run(wasm: &Path, r1cs: &Path, zkey: &Path, builder: CircomBuilder<Bn254>) -> Result<RawProof> {
+fn run(_wasm: &Path, _r1cs: &Path, zkey: &Path, builder: CircomBuilder<Bn254>) -> Result<RawProof> {
     let zkey_file =
         std::fs::File::open(zkey).with_context(|| format!("Failed to open zkey: {}", zkey.display()))?;
     let mut reader = std::io::BufReader::new(zkey_file);

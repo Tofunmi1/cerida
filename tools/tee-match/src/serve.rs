@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 static NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
@@ -25,9 +25,11 @@ struct Request {
     cmt_a: Option<String>,
     cmt_b: Option<String>,
     source: Option<String>,
+    order_type: Option<String>,
+    stop_price: Option<u64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 struct Response {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,7 +43,33 @@ struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     nullifier_b: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    fills: Option<Vec<FillJson>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    best_bid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    best_ask: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spread: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    order_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    depth: Option<Vec<LevelJson>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct FillJson {
+    maker_id: String,
+    price: u64,
+    size: u64,
+}
+
+#[derive(Serialize)]
+struct LevelJson {
+    price: u64,
+    size: u64,
+    orders: usize,
 }
 
 pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
@@ -52,6 +80,7 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
 
     let start = Instant::now();
     let store = db::SecretStore::open(&db_path)?;
+    let book = engine::OrderBook::new();
     let listener = TcpListener::bind(addr)?;
     log::info!("TCP listener bound",
         "addr", addr,
@@ -65,10 +94,12 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
     );
 
     let store = Arc::new(store);
+    let book = Arc::new(Mutex::new(book));
     let keys = Arc::new(keys_dir);
 
     for stream in listener.incoming() {
         let store = store.clone();
+        let book = book.clone();
         let keys = keys.clone();
         std::thread::spawn(move || {
             use std::io::{BufRead, Write};
@@ -112,12 +143,7 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
                         "raw", &line[..line.len().min(200)],
                         "err", e.to_string()
                     );
-                    let resp = Response {
-                        ok: false, commitment: None,
-                        match_price: None, match_size: None,
-                        nullifier_a: None, nullifier_b: None,
-                        error: Some(format!("invalid JSON: {e}")),
-                    };
+                    let resp = Response { ok: false, error: Some(format!("invalid JSON: {e}")), ..Default::default() };
                     let _ = writeln!(&mut stream, "{}", serde_json::to_string(&resp).unwrap());
                     return;
                 }
@@ -133,14 +159,13 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
                 "init" => handle_init(&store, &keys, &req),
                 "commit-proof" => handle_commit_proof(&store, &keys, &req),
                 "match" => handle_match(&store, &keys, &req),
+                "place" => handle_place(&store, &book, &req),
+                "cancel" => handle_cancel(&book, &req),
+                "market" => handle_market(&store, &book, &req),
+                "get_market" => handle_get_market(&book),
                 other => {
                     log::warning!("Unknown command", "cmd", other, "peer", &peer);
-                    Response {
-                        ok: false, commitment: None,
-                        match_price: None, match_size: None,
-                        nullifier_a: None, nullifier_b: None,
-                        error: Some(format!("unknown cmd: {other}")),
-                    }
+                    Response { ok: false, error: Some(format!("unknown cmd: {other}")), ..Default::default() }
                 }
             };
 
@@ -229,13 +254,7 @@ fn handle_init(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respon
         "took", log::duration_secs(&start.elapsed())
     );
 
-    Response {
-        ok: true,
-        commitment: Some(cmt_hex),
-        match_price: None, match_size: None,
-        nullifier_a: None, nullifier_b: None,
-        error: None,
-    }
+    Response { ok: true, commitment: Some(cmt_hex), ..Default::default() }
 }
 
 fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Response {
@@ -302,12 +321,7 @@ fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
         }
     }
 
-    Response {
-        ok: true, commitment: None,
-        match_price: None, match_size: None,
-        nullifier_a: None, nullifier_b: None,
-        error: None,
-    }
+    Response { ok: true, ..Default::default() }
 }
 
 fn handle_match(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Response {
@@ -439,20 +453,172 @@ fn handle_match(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respo
     };
     Response {
         ok: true,
-        commitment: None,
         match_price: Some(hex(2)),
         match_size: Some(hex(3)),
         nullifier_a: Some(hex(4)),
         nullifier_b: Some(hex(5)),
-        error: None,
+        ..Default::default()
+    }
+}
+
+fn parse_order_type(s: &str) -> Option<engine::OrderType> {
+    match s {
+        "limit" => Some(engine::OrderType::Limit),
+        "market" => Some(engine::OrderType::Market),
+        "ioc" => Some(engine::OrderType::IOC),
+        "fok" => Some(engine::OrderType::FOK),
+        "stop_limit" => Some(engine::OrderType::StopLimit { stop_price: 0 }),
+        "stop_market" => Some(engine::OrderType::StopMarket { stop_price: 0 }),
+        _ => None,
+    }
+}
+
+fn secrets_to_order(cmt: &str, secrets: &db::OrderSecrets, order_type: engine::OrderType) -> engine::Order {
+    let price = match order_type {
+        engine::OrderType::Market | engine::OrderType::StopMarket { .. } => 0,
+        _ => secrets.price,
+    };
+    engine::Order {
+        id: cmt.to_string(),
+        side: if secrets.side == 0 { engine::Side::Bid } else { engine::Side::Ask },
+        price,
+        size: secrets.size,
+        remaining: secrets.size,
+        timestamp_ns: engine::now_nanos(),
+        order_type,
+    }
+}
+
+fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, req: &Request) -> Response {
+    let start = Instant::now();
+    let cmt = match req.cmt.as_ref() {
+        Some(c) => c,
+        None => return err("missing cmt"),
+    };
+    let ot_str = req.order_type.as_deref().unwrap_or("limit");
+    let mut ot = match parse_order_type(ot_str) {
+        Some(o) => o,
+        None => return err(format!("unknown order_type: {ot_str}")),
+    };
+    // Patch in stop_price for stop orders
+    if let engine::OrderType::StopLimit { ref mut stop_price } = ot {
+        *stop_price = req.stop_price.unwrap_or(0);
+    }
+    if let engine::OrderType::StopMarket { ref mut stop_price } = ot {
+        *stop_price = req.stop_price.unwrap_or(0);
+    }
+
+    let secrets = match store.get(cmt) {
+        Ok(Some(s)) => s,
+        Ok(None) => return err(format!("secrets not found for {cmt}")),
+        Err(e) => return err(format!("db error: {e}")),
+    };
+
+    let order = secrets_to_order(cmt, &secrets, ot);
+    let mut book = book.lock().unwrap();
+    let fills = match book.place(order) {
+        Ok(f) => f,
+        Err(e) => return err(format!("place failed: {e}")),
+    };
+
+    let fill_json: Vec<FillJson> = fills.iter().map(|f| FillJson {
+        maker_id: engine::short_id(&f.maker_id).to_string(),
+        price: f.price,
+        size: f.size,
+    }).collect();
+
+    log::info!("Order placed in book",
+        "cmt", engine::short_id(cmt),
+        "type", ot_str,
+        "fills", fills.len(),
+        "took", log::duration_secs(&start.elapsed())
+    );
+
+    Response {
+        ok: true,
+        fills: Some(fill_json),
+        best_bid: book.best_bid().map(|(p, s)| format!("{p}x{s}")),
+        best_ask: book.best_ask().map(|(p, s)| format!("{p}x{s}")),
+        spread: book.spread(),
+        order_count: Some(book.order_count()),
+        ..Default::default()
+    }
+}
+
+fn handle_cancel(book: &Mutex<engine::OrderBook>, req: &Request) -> Response {
+    let cmt = match req.cmt.as_ref() {
+        Some(c) => c,
+        None => return err("missing cmt"),
+    };
+    let mut book = book.lock().unwrap();
+    match book.cancel(cmt) {
+        Ok(true) => Response { ok: true, ..Default::default() },
+        Ok(false) => {
+            // maybe a stop order
+            match book.cancel_stop(cmt) {
+                Ok(true) => Response { ok: true, ..Default::default() },
+                _ => err("order not found"),
+            }
+        }
+        Err(_) => err("cancel failed"),
+    }
+}
+
+fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, req: &Request) -> Response {
+    let start = Instant::now();
+    let cmt = match req.cmt.as_ref() {
+        Some(c) => c,
+        None => return err("missing cmt"),
+    };
+    let secrets = match store.get(cmt) {
+        Ok(Some(s)) => s,
+        Ok(None) => return err(format!("secrets not found for {cmt}")),
+        Err(e) => return err(format!("db error: {e}")),
+    };
+
+    let order = secrets_to_order(cmt, &secrets, engine::OrderType::Market);
+    let mut book = book.lock().unwrap();
+    let fills = match book.place(order) {
+        Ok(f) => f,
+        Err(e) => return err(format!("market order failed: {e}")),
+    };
+
+    let fill_json: Vec<FillJson> = fills.iter().map(|f| FillJson {
+        maker_id: engine::short_id(&f.maker_id).to_string(),
+        price: f.price,
+        size: f.size,
+    }).collect();
+
+    log::info!("Market order executed",
+        "cmt", engine::short_id(cmt),
+        "fills", fills.len(),
+        "took", log::duration_secs(&start.elapsed())
+    );
+
+    Response {
+        ok: true,
+        fills: Some(fill_json),
+        best_bid: book.best_bid().map(|(p, s)| format!("{p}x{s}")),
+        best_ask: book.best_ask().map(|(p, s)| format!("{p}x{s}")),
+        spread: book.spread(),
+        order_count: Some(book.order_count()),
+        ..Default::default()
+    }
+}
+
+fn handle_get_market(book: &Mutex<engine::OrderBook>) -> Response {
+    let book = book.lock().unwrap();
+    Response {
+        ok: true,
+        best_bid: book.best_bid().map(|(p, s)| format!("{p}x{s}")),
+        best_ask: book.best_ask().map(|(p, s)| format!("{p}x{s}")),
+        spread: book.spread(),
+        order_count: Some(book.order_count()),
+        depth: Some(book.depth(engine::Side::Bid, 5).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
+        ..Default::default()
     }
 }
 
 fn err(s: impl std::fmt::Display) -> Response {
-    Response {
-        ok: false, commitment: None,
-        match_price: None, match_size: None,
-        nullifier_a: None, nullifier_b: None,
-        error: Some(s.to_string()),
-    }
+    Response { ok: false, error: Some(s.to_string()), ..Default::default() }
 }
