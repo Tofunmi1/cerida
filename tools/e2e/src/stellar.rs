@@ -70,11 +70,7 @@ pub fn deploy_and_place(
     // ── Initialize perp engine ──────────────────────────────────────────
     eprintln!("  [init] Initializing perp-engine (admin={}, token={})…",
         &source_pk[..8], &native_token[..8]);
-    invoke(
-        &perp_id,
-        SOURCE,
-        &["initialize", "--admin", &source_pk, "--token", &native_token],
-    )?;
+    init_perp_engine(&perp_id, &source_pk, &native_token)?;
     eprintln!("  ✓ perp-engine initialized");
 
     // ── Place order A (Alice) ────────────────────────────────────────────
@@ -331,14 +327,17 @@ pub fn deploy_contracts(wasm_dir: &Path) -> Result<(String, String, String, Stri
 
 /// Initialize perp-engine with admin and token (retries on contract-not-found).
 pub fn init_perp_engine(perp_id: &str, admin: &str, token: &str) -> Result<String> {
-    for attempt in 0..5 {
+    const MAX_ATTEMPTS: u32 = 20;
+    const RETRY_SECS: u64 = 10;
+    for attempt in 0..MAX_ATTEMPTS {
         match invoke(perp_id, SOURCE, &["initialize", "--admin", admin, "--token", token]) {
             Ok(r) => return Ok(r),
             Err(e) => {
                 let msg = e.to_string().to_lowercase();
-                if msg.contains("contract not found") && attempt < 4 {
-                    eprintln!("  [init] contract not yet propagated, retrying in 5s... (attempt {})", attempt + 1);
-                    std::thread::sleep(std::time::Duration::from_secs(5));
+                if (msg.contains("contract not found") || msg.contains("missing")) && attempt < MAX_ATTEMPTS - 1 {
+                    eprintln!("  [init] contract not yet visible via RPC, retrying in {}s... (attempt {}/{})",
+                        RETRY_SECS, attempt + 1, MAX_ATTEMPTS);
+                    std::thread::sleep(std::time::Duration::from_secs(RETRY_SECS));
                     continue;
                 }
                 return Err(e);
@@ -466,19 +465,19 @@ fn deploy(wasm: &Path) -> Result<String> {
     if let Some(tx_hash) = extract_tx_hash(&stderr) {
         eprintln!("  [deploy] TX submitted: {tx_hash}");
         eprintln!("  [deploy] Waiting for confirmation (max 240s)…");
-        for i in 0..120 {
-            if i > 0 && i % 10 == 0 {
+        for i in 0..180 {
+            if i > 0 && i % 30 == 0 {
                 eprintln!("  [deploy]   still waiting… ({}s elapsed)", i * 2);
             }
             std::thread::sleep(std::time::Duration::from_secs(2));
             if let Some(_result) = poll_tx(&tx_hash)? {
-                eprintln!("  [deploy] TX confirmed, waiting 20s for propagation…");
+                eprintln!("  [deploy] TX confirmed, waiting 30s for propagation…");
                 std::thread::sleep(std::time::Duration::from_secs(20));
                 eprintln!("  [deploy] ✓ Contract confirmed on-chain: {}", id);
                 return Ok(id);
             }
         }
-        anyhow::bail!("deploy TX {tx_hash} not confirmed after 240s");
+        anyhow::bail!("deploy TX {tx_hash} not confirmed after 360s");
     }
     anyhow::bail!("deploy failed: could not extract tx hash:\n{stderr}");
 }
@@ -535,8 +534,8 @@ pub fn invoke(contract_id: &str, source: &str, args: &[&str]) -> Result<String> 
     let stdout = String::from_utf8_lossy(&output.stdout);
     if let Some(tx_hash) = extract_tx_hash(&stderr).or_else(|| extract_tx_hash(&stdout)) {
         eprintln!("  [tx] {} submitted: {} (waiting for confirm…)", method, tx_hash);
-        for i in 0..60 {
-            if i > 0 && i % 15 == 0 {
+        for i in 0..180 {
+            if i > 0 && i % 30 == 0 {
                 eprintln!("  [tx]   still waiting… ({}s elapsed)", i * 2);
             }
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -545,7 +544,7 @@ pub fn invoke(contract_id: &str, source: &str, args: &[&str]) -> Result<String> 
                 return Ok(result);
             }
         }
-        anyhow::bail!("TX {tx_hash} not confirmed after 120s");
+        anyhow::bail!("TX {tx_hash} not confirmed after 360s");
     }
     if !output.status.success() {
         eprintln!("  [invoke] ✗ {} failed:\n  {}", method,

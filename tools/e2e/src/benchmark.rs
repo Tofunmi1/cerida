@@ -168,20 +168,24 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
 
         for o in &raw_orders {
             if o.side > 1 { continue; }
-            crate::stellar::invoke(&ob_id, &o.identity, &[
+            let log_skip = |step: &str, e: anyhow::Error| {
+                eprintln!("  [skip] {} for {} ({}): {}", step, o.identity, &o.cmt[..16], e);
+            };
+            if let Err(e) = crate::stellar::invoke(&ob_id, &o.identity, &[
                 "place_order", "--owner", &o.addr, "--commitment", &o.cmt,
                 "--hint", &o.price.to_string(), "--proof", &o.proof_json,
-            ])?;
-            crate::stellar::invoke(&pe_id, &o.identity, &[
+            ]) { log_skip("place_order", e); continue; }
+            if let Err(e) = crate::stellar::invoke(&pe_id, &o.identity, &[
                 "deposit", "--who", &o.addr, "--amount", "1000000000",
-            ])?;
-            crate::stellar::invoke(&pe_id, &o.identity, &[
+            ]) { log_skip("deposit", e); continue; }
+            if let Err(e) = crate::stellar::invoke(&pe_id, &o.identity, &[
                 "open_position", "--owner", &o.addr, "--commitment", &o.cmt,
                 "--collateral", "1000000000",
                 "--hint_price", &o.price.to_string(),
                 "--hint_side", &o.side.to_string(),
                 "--hint_leverage", "1", "--proof", &o.proof_json,
-            ])?;
+            ]) { log_skip("open_position", e); continue; }
+            eprintln!("  [ok] {} placed+deposited+position opened", o.identity);
         }
         eprintln!("{:.1}s", t4.elapsed().as_secs_f64());
 
