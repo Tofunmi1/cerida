@@ -5,8 +5,24 @@ mod stellar;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+fn repo_root() -> &'static Path {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        manifest.parent().unwrap().parent().unwrap().to_path_buf()
+    })
+}
+
+fn resolve_path(p: &Path) -> PathBuf {
+    if p.is_relative() {
+        repo_root().join(p)
+    } else {
+        p.to_path_buf()
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "e2e")]
@@ -143,8 +159,8 @@ fn decimal_to_hex(s: &str) -> String {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let keys_dir = &cli.keys_dir;
-    let wasm_dir = &cli.wasm_dir;
+    let keys_dir = resolve_path(&cli.keys_dir);
+    let wasm_dir = resolve_path(&cli.wasm_dir);
     let global_start = Instant::now();
 
     match cli.command {
@@ -161,13 +177,13 @@ fn main() -> Result<()> {
             eprintln!("  Match: price={} size={}", match_price, match_size);
 
             let p_a = proof::gen_commitment(
-                keys_dir, side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
+                &keys_dir, side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
             )?;
             let p_b = proof::gen_commitment(
-                keys_dir, side_b, price_b, size_b, leverage_b, 0, nonce_b, secret_b,
+                &keys_dir, side_b, price_b, size_b, leverage_b, 0, nonce_b, secret_b,
             )?;
             let p_match = proof::gen_match(
-                keys_dir,
+                &keys_dir,
                 side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
                 side_b, price_b, size_b, leverage_b, 0, nonce_b, secret_b,
                 match_price, match_size,
@@ -205,7 +221,7 @@ fn main() -> Result<()> {
                 orders_per_mm,
                 server_addr, center_price, order_size,
             };
-            benchmark::run_benchmark(wasm_dir, keys_dir, cfg)?;
+            benchmark::run_benchmark(&wasm_dir, &keys_dir, cfg)?;
 
             eprintln!("\n━━━ BENCHMARK COMPLETE ({:.2}s) ━━━", global_start.elapsed().as_secs_f64());
         }
@@ -221,13 +237,13 @@ fn main() -> Result<()> {
 
             eprintln!("── Generating ZK proofs ──");
             let p_a = proof::gen_commitment(
-                keys_dir, side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
+                &keys_dir, side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
             )?;
             let p_b = proof::gen_commitment(
-                keys_dir, side_b, price_b, size_b, leverage_b, 0, nonce_b, secret_b,
+                &keys_dir, side_b, price_b, size_b, leverage_b, 0, nonce_b, secret_b,
             )?;
             let p_match = proof::gen_match(
-                keys_dir,
+                &keys_dir,
                 side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
                 side_b, price_b, size_b, leverage_b, 0, nonce_b, secret_b,
                 match_price, match_size,
@@ -239,7 +255,7 @@ fn main() -> Result<()> {
             eprintln!("  commitment A: {} ({} hex chars)", &cmt_a_hex[..16], cmt_a_hex.len());
             eprintln!("  commitment B: {} ({} hex chars)", &cmt_b_hex[..16], cmt_b_hex.len());
 
-            stellar::run_e2e(wasm_dir, &p_a, &p_b, &p_match, &cmt_a_hex, &cmt_b_hex)?;
+            stellar::run_e2e(&wasm_dir, &p_a, &p_b, &p_match, &cmt_a_hex, &cmt_b_hex)?;
         }
         Command::Server {
             server_addr,
@@ -284,7 +300,7 @@ fn main() -> Result<()> {
             // ── Step 3: Deploy contracts, place orders, deposit, open positions ──
             eprintln!("\n── Step 3/5: Deploy and setup ──");
             let ctx = stellar::deploy_and_place(
-                wasm_dir,
+                &wasm_dir,
                 &proof_a_json, &proof_b_json,
                 &cmt_a_hex, &cmt_b_hex,
                 price_a, price_b, "0", "1",

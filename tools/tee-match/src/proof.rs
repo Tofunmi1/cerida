@@ -109,10 +109,16 @@ fn generate(circuit: &str, keys_dir: &Path, builder: CircomBuilder<Bn254>) -> Re
 pub fn gen_commitment_proof(keys_dir: &Path, secrets: &OrderSecrets) -> Result<MatchProof> {
     let wasm = keys_dir.join("order_commitment_js/order_commitment.wasm");
     let r1cs = keys_dir.join("order_commitment.r1cs");
+    let wasm_abs = std::fs::canonicalize(&wasm)
+        .unwrap_or_else(|_| wasm.clone());
     log::debug!("Loading Circom circuit",
         "circuit", "order_commitment",
-        "wasm", format!("{}", wasm.display()),
-        "r1cs", format!("{}", r1cs.display())
+        "wasm", format!("{}", wasm_abs.display()),
+        "wasm_exists", wasm.exists(),
+        "r1cs", format!("{}", r1cs.display()),
+        "r1cs_exists", r1cs.exists(),
+        "keys_dir", format!("{}", keys_dir.display()),
+        "keys_dir_abs", format!("{}", std::fs::canonicalize(keys_dir).map(|p| p.display().to_string()).unwrap_or_else(|_| "???".into()))
     );
     let cfg = CircomConfig::<Bn254>::new(&wasm, &r1cs)
         .map_err(|e| anyhow::anyhow!("Failed to load circuit: {e}"))?;
@@ -144,7 +150,11 @@ pub fn gen_match_proof(
     log::debug!("Loading Circom circuit",
         "circuit", "order_match",
         "wasm", format!("{}", wasm.display()),
-        "r1cs", format!("{}", r1cs.display())
+        "wasm_exists", wasm.exists(),
+        "r1cs", format!("{}", r1cs.display()),
+        "r1cs_exists", r1cs.exists(),
+        "keys_dir", format!("{}", keys_dir.display()),
+        "keys_dir_abs", format!("{}", std::fs::canonicalize(keys_dir).map(|p| p.display().to_string()).unwrap_or_else(|_| "???".into()))
     );
     let cfg = CircomConfig::<Bn254>::new(&wasm, &r1cs)
         .map_err(|e| anyhow::anyhow!("Failed to load circuit: {e}"))?;

@@ -7,8 +7,21 @@ mod stellar;
 
 use anyhow::Result;
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+fn resolve_path(p: &Path) -> PathBuf {
+    if p.is_relative() {
+        static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        let root = ROOT.get_or_init(|| {
+            let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+            manifest.parent().unwrap().parent().unwrap().to_path_buf()
+        });
+        root.join(p)
+    } else {
+        p.to_path_buf()
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "tee-match")]
@@ -74,7 +87,7 @@ enum Command {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let keys_dir = &cli.keys_dir;
+    let keys_dir = resolve_path(&cli.keys_dir);
     let start = Instant::now();
 
     match cli.command {
@@ -94,7 +107,7 @@ fn main() -> Result<()> {
                 "keys_dir", format!("{}", keys_dir.display())
             );
 
-            let out = proof::gen_commitment_proof(keys_dir, &secrets)?;
+            let out = proof::gen_commitment_proof(&keys_dir, &secrets)?;
             let cmt_hex = format!("{:0>64x}", out.public_inputs[0].parse::<num_bigint::BigUint>()?);
             store.insert(&cmt_hex, &secrets)?;
 
@@ -118,7 +131,7 @@ fn main() -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("secrets not found for {cmt}"))?;
 
             log::debug!("Proving commitment circuit", "side", secrets.side, "price", secrets.price);
-            let result = proof::gen_commitment_proof(keys_dir, &secrets)?;
+            let result = proof::gen_commitment_proof(&keys_dir, &secrets)?;
             let proof_json = serde_json::json!({
                 "a": result.proof.a,
                 "b": result.proof.b,
@@ -174,7 +187,7 @@ fn main() -> Result<()> {
             );
 
             log::debug!("Generating Groth16 match proof via Circom");
-            let out = proof::gen_match_proof(keys_dir, &a, &b, params.match_price, params.match_size)?;
+            let out = proof::gen_match_proof(&keys_dir, &a, &b, params.match_price, params.match_size)?;
             let proof_size = out.proof.a.len() + out.proof.b.len() + out.proof.c.len();
             log::info!("ZK match proof generated",
                 "proof_total", log::bytes_label(proof_size / 2)
