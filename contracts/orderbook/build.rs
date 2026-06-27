@@ -12,8 +12,7 @@ fn main() {
     let cancel_path = env::var("VK_CANCEL_JSON").unwrap_or_default();
 
     if commit_path.is_empty() || cancel_path.is_empty() {
-        write_placeholder(&out_dir);
-        return;
+        panic!("VK_COMMIT_JSON and VK_CANCEL_JSON env vars must be set. Run with:\n  VK_COMMIT_JSON=circuits/keys/order_commitment_vk.json VK_CANCEL_JSON=circuits/keys/order_cancel_vk.json");
     }
 
     let commit_vk = read_vk_json(&commit_path);
@@ -35,18 +34,6 @@ fn main() {
     writeln!(content, "const VK_CANCEL_IC: [[u8; 64]; {}] = [{}];", cancel_ic.len(), cancel_ic.join(",")).unwrap();
 
     fs::write(out_dir.join("vk.rs"), content).expect("failed to write vk.rs");
-}
-
-fn write_placeholder(out_dir: &PathBuf) {
-    let content = "\
-const VK_ALPHA_G1: [u8; 64] = [0u8; 64];
-const VK_BETA_G2: [u8; 128] = [0u8; 128];
-const VK_GAMMA_G2: [u8; 128] = [0u8; 128];
-const VK_DELTA_G2: [u8; 128] = [0u8; 128];
-const VK_COMMIT_IC: [[u8; 64]; 2] = [[0u8; 64], [0u8; 64]];
-const VK_CANCEL_IC: [[u8; 64]; 2] = [[0u8; 64], [0u8; 64]];
-";
-    fs::write(out_dir.join("vk.rs"), content).expect("failed to write placeholder vk.rs");
 }
 
 fn read_vk_json(path: &str) -> Value {

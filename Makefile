@@ -19,9 +19,8 @@ circuit-setup:
 build-orderbook: circuit-setup
 	VK_COMMIT_JSON=$(CIRCUIT_KEYS)/order_commitment_vk.json \
 	VK_CANCEL_JSON=$(CIRCUIT_KEYS)/order_cancel_vk.json \
-	VK_MATCH_JSON=$(CIRCUIT_KEYS)/order_match_vk.json \
 	  cargo build --target wasm32v1-none --release -p orderbook -p verifier-groth16 -p types
-	ls -la $(CONTRACT_TARGET)/orderbook.wasm
+	ls -la $(ROOT)/target/wasm32v1-none/release/orderbook.wasm
 
 build-perp-engine: circuit-setup
 	VK_COMMIT_JSON=$(CIRCUIT_KEYS)/order_commitment_vk.json \
