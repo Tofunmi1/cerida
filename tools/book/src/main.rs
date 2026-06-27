@@ -1,113 +1,260 @@
 use anyhow::Result;
+use crossterm::event::{self, Event, KeyCode};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::symbols::border;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Row, Table};
+use ratatui::Frame;
+use ratatui::{DefaultTerminal, Terminal};
 use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use std::time::{Duration, Instant};
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Default)]
 struct LevelJson {
     price: u64,
     size: u64,
     orders: usize,
 }
 
-#[derive(Deserialize)]
-struct Response {
+#[derive(Deserialize, Default)]
+struct BookResponse {
     ok: bool,
-    best_bid: Option<String>,
-    best_ask: Option<String>,
-    spread: Option<u64>,
-    order_count: Option<usize>,
     bids: Option<Vec<LevelJson>>,
     asks: Option<Vec<LevelJson>>,
+    spread: Option<u64>,
+    order_count: Option<usize>,
     error: Option<String>,
+}
+
+struct App {
+    addr: String,
+    asks: Vec<LevelJson>,
+    bids: Vec<LevelJson>,
+    spread: u64,
+    order_count: usize,
+    max_size: u64,
+    error: Option<String>,
+    last_updated: Instant,
+}
+
+impl App {
+    fn new(addr: &str) -> Self {
+        Self {
+            addr: addr.to_string(),
+            asks: Vec::new(),
+            bids: Vec::new(),
+            spread: 0,
+            order_count: 0,
+            max_size: 1,
+            error: None,
+            last_updated: Instant::now(),
+        }
+    }
+
+    fn refresh(&mut self) {
+        let mut stream = match TcpStream::connect_timeout(
+            &self.addr.parse().unwrap(),
+            Duration::from_secs(2),
+        ) {
+            Ok(s) => {
+                s.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                s
+            }
+            Err(e) => {
+                self.error = Some(format!("connect: {e}"));
+                return;
+            }
+        };
+
+        if writeln!(stream, r#"{{"cmd":"get_market"}}"#).is_err() {
+            self.error = Some("write failed".into());
+            return;
+        }
+
+        let mut reader = BufReader::new(&stream);
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => {
+                self.error = Some("no response from server".into());
+                return;
+            }
+            Ok(_) => {}
+        }
+
+        let resp: BookResponse = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                self.error = Some(format!("parse: {e}"));
+                return;
+            }
+        };
+
+        if !resp.ok {
+            self.error = Some(resp.error.unwrap_or_else(|| "unknown error".into()));
+            return;
+        }
+
+        let bids = resp.bids.unwrap_or_default();
+        let mut asks = resp.asks.unwrap_or_default();
+        asks.reverse();
+
+        let max_size = bids.iter().chain(asks.iter()).map(|l| l.size).max().unwrap_or(1);
+
+        self.asks = asks;
+        self.bids = bids;
+        self.spread = resp.spread.unwrap_or(0);
+        self.order_count = resp.order_count.unwrap_or(0);
+        self.max_size = max_size.max(1);
+        self.error = None;
+        self.last_updated = Instant::now();
+    }
 }
 
 fn main() -> Result<()> {
     let addr = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:9720".into());
 
-    let mut stream = TcpStream::connect(&addr)?;
-    let req = r#"{"cmd":"get_market"}"#;
-    writeln!(stream, "{req}")?;
+    let mut terminal = ratatui::init();
+    let mut app = App::new(&addr);
+    let tick = Duration::from_millis(500);
+    let mut last_tick = Instant::now();
 
-    let mut reader = BufReader::new(&stream);
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
+    loop {
+        // Poll for refresh
+        if last_tick.elapsed() >= tick {
+            app.refresh();
+            last_tick = Instant::now();
+        }
 
-    let resp: Response = serde_json::from_str(&line)?;
-    if !resp.ok {
-        eprintln!("Error: {}", resp.error.unwrap_or_default());
-        std::process::exit(1);
-    }
+        terminal.draw(|f| ui(f, &app))?;
 
-    let max_size = resp.bids.as_ref().iter().chain(resp.asks.as_ref().iter())
-        .flat_map(|v| v.iter())
-        .map(|l| l.size)
-        .max()
-        .unwrap_or(1);
-
-    let order_count = resp.order_count.unwrap_or(0);
-    let spread = resp.spread.unwrap_or(0);
-
-    // ── ASKS (highest to lowest, reversed since depth returns sorted) ──
-    if let Some(ref asks) = resp.asks {
-        let mut asks: Vec<_> = asks.clone();
-        asks.reverse();
-        print_sidebar(&asks, true, max_size);
-    }
-
-    // ── Spread ──
-    let mid = format!("  {order_count} orders  ·  spread: {spread}");
-    let pad = " ".repeat(18);
-    println!("{}┌{}┐{}", pad, "─".repeat(mid.len()), pad);
-    println!("{pad}│\x1b[1m{mid}\x1b[0m│{pad}");
-    println!("{}└{}┘{}", pad, "─".repeat(mid.len()), pad);
-
-    // ── BIDS (highest to lowest) ──
-    if let Some(ref bids) = resp.bids {
-        print_sidebar(bids, false, max_size);
-    }
-
-    Ok(())
-}
-
-fn print_sidebar(levels: &[LevelJson], is_ask: bool, max_size: u64) {
-    let bar_w = 30u64;
-
-    for level in levels {
-        let bar_len = (level.size as f64 / max_size as f64 * bar_w as f64).round() as usize;
-        let bar_str = "█".repeat(bar_len);
-        let empty = " ".repeat((bar_w as usize).saturating_sub(bar_len));
-
-        let price_str = format!("{}", level.price);
-        let size_str = format_size(level.size);
-        let order_str = format!("({})", level.orders);
-
-        if is_ask {
-            // Asks: right-aligned, red bar on left
-            println!("\x1b[31m{bar_str}{empty}\x1b[0m  \x1b[33m{:>12}\x1b[0m  \x1b[36m{:>10}\x1b[0m  \x1b[90m{:>4}\x1b[0m",
-                price_str, size_str, order_str);
-        } else {
-            // Bids: left-aligned, green bar on right
-            println!("  \x1b[33m{:>12}\x1b[0m  \x1b[36m{:>10}\x1b[0m  \x1b[90m{:>4}\x1b[0m  \x1b[32m{empty}{bar_str}\x1b[0m",
-                price_str, size_str, order_str);
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
+                    break;
+                }
+            }
         }
     }
 
-    if levels.is_empty() {
-        println!("  \x1b[90m(empty)\x1b[0m");
-    }
+    ratatui::restore();
+    Ok(())
+}
+
+fn ui(f: &mut Frame, app: &App) {
+    let area = f.area();
+    let total_rows = area.height as usize;
+
+    // Reserve a few lines for header + spread + footer
+    let header_h = 3u16;
+    let spread_h = 3u16;
+    let footer_h = 1u16;
+    let side_h = (area.height.saturating_sub(header_h + spread_h + footer_h)) / 2;
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(header_h),
+            Constraint::Min(side_h),
+            Constraint::Length(spread_h),
+            Constraint::Min(side_h),
+            Constraint::Length(footer_h),
+        ])
+        .split(area);
+
+    render_header(f, chunks[0], app);
+    render_side(f, chunks[1], &app.asks, true, app.max_size);
+    render_spread(f, chunks[2], app);
+    render_side(f, chunks[3], &app.bids, false, app.max_size);
+    render_footer(f, chunks[4], app);
+}
+
+fn render_header(f: &mut Frame, area: Rect, app: &App) {
+    let last = app.last_updated.elapsed().as_millis();
+    let title = Line::from(vec![
+        Span::styled(" CLOB Orderbook ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("| {} orders ", app.order_count), Style::default().fg(Color::Yellow)),
+        Span::styled(format!("| {}ms ago", last), Style::default().fg(Color::DarkGray)),
+    ]);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::BOTTOM)
+        .border_set(border::THICK);
+    f.render_widget(block, area);
+}
+
+fn render_side(f: &mut Frame, area: Rect, levels: &[LevelJson], is_ask: bool, max_size: u64) {
+    let bar_max = area.width.saturating_sub(50) as usize;
+
+    let rows: Vec<Row> = levels.iter().map(|l| {
+        let bar_len = if max_size > 0 {
+            (l.size as f64 / max_size as f64 * bar_max as f64).round() as usize
+        } else {
+            0
+        };
+        let bar = "█".repeat(bar_len.min(bar_max));
+        let empty = " ".repeat(bar_max.saturating_sub(bar_len));
+
+        let price_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        let size_style = Style::default().fg(Color::Cyan);
+        let order_style = Style::default().fg(Color::DarkGray);
+        let bar_color = if is_ask { Color::Red } else { Color::Green };
+
+        if is_ask {
+            Row::new(vec![
+                Span::styled(bar, Style::default().fg(bar_color)),
+                Span::raw(empty),
+                Span::raw(" "),
+                Span::styled(format!("{:>12}", l.price), price_style),
+                Span::raw(" "),
+                Span::styled(format_size(l.size), size_style),
+                Span::raw(" "),
+                Span::styled(format!("({})", l.orders), order_style),
+            ])
+        } else {
+            Row::new(vec![
+                Span::styled(format!("{:>12}", l.price), price_style),
+                Span::raw(" "),
+                Span::styled(format_size(l.size), size_style),
+                Span::raw(" "),
+                Span::styled(format!("({})", l.orders), order_style),
+                Span::raw(" "),
+                Span::styled(empty, Style::default().fg(bar_color)),
+                Span::styled(bar, Style::default().fg(bar_color)),
+            ])
+        }
+    }).collect();
+
+    let title = if is_ask { " ASKS " } else { " BIDS " };
+    let block = Block::default().title(title).borders(Borders::NONE);
+
+    let table = Table::new(rows, [Constraint::Fill(1)])
+        .block(block);
+    f.render_widget(table, area);
+}
+
+fn render_spread(f: &mut Frame, area: Rect, app: &App) {
+    let text = format!("  spread: {}  ", app.spread);
+    let block = Block::default()
+        .title(Line::from(Span::styled(text, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))))
+        .borders(Borders::TOP)
+        .border_set(border::THICK);
+    f.render_widget(block, area);
+}
+
+fn render_footer(f: &mut Frame, area: Rect, _app: &App) {
+    let text = Line::from(Span::styled(" [q] quit ", Style::default().fg(Color::DarkGray)));
+    f.render_widget(Paragraph::new(text), area);
 }
 
 fn format_size(s: u64) -> String {
     if s >= 1_000_000 {
-        format!("{:.1}M", s as f64 / 1_000_000.0)
+        format!("{:>6.1}M", s as f64 / 1_000_000.0)
     } else if s >= 1_000 {
-        format!("{:.1}K", s as f64 / 1_000.0)
+        format!("{:>6.1}K", s as f64 / 1_000.0)
     } else {
-        s.to_string()
+        format!("{:>6}", s)
     }
-}
-
-fn spread_str(s: u64) -> String {
-    if s == 0 { "0".into() } else { s.to_string() }
 }
