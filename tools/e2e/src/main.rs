@@ -33,7 +33,7 @@ struct Cli {
     #[arg(long, default_value = "../circuits/keys")]
     keys_dir: PathBuf,
 
-    #[arg(long, default_value = "../contracts/target/wasm32v1-none/release")]
+    #[arg(long, default_value = "../target/wasm32v1-none/release")]
     wasm_dir: PathBuf,
 }
 
