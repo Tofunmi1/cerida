@@ -17,17 +17,11 @@ fn repo_root() -> &'static Path {
 }
 
 fn resolve_path(p: &Path) -> PathBuf {
-    let base = if p.is_relative() { repo_root().join(p) } else { p.to_path_buf() };
-    // Resolve ..  segments without requiring the file to exist
-    let mut components = Vec::new();
-    for c in base.components() {
-        match c {
-            std::path::Component::ParentDir => { components.pop(); }
-            other => { components.push(other.as_os_str().to_os_string()); }
-        }
+    if p.is_relative() {
+        repo_root().join(p)
+    } else {
+        p.to_path_buf()
     }
-    let cleaned: PathBuf = components.iter().collect();
-    if cleaned.as_os_str().is_empty() { base } else { cleaned }
 }
 
 #[derive(Parser)]
@@ -36,10 +30,10 @@ struct Cli {
     #[command(subcommand)]
     command: Command,
 
-    #[arg(long, default_value = "../circuits/keys")]
+    #[arg(long, default_value = "circuits/keys")]
     keys_dir: PathBuf,
 
-    #[arg(long, default_value = "../target/wasm32v1-none/release")]
+    #[arg(long, default_value = "target/wasm32v1-none/release")]
     wasm_dir: PathBuf,
 }
 
