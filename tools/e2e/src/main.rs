@@ -17,11 +17,17 @@ fn repo_root() -> &'static Path {
 }
 
 fn resolve_path(p: &Path) -> PathBuf {
-    if p.is_relative() {
-        repo_root().join(p)
-    } else {
-        p.to_path_buf()
+    let base = if p.is_relative() { repo_root().join(p) } else { p.to_path_buf() };
+    // Resolve ..  segments without requiring the file to exist
+    let mut components = Vec::new();
+    for c in base.components() {
+        match c {
+            std::path::Component::ParentDir => { components.pop(); }
+            other => { components.push(other.as_os_str().to_os_string()); }
+        }
     }
+    let cleaned: PathBuf = components.iter().collect();
+    if cleaned.as_os_str().is_empty() { base } else { cleaned }
 }
 
 #[derive(Parser)]
