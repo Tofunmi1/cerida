@@ -472,49 +472,15 @@ fn deploy(wasm: &Path) -> Result<String> {
             }
             std::thread::sleep(std::time::Duration::from_secs(2));
             if let Some(_result) = poll_tx(&tx_hash)? {
-                eprintln!("  [deploy] TX confirmed, verifying contract exists…");
-                for attempt in 0..30 {
-                    if contract_exists(&id)? {
-                        eprintln!("  [deploy] ✓ Contract confirmed on-chain: {}", id);
-                        return Ok(id);
-                    }
-                    if attempt % 5 == 4 {
-                        eprintln!("  [deploy]   waiting for contract propagation (attempt {})…", attempt + 1);
-                    }
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-                }
-                anyhow::bail!("contract {} not found after deploy confirmed", id);
+                eprintln!("  [deploy] TX confirmed, waiting 20s for propagation…");
+                std::thread::sleep(std::time::Duration::from_secs(20));
+                eprintln!("  [deploy] ✓ Contract confirmed on-chain: {}", id);
+                return Ok(id);
             }
         }
         anyhow::bail!("deploy TX {tx_hash} not confirmed after 240s");
     }
     anyhow::bail!("deploy failed: could not extract tx hash:\n{stderr}");
-}
-
-fn contract_exists(id: &str) -> Result<bool> {
-    let out = std::process::Command::new("stellar")
-        .args([
-            "contract", "invoke",
-            "--id", id,
-            "--source-account", SOURCE,
-            "--network", "testnet",
-            "--is-view", "--",
-            "get_config",
-        ])
-        .output()
-        .ok();
-    match out {
-        Some(o) if o.status.success() => Ok(true),
-        Some(o) => {
-            let s = String::from_utf8_lossy(&o.stderr);
-            let exists = !s.to_lowercase().contains("contract not found");
-            if !exists {
-                eprintln!("  [verify] Contract {} not found yet (get_config failed)", &id[..8]);
-            }
-            Ok(exists)
-        }
-        None => Ok(false),
-    }
 }
 
 fn precompute_id(salt_hex: &str, source_pk: &str) -> Result<String> {
