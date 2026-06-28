@@ -218,18 +218,25 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
 
 fn handle_init(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Response {
     let start = Instant::now();
+    let raw_side = req.side.unwrap_or(0);
+    let is_market = raw_side >= 2;
+    // Normalize: 0/3 → Bid(0), 1/2 → Ask(1) so circuits always see 0/1
+    let side = match raw_side { 0 | 3 => 0, _ => 1 };
     let secrets = db::OrderSecrets {
-        side: req.side.unwrap_or(0),
+        side,
         price: req.price.unwrap_or(0),
         size: req.size.unwrap_or(0),
         leverage: req.leverage.unwrap_or(1),
         asset: req.asset.unwrap_or(0),
         nonce: req.nonce.unwrap_or(0),
         secret: req.secret.unwrap_or(0),
+        is_market,
     };
 
     log::info!("Initializing new order commitment",
-        "side", secrets.side,
+        "raw_side", raw_side,
+        "normalized_side", secrets.side,
+        "is_market", secrets.is_market,
         "price", secrets.price,
         "size", secrets.size,
         "leverage", secrets.leverage,
@@ -408,7 +415,7 @@ fn parse_order_type(s: &str) -> Option<engine::OrderType> {
 
 fn secrets_to_order(cmt: &str, secrets: &db::OrderSecrets, order_type: engine::OrderType) -> engine::Order {
     let price = match order_type {
-        engine::OrderType::Market | engine::OrderType::StopMarket { .. } => 0,
+        engine::OrderType::Market => 0,
         _ => secrets.price,
     };
     engine::Order {
@@ -448,6 +455,16 @@ fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: 
     };
 
     let order = secrets_to_order(cmt, &secrets, ot);
+    log::info!("handle_place: placing order",
+        "cmt", engine::short_id(cmt),
+        "secrets_side", secrets.side,
+        "secrets_price", secrets.price,
+        "secrets_size", secrets.size,
+        "order_side", order.side as u64,
+        "order_price", order.price,
+        "order_size", order.size,
+        "order_type", format!("{:?}", order.order_type)
+    );
 
     // Do CLOB match and collect book state, then release lock
     let (fills, best_bid, best_ask, spread, order_count) = {
@@ -538,6 +555,15 @@ fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys:
     };
 
     let order = secrets_to_order(cmt, &secrets, engine::OrderType::Market);
+    log::info!("handle_market: placing order",
+        "cmt", engine::short_id(cmt),
+        "secrets_side", secrets.side,
+        "secrets_price", secrets.price,
+        "secrets_size", secrets.size,
+        "order_side", order.side as u64,
+        "order_price", order.price,
+        "order_size", order.size
+    );
 
     // Do CLOB match and collect book state, then release lock
     let (fills, best_bid, best_ask, spread, order_count) = {
@@ -621,6 +647,7 @@ fn do_match(
 ) -> Option<MatchResultData> {
     let a = store.get(cmt_a).ok()??;
     let b = store.get(cmt_b).ok()??;
+
     let params = engine::find_match(&a, &b)?;
 
     let out = match proof::gen_match_proof(keys, &a, &b, params.match_price, params.match_size) {

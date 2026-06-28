@@ -1,6 +1,7 @@
 mod benchmark;
 mod client;
 mod proof;
+mod soroban_rpc;
 mod stellar;
 
 use anyhow::Result;
@@ -8,20 +9,18 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-fn repo_root() -> &'static Path {
-    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    ROOT.get_or_init(|| {
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        manifest.parent().unwrap().parent().unwrap().to_path_buf()
-    })
-}
-
 fn resolve_path(p: &Path) -> PathBuf {
-    if p.is_relative() {
-        repo_root().join(p)
-    } else {
-        p.to_path_buf()
-    }
+    let base = std::env::current_dir().unwrap_or_else(|_| {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf()
+    });
+    let joined = if p.is_relative() { base.join(p) } else { p.to_path_buf() };
+    // Canonicalize to resolve `..` components into a clean absolute path
+    std::fs::canonicalize(&joined).unwrap_or(joined)
 }
 
 #[derive(Parser)]
@@ -115,6 +114,15 @@ enum Command {
         center_price: u64,
         #[arg(long, default_value = "5000000")]
         order_size: u64,
+        /// Randomize order sizes between 0.5x and 1.5x of --order-size
+        #[arg(long)]
+        randomize_sizes: bool,
+        /// Randomize leverage across orders (1/2/5/10/20/50)
+        #[arg(long)]
+        randomize_leverage: bool,
+        /// ms delay between each order placement (for book TUI observation)
+        #[arg(long, default_value = "0")]
+        book_delay_ms: u64,
     },
     /// Full end-to-end via tee-match server (generate proofs via server)
     Server {
@@ -177,15 +185,15 @@ fn main() -> Result<()> {
             eprintln!("  Match: price={} size={}", match_price, match_size);
 
             let p_a = proof::gen_commitment(
-                &keys_dir, side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
+                &keys_dir, side_a, price_a, size_a, leverage_a, 0, 0, nonce_a, secret_a,
             )?;
             let p_b = proof::gen_commitment(
-                &keys_dir, side_b, price_b, size_b, leverage_b, 0, nonce_b, secret_b,
+                &keys_dir, side_b, price_b, size_b, leverage_b, 0, 0, nonce_b, secret_b,
             )?;
             let p_match = proof::gen_match(
                 &keys_dir,
-                side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
-                side_b, price_b, size_b, leverage_b, 0, nonce_b, secret_b,
+                side_a, price_a, size_a, leverage_a, 0, 0, nonce_a, secret_a,
+                side_b, price_b, size_b, leverage_b, 0, 0, nonce_b, secret_b,
                 match_price, match_size,
             )?;
 
@@ -212,7 +220,7 @@ fn main() -> Result<()> {
         }
         Command::Benchmark {
             mms, traders, orders_per_mm,
-            server_addr, center_price, order_size,
+            server_addr, center_price, order_size, randomize_sizes, randomize_leverage, book_delay_ms,
         } => {
             eprintln!("━━━ Benchmark ({mms}MM × {traders}T) ━━━");
 
@@ -220,6 +228,7 @@ fn main() -> Result<()> {
                 mm_count: mms, trader_count: traders,
                 orders_per_mm,
                 server_addr, center_price, order_size,
+                randomize_sizes, randomize_leverage, book_delay_ms,
             };
             benchmark::run_benchmark(&wasm_dir, &keys_dir, cfg)?;
 
@@ -237,15 +246,15 @@ fn main() -> Result<()> {
 
             eprintln!("── Generating ZK proofs ──");
             let p_a = proof::gen_commitment(
-                &keys_dir, side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
+                &keys_dir, side_a, price_a, size_a, leverage_a, 0, 0, nonce_a, secret_a,
             )?;
             let p_b = proof::gen_commitment(
-                &keys_dir, side_b, price_b, size_b, leverage_b, 0, nonce_b, secret_b,
+                &keys_dir, side_b, price_b, size_b, leverage_b, 0, 0, nonce_b, secret_b,
             )?;
             let p_match = proof::gen_match(
                 &keys_dir,
-                side_a, price_a, size_a, leverage_a, 0, nonce_a, secret_a,
-                side_b, price_b, size_b, leverage_b, 0, nonce_b, secret_b,
+                side_a, price_a, size_a, leverage_a, 0, 0, nonce_a, secret_a,
+                side_b, price_b, size_b, leverage_b, 0, 0, nonce_b, secret_b,
                 match_price, match_size,
             )?;
 

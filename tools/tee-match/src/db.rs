@@ -12,6 +12,8 @@ pub struct OrderSecrets {
     pub asset: u64,
     pub nonce: u64,
     pub secret: u64,
+    #[serde(default)]
+    pub is_market: bool,
 }
 
 pub struct SecretStore {

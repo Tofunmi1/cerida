@@ -3,6 +3,14 @@ use rand::Rng;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+const DEFAULT_RPC_URL: &str = "https://soroban-testnet.stellar.org";
+
+pub fn rpc_url() -> String {
+    std::env::var("SOROBAN_RPC_URL").unwrap_or_else(|_| DEFAULT_RPC_URL.to_string())
+}
+
+const NETWORK_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+
 pub const SOURCE: &str = "e2e";
 const COLLATERAL: i128 = 1_000_000_000;
 const LEVERAGE: u64 = 1;
@@ -70,7 +78,7 @@ pub fn deploy_and_place(
     // ── Initialize perp engine ──────────────────────────────────────────
     eprintln!("  [init] Initializing perp-engine (admin={}, token={})…",
         &source_pk[..8], &native_token[..8]);
-    init_perp_engine(&perp_id, &source_pk, &native_token)?;
+    init_perp_engine(&perp_id, SOURCE, &native_token)?;
     eprintln!("  ✓ perp-engine initialized");
 
     // ── Place order A (Alice) ────────────────────────────────────────────
@@ -325,6 +333,7 @@ pub fn deploy_contracts(wasm_dir: &Path) -> Result<(String, String, String, Stri
     Ok((orderbook_id, perp_id, source_pk, native_token))
 }
 
+
 /// Initialize perp-engine with admin and token (retries on contract-not-found).
 pub fn init_perp_engine(perp_id: &str, admin: &str, token: &str) -> Result<String> {
     const MAX_ATTEMPTS: u32 = 20;
@@ -362,7 +371,7 @@ fn proof_json(p: &crate::proof::ProofHex) -> String {
 
 fn native_token_id() -> Result<String> {
     let out = std::process::Command::new("stellar")
-        .args(["contract", "id", "asset", "--asset", "native", "--network", "testnet"])
+        .args(["contract", "id", "asset", "--asset", "native", "--network-passphrase", NETWORK_PASSPHRASE, "--rpc-url", &rpc_url()])
         .output()
         .map_err(|e| anyhow::anyhow!("Failed to get native token id: {e}"))?;
     if !out.status.success() {
@@ -392,7 +401,7 @@ pub fn generate_keypair(name: &str) -> (String, String) {
     }
     eprintln!("  [keys] Generating keypair '{}'…", name);
     let _ = std::process::Command::new("stellar")
-        .args(["keys", "generate", name, "--network", "testnet"])
+        .args(["keys", "generate", name, "--network-passphrase", NETWORK_PASSPHRASE])
         .output()
         .ok();
     let addr = std::process::Command::new("stellar")
@@ -456,7 +465,8 @@ fn deploy(wasm: &Path) -> Result<String> {
             "contract", "deploy",
             "--wasm", &wasm.to_string_lossy(),
             "--source", SOURCE,
-            "--network", "testnet",
+            "--network-passphrase", NETWORK_PASSPHRASE,
+            "--rpc-url", &rpc_url(),
             "--salt", &salt_hex,
         ])
         .output()
@@ -488,7 +498,8 @@ fn precompute_id(salt_hex: &str, source_pk: &str) -> Result<String> {
             "contract", "id", "wasm",
             "--salt", salt_hex,
             "--source-account", source_pk,
-            "--network", "testnet",
+            "--network-passphrase", NETWORK_PASSPHRASE,
+            "--rpc-url", &rpc_url(),
         ])
         .output()
         .map_err(|e| anyhow::anyhow!("Failed to precompute ID: {e}"))?;
@@ -516,43 +527,8 @@ pub fn source_pubkey() -> Result<String> {
 }
 
 pub fn invoke(contract_id: &str, source: &str, args: &[&str]) -> Result<String> {
-    let method = args.first().unwrap_or(&"unknown");
-    eprintln!("  [invoke] Calling {}({})…", method, &contract_id[..8]);
-    let start = Instant::now();
-    let mut cmd = std::process::Command::new("stellar");
-    cmd.args([
-        "contract", "invoke",
-        "--id", contract_id,
-        "--source-account", source,
-        "--network", "testnet",
-        "--",
-    ]);
-    cmd.args(args);
-    let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar invoke: {e}"))?;
-    let elapsed = start.elapsed();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if let Some(tx_hash) = extract_tx_hash(&stderr).or_else(|| extract_tx_hash(&stdout)) {
-        eprintln!("  [tx] {} submitted: {} (waiting for confirm…)", method, tx_hash);
-        for i in 0..180 {
-            if i > 0 && i % 30 == 0 {
-                eprintln!("  [tx]   still waiting… ({}s elapsed)", i * 2);
-            }
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            if let Some(result) = poll_tx(&tx_hash)? {
-                eprintln!("  [tx] ✓ {} confirmed ({:.2}s)", method, elapsed.as_secs_f64());
-                return Ok(result);
-            }
-        }
-        anyhow::bail!("TX {tx_hash} not confirmed after 360s");
-    }
-    if !output.status.success() {
-        eprintln!("  [invoke] ✗ {} failed:\n  {}", method,
-            &stderr.trim().replace('\n', "\n  "));
-        anyhow::bail!("stellar invoke failed:\n{stderr}");
-    }
-    eprintln!("  [invoke] ✓ {} completed ({:.2}s)", method, elapsed.as_secs_f64());
-    Ok(stdout.trim().to_string())
+    let rpc = crate::soroban_rpc::SorobanRpc::new();
+    rpc.invoke(contract_id, source, args)
 }
 
 fn invoke_view(contract_id: &str, source: &str, args: &[&str]) -> Result<String> {
@@ -564,7 +540,8 @@ fn invoke_view(contract_id: &str, source: &str, args: &[&str]) -> Result<String>
             "contract", "invoke",
             "--id", contract_id,
             "--source-account", source,
-            "--network", "testnet",
+            "--network-passphrase", NETWORK_PASSPHRASE,
+            "--rpc-url", &rpc_url(),
             "--is-view", "--",
         ]);
         cmd.args(args);
@@ -588,7 +565,8 @@ fn invoke_view(contract_id: &str, source: &str, args: &[&str]) -> Result<String>
         "contract", "invoke",
         "--id", contract_id,
         "--source-account", source,
-        "--network", "testnet",
+        "--network-passphrase", NETWORK_PASSPHRASE,
+        "--rpc-url", &rpc_url(),
         "--is-view", "--",
     ]);
     cmd.args(args);
@@ -599,14 +577,18 @@ fn invoke_view(contract_id: &str, source: &str, args: &[&str]) -> Result<String>
     anyhow::bail!("stellar invoke view failed:\n{}", stderr);
 }
 
-fn extract_tx_hash(output: &str) -> Option<String> {
-    output.lines().find_map(|l| {
-        let t = l.trim();
-        let stripped = t.strip_prefix("\u{2139}\u{fe0f}  ").unwrap_or(t);
-        stripped
-            .strip_prefix("Signing transaction: ")
-            .or_else(|| stripped.strip_prefix("Transaction hash is "))
-            .map(|h| h.trim().to_string())
+pub(crate) fn extract_tx_hash(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let line = line.trim();
+        for keyword in ["Signing transaction: ", "Transaction hash is "] {
+            if let Some(pos) = line.find(keyword) {
+                let hash = line[pos + keyword.len()..].trim();
+                if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(hash.to_string());
+                }
+            }
+        }
+        None
     })
 }
 
@@ -622,7 +604,7 @@ fn poll_tx(tx_hash: &str) -> Result<Option<String>> {
             "-s", "-X", "POST",
             "-H", "Content-Type: application/json",
             "-d", &body.to_string(),
-            "https://soroban-testnet.stellar.org",
+            &rpc_url(),
         ])
         .output()
         .map_err(|e| anyhow::anyhow!("curl getTransaction: {e}"))?;

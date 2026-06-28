@@ -3,7 +3,17 @@ use crate::proof::MatchProof;
 use anyhow::Result;
 use std::time::Instant;
 
-pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof: &MatchProof) -> Result<()> {
+const DEFAULT_RPC_URL: &str = "https://soroban-testnet.stellar.org";
+
+pub fn rpc_url() -> String {
+    std::env::var("SOROBAN_RPC_URL").unwrap_or_else(|_| DEFAULT_RPC_URL.to_string())
+}
+
+const NETWORK_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+
+const SOURCE_IDENTITY: &str = "e2e";
+
+pub fn submit_match(perp_id: &str, _source: &str, cmt_a: &str, cmt_b: &str, proof: &MatchProof) -> Result<()> {
     let start = Instant::now();
 
     let hex = |dec: &str| -> String {
@@ -30,8 +40,9 @@ pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof
     cmd.args([
         "contract", "invoke",
         "--id", perp_id,
-        "--source-account", source,
-        "--network", "testnet",
+        "--source", SOURCE_IDENTITY,
+        "--network-passphrase", NETWORK_PASSPHRASE,
+        "--rpc-url", &rpc_url(),
         "--",
         "match_positions",
         "--cmt_a", cmt_a,
@@ -45,7 +56,7 @@ pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof
 
     log::debug!("Executing stellar CLI command",
         "contract", &perp_id[..8],
-        "source", source,
+        "source", SOURCE_IDENTITY,
         "method", "match_positions",
         "cmt_a", &cmt_a[..16],
         "cmt_b", &cmt_b[..16]

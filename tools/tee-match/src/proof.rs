@@ -128,11 +128,13 @@ pub fn gen_commitment_proof(keys_dir: &Path, secrets: &OrderSecrets) -> Result<M
     builder.push_input("size", secrets.size as i64);
     builder.push_input("leverage", secrets.leverage as i64);
     builder.push_input("asset", secrets.asset as i64);
+    builder.push_input("is_market", secrets.is_market as i64);
     builder.push_input("nonce", secrets.nonce as i64);
     builder.push_input("secret", secrets.secret as i64);
     log::debug!("Commitment circuit inputs prepared",
         "side", secrets.side, "price", secrets.price, "size", secrets.size,
         "leverage", secrets.leverage, "asset", secrets.asset,
+        "is_market", secrets.is_market,
         "nonce", secrets.nonce
     );
     generate("order_commitment", keys_dir, builder)
@@ -164,6 +166,7 @@ pub fn gen_match_proof(
     builder.push_input("size_a", a.size as i64);
     builder.push_input("leverage_a", a.leverage as i64);
     builder.push_input("asset_a", a.asset as i64);
+    builder.push_input("is_market_a", a.is_market as i64);
     builder.push_input("nonce_a", a.nonce as i64);
     builder.push_input("secret_a", a.secret as i64);
     builder.push_input("side_b", b.side as i64);
@@ -171,13 +174,16 @@ pub fn gen_match_proof(
     builder.push_input("size_b", b.size as i64);
     builder.push_input("leverage_b", b.leverage as i64);
     builder.push_input("asset_b", b.asset as i64);
+    builder.push_input("is_market_b", b.is_market as i64);
     builder.push_input("nonce_b", b.nonce as i64);
     builder.push_input("secret_b", b.secret as i64);
     builder.push_input("mp", mp as i64);
     builder.push_input("ms", ms as i64);
     log::debug!("Match circuit inputs prepared",
         "side_a", a.side, "price_a", a.price, "size_a", a.size,
+        "is_market_a", a.is_market,
         "side_b", b.side, "price_b", b.price, "size_b", b.size,
+        "is_market_b", b.is_market,
         "match_price", mp, "match_size", ms
     );
     generate("order_match", keys_dir, builder)

@@ -22,10 +22,12 @@ order-match:
 
 # --- Groth16 trusted setup ---
 
+ENTROPY := $(shell date +%s | shasum -a 256 | head -c 40)
+
 setup-order-commitment: order-commitment
 	cd $(OUT_DIR) && \
 	  $(SNARKJS) powersoftau new bn254 14 pot14_0000.ptau && \
-	  $(SNARKJS) powersoftau contribute pot14_0000.ptau pot14_0001.ptau --name="contribution" -v && \
+	  $(SNARKJS) powersoftau contribute pot14_0000.ptau pot14_0001.ptau --name="contribution" -e=$(ENTROPY) && \
 	  $(SNARKJS) powersoftau prepare phase2 pot14_0001.ptau pot14_final.ptau && \
 	  $(SNARKJS) groth16 setup order_commitment.r1cs pot14_final.ptau order_commitment.zkey && \
 	  $(SNARKJS) zkey export verificationkey order_commitment.zkey order_commitment_vk.json && \
@@ -34,7 +36,7 @@ setup-order-commitment: order-commitment
 setup-order-cancel: order-cancel
 	cd $(OUT_DIR) && \
 	  $(SNARKJS) powersoftau new bn254 14 pot14_0000.ptau && \
-	  $(SNARKJS) powersoftau contribute pot14_0000.ptau pot14_0001.ptau --name="contribution" -v && \
+	  $(SNARKJS) powersoftau contribute pot14_0000.ptau pot14_0001.ptau --name="contribution" -e=$(ENTROPY) && \
 	  $(SNARKJS) powersoftau prepare phase2 pot14_0001.ptau pot14_final.ptau && \
 	  $(SNARKJS) groth16 setup order_cancel.r1cs pot14_final.ptau order_cancel.zkey && \
 	  $(SNARKJS) zkey export verificationkey order_cancel.zkey order_cancel_vk.json && \
@@ -43,7 +45,7 @@ setup-order-cancel: order-cancel
 setup-order-match: order-match
 	cd $(OUT_DIR) && \
 	  $(SNARKJS) powersoftau new bn254 16 pot16_0000.ptau && \
-	  $(SNARKJS) powersoftau contribute pot16_0000.ptau pot16_0001.ptau --name="contribution" -v && \
+	  $(SNARKJS) powersoftau contribute pot16_0000.ptau pot16_0001.ptau --name="contribution" -e=$(ENTROPY) && \
 	  $(SNARKJS) powersoftau prepare phase2 pot16_0001.ptau pot16_final.ptau && \
 	  $(SNARKJS) groth16 setup order_match.r1cs pot16_final.ptau order_match.zkey && \
 	  $(SNARKJS) zkey export verificationkey order_match.zkey order_match_vk.json && \

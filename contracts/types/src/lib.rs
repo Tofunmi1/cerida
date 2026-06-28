@@ -93,3 +93,34 @@ pub enum OrderStatus {
     Open = 0,
     Cancelled = 1,
 }
+
+// ── Oracle ──────────────────────────────────────────────────────────────
+#[contracttype]
+#[derive(Clone)]
+pub struct OracleConfig {
+    pub admin: Address,
+    pub price: u64,
+    pub last_updated: u64,
+    pub heartbeat: u64,
+}
+
+// ── Match record linking two matched positions ─────────────────────────
+#[contracttype]
+#[derive(Clone)]
+pub struct MatchRecord {
+    pub cmt_a: BytesN<32>,
+    pub cmt_b: BytesN<32>,
+    pub match_price: u64,
+    pub match_size: u64,
+    pub matched_at: u64,
+    pub closed: bool,
+}
+
+// ── Funding state for perpetual funding rate ───────────────────────────
+#[contracttype]
+#[derive(Clone)]
+pub struct FundingState {
+    pub last_update: u64,
+    pub cumulative: i128,
+    pub rate: i64,
+}

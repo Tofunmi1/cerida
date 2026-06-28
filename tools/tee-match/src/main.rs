@@ -11,16 +11,16 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 fn resolve_path(p: &Path) -> PathBuf {
-    if p.is_relative() {
-        static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-        let root = ROOT.get_or_init(|| {
-            let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-            manifest.parent().unwrap().parent().unwrap().to_path_buf()
-        });
-        root.join(p)
-    } else {
-        p.to_path_buf()
-    }
+    let base = std::env::current_dir().unwrap_or_else(|_| {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf()
+    });
+    let joined = if p.is_relative() { base.join(p) } else { p.to_path_buf() };
+    std::fs::canonicalize(&joined).unwrap_or(joined)
 }
 
 #[derive(Parser)]
@@ -100,7 +100,9 @@ fn main() -> Result<()> {
             );
 
             let store = db::SecretStore::open(&db)?;
-            let secrets = db::OrderSecrets { side, price, size, leverage, asset, nonce, secret };
+            let is_market = side >= 2;
+            let side = match side { 0 | 3 => 0, _ => 1 };
+            let secrets = db::OrderSecrets { side, price, size, leverage, asset, nonce, secret, is_market };
 
             log::debug!("Generating commitment proof via Circom",
                 "circuit", "order_commitment",

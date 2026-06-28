@@ -75,6 +75,7 @@ pub struct LevelJson {
     pub orders: usize,
 }
 
+#[derive(Default)]
 pub struct MarketResponse {
     pub best_bid: Option<String>,
     pub best_ask: Option<String>,

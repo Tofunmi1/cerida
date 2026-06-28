@@ -1,12 +1,12 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
 use ratatui::Frame;
-use ratatui::{DefaultTerminal, Terminal};
+
 use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -116,9 +116,10 @@ impl App {
 fn main() -> Result<()> {
     let addr = std::env::args().nth(1).unwrap_or_else(|| "127.0.0.1:9720".into());
 
-    let mut terminal = ratatui::init();
+    let mut terminal = ratatui::try_init()
+        .map_err(|e| anyhow::anyhow!("Failed to initialize terminal (run in a real terminal, not a headless environment): {e}"))?;
     let mut app = App::new(&addr);
-    let tick = Duration::from_millis(500);
+    let tick = Duration::from_millis(100);
     let mut last_tick = Instant::now();
 
     loop {
@@ -145,7 +146,7 @@ fn main() -> Result<()> {
 
 fn ui(f: &mut Frame, app: &App) {
     let area = f.area();
-    let total_rows = area.height as usize;
+    let _total_rows = area.height as usize;
 
     // Reserve a few lines for header + spread + footer
     let header_h = 3u16;
@@ -186,49 +187,50 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_side(f: &mut Frame, area: Rect, levels: &[LevelJson], is_ask: bool, max_size: u64) {
-    let bar_max = area.width.saturating_sub(50) as usize;
+    let bar_max = area.width.saturating_sub(42) as usize;
 
     let rows: Vec<Row> = levels.iter().map(|l| {
-        let bar_len = if max_size > 0 {
-            (l.size as f64 / max_size as f64 * bar_max as f64).round() as usize
-        } else {
-            0
-        };
-        let bar = "█".repeat(bar_len.min(bar_max));
-        let empty = " ".repeat(bar_max.saturating_sub(bar_len));
+        let pct = if max_size > 0 { l.size as f64 / max_size as f64 } else { 0.0 };
+        let bar_len = (pct * bar_max as f64).round() as usize;
+        let bar_fill = "█".repeat(bar_len.min(bar_max));
+        let bar_empty = " ".repeat(bar_max.saturating_sub(bar_len));
 
         let price_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
         let size_style = Style::default().fg(Color::Cyan);
         let order_style = Style::default().fg(Color::DarkGray);
         let bar_color = if is_ask { Color::Red } else { Color::Green };
 
-        if is_ask {
-            Row::new(vec![
-                Span::styled(bar, Style::default().fg(bar_color)),
-                Span::raw(empty),
-                Span::raw(" "),
+        let line = if is_ask {
+            Line::from(vec![
+                Span::styled(bar_fill, Style::default().fg(bar_color)),
+                Span::styled(bar_empty, Style::default().bg(Color::Black)),
+                Span::raw("│"),
                 Span::styled(format!("{:>12}", l.price), price_style),
                 Span::raw(" "),
                 Span::styled(format_size(l.size), size_style),
                 Span::raw(" "),
-                Span::styled(format!("({})", l.orders), order_style),
+                Span::styled(format!("{:>3}", l.orders), order_style),
             ])
         } else {
-            Row::new(vec![
+            Line::from(vec![
                 Span::styled(format!("{:>12}", l.price), price_style),
                 Span::raw(" "),
                 Span::styled(format_size(l.size), size_style),
                 Span::raw(" "),
-                Span::styled(format!("({})", l.orders), order_style),
-                Span::raw(" "),
-                Span::styled(empty, Style::default().fg(bar_color)),
-                Span::styled(bar, Style::default().fg(bar_color)),
+                Span::styled(format!("{:>3}", l.orders), order_style),
+                Span::raw("│"),
+                Span::styled(bar_empty, Style::default().bg(Color::Black)),
+                Span::styled(bar_fill, Style::default().fg(bar_color)),
             ])
-        }
+        };
+        Row::new(vec![line])
     }).collect();
 
-    let title = if is_ask { " ASKS " } else { " BIDS " };
-    let block = Block::default().title(title).borders(Borders::NONE);
+    let title = format!(" {} (depth) ", if is_ask { "ASKS" } else { "BIDS" });
+    let title_color = if is_ask { Color::Red } else { Color::Green };
+    let block = Block::default()
+        .title(Line::from(Span::styled(title, Style::default().fg(title_color).add_modifier(Modifier::BOLD))))
+        .borders(Borders::NONE);
 
     let table = Table::new(rows, [Constraint::Fill(1)])
         .block(block);

@@ -65,3 +65,5 @@ env/
 dist/
 build/
 out/
+pot_*.ptau
+test_snapshots/

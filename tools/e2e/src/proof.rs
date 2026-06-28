@@ -79,6 +79,7 @@ pub fn gen_commitment(
     size: u64,
     leverage: u64,
     asset: u64,
+    is_market: u64,
     nonce: u64,
     secret: u64,
 ) -> Result<RawProof> {
@@ -93,6 +94,7 @@ pub fn gen_commitment(
     builder.push_input("size", size as i64);
     builder.push_input("leverage", leverage as i64);
     builder.push_input("asset", asset as i64);
+    builder.push_input("is_market", is_market as i64);
     builder.push_input("nonce", nonce as i64);
     builder.push_input("secret", secret as i64);
     run(&wasm, &r1cs, &zkey, builder)
@@ -105,6 +107,7 @@ pub fn gen_match(
     size_a: u64,
     leverage_a: u64,
     asset_a: u64,
+    is_market_a: u64,
     nonce_a: u64,
     secret_a: u64,
     side_b: u64,
@@ -112,6 +115,7 @@ pub fn gen_match(
     size_b: u64,
     leverage_b: u64,
     asset_b: u64,
+    is_market_b: u64,
     nonce_b: u64,
     secret_b: u64,
     mp: u64,
@@ -128,6 +132,7 @@ pub fn gen_match(
     builder.push_input("size_a", size_a as i64);
     builder.push_input("leverage_a", leverage_a as i64);
     builder.push_input("asset_a", asset_a as i64);
+    builder.push_input("is_market_a", is_market_a as i64);
     builder.push_input("nonce_a", nonce_a as i64);
     builder.push_input("secret_a", secret_a as i64);
     builder.push_input("side_b", side_b as i64);
@@ -135,6 +140,7 @@ pub fn gen_match(
     builder.push_input("size_b", size_b as i64);
     builder.push_input("leverage_b", leverage_b as i64);
     builder.push_input("asset_b", asset_b as i64);
+    builder.push_input("is_market_b", is_market_b as i64);
     builder.push_input("nonce_b", nonce_b as i64);
     builder.push_input("secret_b", secret_b as i64);
     builder.push_input("mp", mp as i64);

@@ -20,3 +20,12 @@ template LessThan(n) {
     n2b.in <== in[0] + (1 << n) - in[1];
     out <== 1 - n2b.out[n];
 }
+
+template LessEqThan(n) {
+    signal input in[2];
+    signal output out;
+    component lt = LessThan(n);
+    lt.in[0] <== in[1];
+    lt.in[1] <== in[0];
+    out <== 1 - lt.out;
+}
