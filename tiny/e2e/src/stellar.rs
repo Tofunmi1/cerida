@@ -189,7 +189,8 @@ fn stellar_deploy(wasm: &PathBuf) -> Result<String> {
     let source_pk = get_source_public_key()?;
     let contract_id = precompute_contract_id(&salt_hex, &source_pk)?;
     eprintln!("  Precomputed ID: {contract_id}");
-    let _ = std::process::Command::new("stellar")
+
+    let output = std::process::Command::new("stellar")
         .args([
             "contract", "deploy",
             "--wasm", &wasm.to_string_lossy(),
@@ -197,7 +198,29 @@ fn stellar_deploy(wasm: &PathBuf) -> Result<String> {
             "--network", "testnet",
             "--salt", &salt_hex,
         ])
-        .output();
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run stellar deploy: {e}"))?;
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Wait for the deploy TX to be confirmed on-chain before returning
+    if let Some(tx_hash) = extract_tx_hash(&stderr).or_else(|| extract_tx_hash(&stdout)) {
+        eprintln!("  Deploy TX: {tx_hash}");
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if let Some(_) = poll_tx_status(&tx_hash)? {
+                eprintln!("  Deployed: {contract_id}");
+                return Ok(contract_id);
+            }
+        }
+        anyhow::bail!("Deploy TX {tx_hash} not confirmed after 120s");
+    }
+
+    if !output.status.success() {
+        anyhow::bail!("stellar deploy failed:\n{stderr}");
+    }
+
     Ok(contract_id)
 }
 
