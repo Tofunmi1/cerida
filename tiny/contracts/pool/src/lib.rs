@@ -46,7 +46,7 @@ fn load_sp1_vk(env: &Env) -> Sp1Vk {
 }
 
 fn is_placeholder_vk() -> bool {
-    SP1_VK_ALPHA_G1 == [0u8; 64]
+    SP1_VKEY_HASH == [0u8; 32]
 }
 
 #[contract]
@@ -93,22 +93,28 @@ impl TinyPool {
         if !is_placeholder_vk() {
             // Compute committed_values_digest = sha256(commitment || nullifier) mod BN254_Fr
             // SP1 serializes PublicOutput{commitment, nullifier} as 64 raw bytes (bincode fixed arrays)
+            // hash_bn254() in SP1 masks the top 3 bits so the result fits in BN254 Fr
             let mut pub_bytes = Bytes::new(&env);
             pub_bytes.extend_from_array::<32>(&commitment.to_array());
             pub_bytes.extend_from_array::<32>(&nullifier.to_array());
             let sha: BytesN<32> = env.crypto().sha256(&pub_bytes).into();
+            let mut sha_arr = sha.to_array();
+            sha_arr[0] &= 0b00011111; // mask top 3 bits (matches SP1's hash_bn254)
+            let digest = Bn254Fr::from_bytes(BytesN::from_array(&env, &sha_arr));
 
             let vkey_hash = Bn254Fr::from_bytes(BytesN::from_array(&env, &SP1_VKEY_HASH));
-            // Bn254Fr::from_bytes performs mod reduction on the 32-byte big-endian input
-            let digest = Bn254Fr::from_bytes(sha);
+            let vk_root = Bn254Fr::from_bytes(BytesN::from_array(&env, &SP1_VK_ROOT));
 
             let vk = load_sp1_vk(&env);
             let bn = env.crypto().bn254();
 
-            // vk_x = IC[0] + vkey_hash * IC[1] + digest * IC[2]
+            // SP1 Groth16 has 5 public inputs: [vkey_hash, digest, exit_code, vk_root, proof_nonce]
+            // For local proofs: exit_code=0, proof_nonce=0 → IC[3] and IC[5] terms vanish
+            // vk_x = IC[0] + IC[1]*vkey_hash + IC[2]*digest + IC[4]*vk_root
             let mut vk_x = vk.ic.get(0).unwrap();
             vk_x = bn.g1_add(&vk_x, &bn.g1_mul(&vk.ic.get(1).unwrap(), &vkey_hash));
             vk_x = bn.g1_add(&vk_x, &bn.g1_mul(&vk.ic.get(2).unwrap(), &digest));
+            vk_x = bn.g1_add(&vk_x, &bn.g1_mul(&vk.ic.get(4).unwrap(), &vk_root));
 
             let neg_a = -proof.a.clone();
             let g1_points = vec![&env, neg_a, vk.alpha, vk_x, proof.c.clone()];

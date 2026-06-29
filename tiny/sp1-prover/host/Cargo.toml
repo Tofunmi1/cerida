@@ -9,6 +9,9 @@ path = "src/main.rs"
 
 [dependencies]
 sp1-sdk = { version = "6", features = ["blocking"] }
+sp1-verifier = { version = "6", features = ["ark", "std"] }
+ark-bn254 = "0.5"
+ark-ff = { version = "0.5", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
