@@ -244,8 +244,7 @@ fn handle_init(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respon
         "nonce", secrets.nonce
     );
 
-    log::debug!("Generating ZK commitment proof via Circom",
-        "circuit", "order_commitment",
+    log::debug!("Generating commitment proof via native Rust circuits",
         "side", secrets.side,
         "price", secrets.price,
         "size", secrets.size
@@ -312,7 +311,7 @@ fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
         }
     };
 
-    log::debug!("Generating placement proof via Circom",
+    log::debug!("Generating placement proof via native Rust circuits",
         "side", secrets.side,
         "price", secrets.price,
         "size", secrets.size

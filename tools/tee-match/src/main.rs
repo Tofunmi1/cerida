@@ -104,9 +104,8 @@ fn main() -> Result<()> {
             let side = match side { 0 | 3 => 0, _ => 1 };
             let secrets = db::OrderSecrets { side, price, size, leverage, asset, nonce, secret, is_market };
 
-            log::debug!("Generating commitment proof via Circom",
-                "circuit", "order_commitment",
-                "keys_dir", format!("{}", keys_dir.display())
+            log::debug!("Generating commitment proof via native Rust circuits",
+                "circuit", "order_commitment"
             );
 
             let out = proof::gen_commitment_proof(&keys_dir, &secrets)?;
@@ -188,7 +187,7 @@ fn main() -> Result<()> {
                 "match_size", params.match_size
             );
 
-            log::debug!("Generating Groth16 match proof via Circom");
+            log::debug!("Generating Groth16 match proof via native Rust circuits");
             let out = proof::gen_match_proof(&keys_dir, &a, &b, params.match_price, params.match_size)?;
             let proof_size = out.proof.a.len() + out.proof.b.len() + out.proof.c.len();
             log::info!("ZK match proof generated",

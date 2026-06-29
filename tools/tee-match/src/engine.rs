@@ -118,7 +118,7 @@ impl OrderBook {
             }
             OrderType::IOC => {
                 log::debug!("Placing IOC order", "side", order.side as u64, "price", order.price, "size", order.size);
-                let prev_fills = self.fills.len();
+                let _prev_fills = self.fills.len();
                 // Match but don't rest — use match_limit_inner which respects remaining
                 self.match_against_book(Order { remaining: order.size, ..order }, false);
             }
