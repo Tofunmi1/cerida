@@ -9,6 +9,7 @@ import { IconChevronDown } from '@tabler/icons-react'
 import { useLevels } from '../../context/levels-context'
 import { type Side, useMarket } from '../../context/market-context'
 import { formatUsd } from './format'
+import { toast } from '../toast/toast-context'
 
 const MIN_LEV = 1
 const MAX_LEV = 50
@@ -376,6 +377,7 @@ export default function TradingPanel() {
   const [limitPrice, setLimitPrice] = useState('')
   const [tpInput, setTpInput] = useState('')
   const [slInput, setSlInput] = useState('')
+  const [walletConnected] = useState(false)
 
   const margin = Number(amount) || 0
   const notional = margin * leverage
@@ -408,6 +410,50 @@ export default function TradingPanel() {
 
   const actionLabel = side === 'long' ? 'Long' : 'Short'
   const pctOptions = [10, 25, 50, 75]
+
+  const handleSubmit = () => {
+    if (!walletConnected) {
+      toast.warning('Connect wallet', `Connect a wallet before placing a ${actionLabel.toLowerCase()} order.`)
+      return
+    }
+
+    if (!amount || margin <= 0 || Number.isNaN(margin)) {
+      toast.warning('Enter margin', 'Choose an amount before submitting the order.')
+      return
+    }
+
+    if (orderType !== 'market') {
+      const price = Number(limitPrice)
+      if (!limitPrice || price <= 0 || Number.isNaN(price)) {
+        toast.warning(
+          orderType === 'limit' ? 'Set limit price' : 'Set trigger price',
+          `A ${orderType} order needs a valid execution price.`,
+        )
+        return
+      }
+    }
+
+    levels.setEntry(mark)
+    const id = toast.progress(
+      `${actionLabel} ${symbol}`,
+      35,
+      `${orderType.toUpperCase()} · ${formatUsd(notional)} notional · ${leverage}x`,
+    )
+
+    window.setTimeout(() => {
+      toast.update(id, {
+        type: 'success',
+        title: `${actionLabel} order staged`,
+        description: `${symbol} ${side} order is ready for signing.`,
+        progress: undefined,
+        duration: 4500,
+      })
+    }, 650)
+
+    if (takeProfitEnabled && (tpInput || slInput)) {
+      toast.info('TP/SL attached', 'Your chart levels were added to the order preview.', { duration: 3500 })
+    }
+  }
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-surface-primary">
@@ -597,7 +643,7 @@ export default function TradingPanel() {
 
       <div className="flex shrink-0 flex-col gap-1.5 px-3 pb-3">
         <button
-          onClick={() => levels.setEntry(mark)}
+          onClick={handleSubmit}
           className={`w-full rounded-[8px] py-2.5 text-[13px] font-semibold transition-opacity hover:opacity-90 ${
             side === 'long' ? 'bg-bullish-green text-[#1a1a1a]' : 'bg-bearish-red text-white'
           }`}

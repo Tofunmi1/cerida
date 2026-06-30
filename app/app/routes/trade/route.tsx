@@ -6,6 +6,8 @@ import { IconPlus, IconX } from '@tabler/icons-react'
 import { LevelsProvider } from '../../context/levels-context'
 import { MarketProvider } from '../../context/market-context'
 import { ThemeProvider } from '../../context/theme-context'
+import { ToastContainer } from '../../components/toast/toast-container'
+import { ToastProvider } from '../../components/toast/toast-context'
 import MarketBar from '../../components/trade/market-bar'
 import Sidebar from '../../components/trade/sidebar'
 
@@ -403,11 +405,14 @@ function TradeBoard() {
 export default function TradeRoute() {
   return (
     <ThemeProvider>
-      <MarketProvider>
-        <LevelsProvider>
-          <TradeBoard />
-        </LevelsProvider>
-      </MarketProvider>
+      <ToastProvider>
+        <MarketProvider>
+          <LevelsProvider>
+            <TradeBoard />
+            <ToastContainer />
+          </LevelsProvider>
+        </MarketProvider>
+      </ToastProvider>
     </ThemeProvider>
   )
 }

@@ -12,6 +12,7 @@ import {
 import { MARKET_CATALOG, useMarket, type MarketDefinition } from '../../context/market-context'
 import { useTheme } from '../../context/theme-context'
 import { formatCompactUsd, formatUsd } from './format'
+import { toast } from '../toast/toast-context'
 
 export default function MarketBar() {
   const { symbol, setSymbol, mark, index, changePct, funding, openInterest, volume24h } = useMarket()
@@ -64,13 +65,16 @@ export default function MarketBar() {
           <IconButton label={theme === 'light' ? 'Dark mode' : 'Light mode'} onClick={toggleTheme}>
             {theme === 'light' ? <IconMoon size={15} stroke={1.8} /> : <IconSun size={15} stroke={1.8} />}
           </IconButton>
-          <IconButton label="Alerts">
+          <IconButton label="Alerts" onClick={() => toast.info('Alerts', 'Price alerts are not configured in this build yet.')}>
             <IconBell size={15} stroke={1.8} />
           </IconButton>
-          <IconButton label="Settings">
+          <IconButton label="Settings" onClick={() => toast.info('Settings', 'Trading preferences are coming next.')}>
             <IconSettings size={15} stroke={1.8} />
           </IconButton>
-          <button className="flex items-center gap-2 rounded-[8px] bg-brand-violet px-3 py-2 text-[12px] font-semibold text-white">
+          <button
+            onClick={() => toast.info('Wallet connection', 'Wallet integration is not connected in this build yet.')}
+            className="flex items-center gap-2 rounded-[8px] bg-brand-violet px-3 py-2 text-[12px] font-semibold text-white"
+          >
             <IconWallet size={15} stroke={2} />
             Connect
           </button>
@@ -81,8 +85,10 @@ export default function MarketBar() {
         <MarketModal
           activeSymbol={symbol}
           onSelect={(next) => {
+            const market = MARKET_CATALOG.find((item) => item.symbol === next)
             setSymbol(next)
             setMarketOpen(false)
+            toast.success('Market selected', `${market?.name ?? next} perpetual is now active.`, { duration: 3000 })
           }}
           onClose={() => setMarketOpen(false)}
         />
