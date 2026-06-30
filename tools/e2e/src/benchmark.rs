@@ -146,9 +146,9 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
             let side = 2 + (tr_idx % 2) as u64;
             let size = if cfg.randomize_sizes {
                 let factor = rng.gen_range(50..=150);
-                (cfg.order_size * 2 * factor) / 100
+                (cfg.order_size * factor) / 100
             } else {
-                cfg.order_size * 2
+                cfg.order_size
             };
             let leverage = if cfg.randomize_leverage {
                 LEVERAGES[rng.gen_range(0..LEVERAGES.len())]
@@ -264,17 +264,17 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
                 let proof = o.proof_json.clone();
                 s.spawn(move || {
                     let r = (|| -> Result<()> {
+                        crate::stellar::invoke(&pe, &identity, &[
+                            "deposit",
+                            "--who", &addr,
+                            "--amount", "1000000000",
+                        ])?;
                         crate::stellar::invoke(&ob, &identity, &[
                             "place_order",
                             "--owner", &addr,
                             "--commitment", &cmt,
                             "--hint", &price.to_string(),
                             "--proof", &proof,
-                        ])?;
-                        crate::stellar::invoke(&pe, &identity, &[
-                            "deposit",
-                            "--who", &addr,
-                            "--amount", "1000000000",
                         ])?;
                         crate::stellar::invoke(&pe, &identity, &[
                             "open_position",
