@@ -243,25 +243,24 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
         orders = raw_orders;
 
         // ── Step 5 (on-chain, best-effort): place_order + deposit + open_position
-        // On-chain ops are best-effort — the CLOB seeding (step 6) runs regardless.
-        let mm_orders: Vec<&OrderCache> = orders.iter()
-            .filter(|o| o.side <= 1)
-            .collect();
-
-        eprintln!("[5/6] On-chain place/deposit/open ({} orders, parallel, best-effort)…", mm_orders.len());
+        // Opens positions for ALL orders (limit + market) so on-chain match works.
+        eprintln!("[5/6] On-chain place/deposit/open ({} orders, parallel, best-effort)…", orders.len());
         let t5 = Instant::now();
 
         let ob_ref = &deployed_ob;
         let pe_ref = &deployed_pe;
         std::thread::scope(|s| {
-            let handles: Vec<_> = mm_orders.iter().enumerate().map(|(i, o)| {
+            let handles: Vec<_> = orders.iter().enumerate().map(|(i, o)| {
                 let ob = ob_ref.clone();
                 let pe = pe_ref.clone();
                 let identity = o.identity.clone();
                 let addr = o.addr.clone();
                 let cmt = o.cmt.clone();
                 let price = o.price;
-                let side = o.side;
+                let raw_side = o.side;
+                // Normalize side: server maps 0/3→Bid(0), 1/2→Ask(1)
+                let hint_side = if raw_side == 0 || raw_side == 3 { 0 } else { 1 };
+                let hint_leverage = o.leverage;
                 let proof = o.proof_json.clone();
                 s.spawn(move || {
                     let r = (|| -> Result<()> {
@@ -283,8 +282,8 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
                             "--commitment", &cmt,
                             "--collateral", "1000000000",
                             "--hint_price", &price.to_string(),
-                            "--hint_side", &side.to_string(),
-                            "--hint_leverage", "1",
+                            "--hint_side", &hint_side.to_string(),
+                            "--hint_leverage", &hint_leverage.to_string(),
                             "--proof", &proof,
                         ])?;
                         Ok(())
