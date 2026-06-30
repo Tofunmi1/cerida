@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use ark_bn254::{Bn254, Fr, Fq, Fq2, G1Affine, G2Affine};
 use ark_ff::{AdditiveGroup, Field, PrimeField};
 use ark_groth16::{Groth16, ProvingKey, prepare_verifying_key};
-use rust_circuits::{ProofOutput, load_pk};
+use rust_circuits::{ProofOutput, load_pk, compute_note_commitment, compute_note_nullifier, fr_to_biguint};
 
 pub type RawProof = ProofOutput;
 
@@ -15,32 +15,12 @@ fn pk_path(keys_dir: &Path, name: &str) -> std::path::PathBuf {
 
 /// Verify the proof locally using the VK from the loaded proving key.
 fn verify_proof_raw(pk: &ProvingKey<Bn254>, proof: &ProofOutput, public: &[Fr]) {
-    let vk = &pk.vk;
-    let pvk = prepare_verifying_key(vk);
-
-    // Parse proof points from hex (coordinates are Fq base field elements)
-    let parse_g1 = |hex: &str| -> G1Affine {
-        let x = Fq::from_be_bytes_mod_order(&hex::decode(&hex[..64]).unwrap());
-        let y = Fq::from_be_bytes_mod_order(&hex::decode(&hex[64..]).unwrap());
-        G1Affine::new(x, y)
-    };
-    let parse_g2 = |hex: &str| -> G2Affine {
-        let x_c1 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[..64]).unwrap());
-        let x_c0 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[64..128]).unwrap());
-        let y_c1 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[128..192]).unwrap());
-        let y_c0 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[192..]).unwrap());
-        G2Affine::new(
-            Fq2::new(x_c0, x_c1),
-            Fq2::new(y_c0, y_c1),
-        )
-    };
-
+    let pvk = prepare_verifying_key(&pk.vk);
     let proof_ark = ark_groth16::Proof {
         a: parse_g1(&proof.proof.a).into(),
         b: parse_g2(&proof.proof.b).into(),
         c: parse_g1(&proof.proof.c).into(),
     };
-
     let result = Groth16::<Bn254>::verify_proof(&pvk, &proof_ark, public).unwrap();
     assert!(result, "LOCAL VERIFICATION FAILED — generated proof does not verify against exported VK!");
 }
@@ -69,6 +49,44 @@ pub fn gen_commitment(
     let cmt = Fr::from_str(&out.public_inputs[0]).unwrap();
     verify_proof_raw(&pk, &out, &[cmt]);
     Ok(out)
+}
+
+/// Generate a NoteSpend proof for deposit_note→withdraw_note flows.
+/// Returns (note_commitment_hex, nullifier_hex, RawProof).
+pub fn gen_note_spend(keys_dir: &Path, amount: u64, secret: u64) -> Result<(String, String, RawProof)> {
+    let pk = load_pk(&pk_path(keys_dir, "note_spend"))
+        .with_context(|| format!("Failed to load note_spend.pk.bin from {}", keys_dir.display()))?;
+    let amount_fr = Fr::from(amount);
+    let secret_fr = Fr::from(secret);
+    let note_cmt = compute_note_commitment(amount_fr, secret_fr);
+    let nullifier = compute_note_nullifier(note_cmt, secret_fr);
+    let out = rust_circuits::prove_note_spend_with_pk(&pk, amount_fr, secret_fr)?;
+    // Verify locally before submitting
+    let pvk = prepare_verifying_key(&pk.vk);
+    let proof_ark = ark_groth16::Proof {
+        a: parse_g1(&out.proof.a).into(),
+        b: parse_g2(&out.proof.b).into(),
+        c: parse_g1(&out.proof.c).into(),
+    };
+    let result = Groth16::<Bn254>::verify_proof(&pvk, &proof_ark, &[note_cmt, nullifier]).unwrap();
+    assert!(result, "NoteSpend proof failed local verification");
+    let cmt_hex = format!("{:0>64x}", fr_to_biguint(&note_cmt));
+    let null_hex = format!("{:0>64x}", fr_to_biguint(&nullifier));
+    Ok((cmt_hex, null_hex, out))
+}
+
+fn parse_g1(hex: &str) -> G1Affine {
+    let x = Fq::from_be_bytes_mod_order(&hex::decode(&hex[..64]).unwrap());
+    let y = Fq::from_be_bytes_mod_order(&hex::decode(&hex[64..]).unwrap());
+    G1Affine::new(x, y)
+}
+
+fn parse_g2(hex: &str) -> G2Affine {
+    let x_c1 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[..64]).unwrap());
+    let x_c0 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[64..128]).unwrap());
+    let y_c1 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[128..192]).unwrap());
+    let y_c0 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[192..]).unwrap());
+    G2Affine::new(Fq2::new(x_c0, x_c1), Fq2::new(y_c0, y_c1))
 }
 
 pub fn gen_match(

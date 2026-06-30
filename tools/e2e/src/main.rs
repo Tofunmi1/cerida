@@ -124,6 +124,15 @@ enum Command {
         #[arg(long, default_value = "0")]
         book_delay_ms: u64,
     },
+    /// Private deposit → shielded withdrawal: proves no on-chain address↔note link
+    PrivateDeposit {
+        /// Amount to deposit (in token stroops)
+        #[arg(long, default_value = "1000000000")]
+        amount: u64,
+        /// Secret scalar for note commitment (keep this private!)
+        #[arg(long, default_value = "314159265")]
+        secret: u64,
+    },
     /// Full end-to-end via tee-match server (generate proofs via server)
     Server {
         #[arg(long, default_value = "127.0.0.1:9720")]
@@ -217,6 +226,13 @@ fn main() -> Result<()> {
                 },
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        Command::PrivateDeposit { amount, secret } => {
+            eprintln!("━━━ PrivateDeposit E2E ━━━");
+            eprintln!("  Proves: deposit_note breaks address↔note link on-chain");
+            eprintln!("  Depositor (alice) → shielded note → Recipient (bob)");
+            stellar::private_deposit_e2e(&wasm_dir, &keys_dir, amount, secret)?;
+            eprintln!("\n━━━ COMPLETE ({:.2}s) ━━━", global_start.elapsed().as_secs_f64());
         }
         Command::Benchmark {
             mms, traders, orders_per_mm,
@@ -312,7 +328,11 @@ fn main() -> Result<()> {
                 &wasm_dir,
                 &proof_a_json, &proof_b_json,
                 &cmt_a_hex, &cmt_b_hex,
-                price_a, price_b, "0", "1",
+                price_a, price_b,
+                side_a, side_b,
+                size_a, size_b,
+                leverage_a, leverage_b,
+                15, // revealed: all fields public
             )?;
             eprintln!("  ✓ orderbook: {}", ctx.orderbook_id);
             eprintln!("  ✓ perp: {}", ctx.perp_id);

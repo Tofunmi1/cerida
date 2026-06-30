@@ -1068,6 +1068,63 @@ mod test {
     use soroban_sdk::token::StellarAssetClient;
     use std::panic::{self, AssertUnwindSafe};
 
+    /// Load the note_spend PK from circuits/keys and generate a real proof.
+    /// Returns (note_commitment_hex, nullifier_hex, proof_json).
+    fn gen_note_proof(amount: u64, secret: u64) -> (std::string::String, std::string::String, std::string::String) {
+        use std::string::ToString;
+        use ark_bn254::Fr;
+        use rust_circuits::{
+            compute_note_commitment, compute_note_nullifier, fr_to_biguint,
+            load_pk, prove_note_spend_with_pk,
+        };
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let pk_path = std::path::Path::new(manifest_dir)
+            .join("../../circuits/keys/note_spend.pk.bin");
+
+        let pk = load_pk(&pk_path)
+            .expect("Failed to load note_spend.pk.bin — run `cargo run --release --manifest-path tools/rust-circuits/Cargo.toml -- setup` first");
+
+        let amount_fr = Fr::from(amount);
+        let secret_fr = Fr::from(secret);
+        let note_cmt = compute_note_commitment(amount_fr, secret_fr);
+        let nullifier = compute_note_nullifier(note_cmt, secret_fr);
+
+        let out = prove_note_spend_with_pk(&pk, amount_fr, secret_fr)
+            .expect("prove_note_spend_with_pk failed");
+
+        let cmt_hex = std::format!("{:0>64x}", fr_to_biguint(&note_cmt));
+        let null_hex = std::format!("{:0>64x}", fr_to_biguint(&nullifier));
+        let proof_json = serde_json::json!({"a": out.proof.a, "b": out.proof.b, "c": out.proof.c}).to_string();
+
+        (cmt_hex, null_hex, proof_json)
+    }
+
+    fn make_groth16_proof(env: &Env, proof_json: &str) -> Groth16Proof {
+        use std::convert::TryInto;
+        let v: serde_json::Value = serde_json::from_str(proof_json).unwrap();
+        let a_hex = v["a"].as_str().unwrap();
+        let b_hex = v["b"].as_str().unwrap();
+        let c_hex = v["c"].as_str().unwrap();
+
+        let a_bytes: [u8; 64] = hex::decode(a_hex).unwrap().try_into().unwrap();
+        let b_bytes: [u8; 128] = hex::decode(b_hex).unwrap().try_into().unwrap();
+        let c_bytes: [u8; 64] = hex::decode(c_hex).unwrap().try_into().unwrap();
+
+        use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254G2Affine};
+        Groth16Proof {
+            a: Bn254G1Affine::from_bytes(BytesN::from_array(env, &a_bytes)),
+            b: Bn254G2Affine::from_bytes(BytesN::from_array(env, &b_bytes)),
+            c: Bn254G1Affine::from_bytes(BytesN::from_array(env, &c_bytes)),
+        }
+    }
+
+    fn hex_to_bytes32(env: &Env, hex_str: &str) -> BytesN<32> {
+        use std::convert::TryInto;
+        let bytes: [u8; 32] = hex::decode(hex_str).unwrap().try_into().unwrap();
+        BytesN::from_array(env, &bytes)
+    }
+
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
         let admin = Address::generate(&env);
@@ -1488,6 +1545,129 @@ mod test {
         create_position(&env, &cid, &owner, &cmt, 1000, 5, 0, 100, PositionStatus::Open, 0);
         // owner has 0 balance, adding margin should fail
         client.add_margin(&owner, &cmt, &500);
+    }
+
+    #[test]
+    fn test_withdraw_note_full_proof() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let cfg = client.get_config();
+        let asset = StellarAssetClient::new(&env, &cfg.token);
+
+        let amount: u64 = 1_000_000;
+        let secret: u64 = 777_999;
+        let (cmt_hex, null_hex, proof_json) = gen_note_proof(amount, secret);
+
+        let note_cmt = hex_to_bytes32(&env, &cmt_hex);
+        let nullifier = hex_to_bytes32(&env, &null_hex);
+
+        // Deposit
+        asset.mint(&depositor, &(amount as i128));
+        client.deposit_note(&depositor, &note_cmt, &(amount as i128));
+        assert_eq!(client.get_note(&note_cmt), Some(amount as i128));
+
+        // Withdraw to a different recipient — the privacy claim
+        let proof = make_groth16_proof(&env, &proof_json);
+        client.withdraw_note(&note_cmt, &nullifier, &recipient, &proof);
+
+        // Note nullifier is spent, can't withdraw again
+        assert!(client.is_spent(&nullifier));
+    }
+
+    #[test]
+    #[should_panic(expected = "nullifier already spent")]
+    fn test_withdraw_note_double_spend_reverts() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let cfg = client.get_config();
+        let asset = StellarAssetClient::new(&env, &cfg.token);
+
+        let amount: u64 = 500_000;
+        let secret: u64 = 123_456;
+        let (cmt_hex, null_hex, proof_json) = gen_note_proof(amount, secret);
+        let note_cmt = hex_to_bytes32(&env, &cmt_hex);
+        let nullifier = hex_to_bytes32(&env, &null_hex);
+
+        asset.mint(&depositor, &(amount as i128));
+        client.deposit_note(&depositor, &note_cmt, &(amount as i128));
+
+        let proof = make_groth16_proof(&env, &proof_json);
+        client.withdraw_note(&note_cmt, &nullifier, &recipient, &proof.clone());
+        // second spend must panic
+        client.withdraw_note(&note_cmt, &nullifier, &recipient, &proof);
+    }
+
+    #[test]
+    #[should_panic(expected = "note not found")]
+    fn test_withdraw_note_nonexistent_reverts() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let recipient = Address::generate(&env);
+
+        let amount: u64 = 100_000;
+        let secret: u64 = 9999;
+        let (cmt_hex, null_hex, proof_json) = gen_note_proof(amount, secret);
+        let note_cmt = hex_to_bytes32(&env, &cmt_hex);
+        let nullifier = hex_to_bytes32(&env, &null_hex);
+
+        // No deposit — note doesn't exist
+        let proof = make_groth16_proof(&env, &proof_json);
+        client.withdraw_note(&note_cmt, &nullifier, &recipient, &proof);
+    }
+
+    #[test]
+    fn test_add_margin_from_note_full_proof() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let depositor = Address::generate(&env);
+        let pos_owner = Address::generate(&env);
+        let cfg = client.get_config();
+        let asset = StellarAssetClient::new(&env, &cfg.token);
+
+        let margin_amount: u64 = 250_000;
+        let secret: u64 = 888_111;
+        let (cmt_hex, null_hex, proof_json) = gen_note_proof(margin_amount, secret);
+        let note_cmt = hex_to_bytes32(&env, &cmt_hex);
+        let nullifier = hex_to_bytes32(&env, &null_hex);
+
+        // Deposit the note
+        asset.mint(&depositor, &(margin_amount as i128));
+        client.deposit_note(&depositor, &note_cmt, &(margin_amount as i128));
+
+        // Create a position for pos_owner directly
+        let pos_cmt = BytesN::from_array(&env, &[55u8; 32]);
+        create_position(&env, &cid, &pos_owner, &pos_cmt, 1_000_000, 5, 0, 100, PositionStatus::Open, 0);
+
+        // Add margin from note (no address required — proof authorizes it)
+        let proof = make_groth16_proof(&env, &proof_json);
+        client.add_margin_from_note(&note_cmt, &nullifier, &pos_cmt, &proof);
+
+        let pos = client.get_position(&pos_cmt).unwrap();
+        assert_eq!(pos.collateral, 1_000_000 + margin_amount as i128);
+        assert!(client.is_spent(&nullifier));
+    }
+
+    #[test]
+    #[should_panic(expected = "note not found")]
+    fn test_add_margin_from_note_nonexistent_reverts() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let pos_owner = Address::generate(&env);
+
+        let amount: u64 = 100_000;
+        let secret: u64 = 42;
+        let (cmt_hex, null_hex, proof_json) = gen_note_proof(amount, secret);
+        let note_cmt = hex_to_bytes32(&env, &cmt_hex);
+        let nullifier = hex_to_bytes32(&env, &null_hex);
+        let pos_cmt = BytesN::from_array(&env, &[66u8; 32]);
+        create_position(&env, &cid, &pos_owner, &pos_cmt, 500_000, 5, 0, 100, PositionStatus::Open, 0);
+
+        let proof = make_groth16_proof(&env, &proof_json);
+        client.add_margin_from_note(&note_cmt, &nullifier, &pos_cmt, &proof);
     }
 
     #[test]

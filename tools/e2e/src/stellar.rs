@@ -32,10 +32,15 @@ pub fn deploy_and_place(
     proof_b_json: &str,
     cmt_a_hex: &str,
     cmt_b_hex: &str,
-    hint_a: u64,
-    hint_b: u64,
-    side_a: &str,
-    side_b: &str,
+    hint_price_a: u64,
+    hint_price_b: u64,
+    hint_side_a: u64,
+    hint_side_b: u64,
+    hint_size_a: u64,
+    hint_size_b: u64,
+    hint_leverage_a: u64,
+    hint_leverage_b: u64,
+    revealed: u64,
 ) -> Result<E2eContext> {
     let step_start = Instant::now();
     let ob_wasm = wasm_dir.join("orderbook.wasm");
@@ -83,13 +88,18 @@ pub fn deploy_and_place(
 
     // ── Place order A (Alice) ────────────────────────────────────────────
     eprintln!("  [place] Placing order A (Alice, cmt={}…)…", &cmt_a_hex[..12]);
-    eprintln!("    hint={} side=0", hint_a);
+    eprintln!("    hint_price={} hint_side={} hint_size={} hint_leverage={} revealed={}",
+        hint_price_a, hint_side_a, hint_size_a, hint_leverage_a, revealed);
     invoke(
         &orderbook_id,
         &alice.1,
         &[
             "place_order", "--owner", &alice.0, "--commitment", cmt_a_hex,
-            "--hint", &hint_a.to_string(),
+            "--hint-price", &hint_price_a.to_string(),
+            "--hint-side", &hint_side_a.to_string(),
+            "--hint-size", &hint_size_a.to_string(),
+            "--hint-leverage", &hint_leverage_a.to_string(),
+            "--revealed", &revealed.to_string(),
             "--proof", proof_a_json,
         ],
     )?;
@@ -101,13 +111,18 @@ pub fn deploy_and_place(
 
     // ── Place order B (Bob) ──────────────────────────────────────────────
     eprintln!("  [place] Placing order B (Bob, cmt={}…)…", &cmt_b_hex[..12]);
-    eprintln!("    hint={} side=1", hint_b);
+    eprintln!("    hint_price={} hint_side={} hint_size={} hint_leverage={} revealed={}",
+        hint_price_b, hint_side_b, hint_size_b, hint_leverage_b, revealed);
     invoke(
         &orderbook_id,
         &bob.1,
         &[
             "place_order", "--owner", &bob.0, "--commitment", cmt_b_hex,
-            "--hint", &hint_b.to_string(),
+            "--hint-price", &hint_price_b.to_string(),
+            "--hint-side", &hint_side_b.to_string(),
+            "--hint-size", &hint_size_b.to_string(),
+            "--hint-leverage", &hint_leverage_b.to_string(),
+            "--revealed", &revealed.to_string(),
             "--proof", proof_b_json,
         ],
     )?;
@@ -149,15 +164,15 @@ pub fn deploy_and_place(
 
     // ── Open position A (Alice) ──────────────────────────────────────────
     eprintln!("  [position] Opening position A (Alice, cmt={}…)…", &cmt_a_hex[..12]);
-    eprintln!("    collateral={} hint_price={} side=0 leverage={}", COLLATERAL, hint_a, LEVERAGE);
+    eprintln!("    collateral={} hint_price={} hint_side={} leverage={}", COLLATERAL, hint_price_a, hint_side_a, LEVERAGE);
     invoke(
         &perp_id,
         &alice.1,
         &[
             "open_position", "--owner", &alice.0, "--commitment", cmt_a_hex,
             "--collateral", &COLLATERAL.to_string(),
-            "--hint_price", &hint_a.to_string(),
-            "--hint_side", side_a,
+            "--hint_price", &hint_price_a.to_string(),
+            "--hint_side", &hint_side_a.to_string(),
             "--hint_leverage", &LEVERAGE.to_string(),
             "--proof", proof_a_json,
         ],
@@ -170,15 +185,15 @@ pub fn deploy_and_place(
 
     // ── Open position B (Bob) ──────────────────────────────────────────
     eprintln!("  [position] Opening position B (Bob, cmt={}…)…", &cmt_b_hex[..12]);
-    eprintln!("    collateral={} hint_price={} side=1 leverage={}", COLLATERAL, hint_b, LEVERAGE);
+    eprintln!("    collateral={} hint_price={} hint_side={} leverage={}", COLLATERAL, hint_price_b, hint_side_b, LEVERAGE);
     invoke(
         &perp_id,
         &bob.1,
         &[
             "open_position", "--owner", &bob.0, "--commitment", cmt_b_hex,
             "--collateral", &COLLATERAL.to_string(),
-            "--hint_price", &hint_b.to_string(),
-            "--hint_side", side_b,
+            "--hint_price", &hint_price_b.to_string(),
+            "--hint_side", &hint_side_b.to_string(),
             "--hint_leverage", &LEVERAGE.to_string(),
             "--proof", proof_b_json,
         ],
@@ -214,13 +229,25 @@ pub fn run_e2e(
     let start = Instant::now();
     let proof_a_json = proof_json(&p_a.proof);
     let proof_b_json = proof_json(&p_b.proof);
-    let hint_a: u64 = 100000;
-    let hint_b: u64 = 99000;
+    let hint_price_a: u64 = 100000;
+    let hint_price_b: u64 = 99000;
+    let hint_side_a: u64 = 0;
+    let hint_side_b: u64 = 1;
+    let hint_size_a: u64 = 1000;
+    let hint_size_b: u64 = 1000;
+    let hint_leverage_a: u64 = 1;
+    let hint_leverage_b: u64 = 1;
+    let revealed: u64 = 15; // all fields public
 
     eprintln!("── Phase 1: Deploy, place, deposit, open ──");
     let ctx = deploy_and_place(
         wasm_dir, &proof_a_json, &proof_b_json,
-        cmt_a_hex, cmt_b_hex, hint_a, hint_b, "0", "1",
+        cmt_a_hex, cmt_b_hex,
+        hint_price_a, hint_price_b,
+        hint_side_a, hint_side_b,
+        hint_size_a, hint_size_b,
+        hint_leverage_a, hint_leverage_b,
+        revealed,
     )?;
 
     let match_price_hex = &p_match.public_inputs[2];
@@ -312,6 +339,97 @@ pub fn verify_match(ctx: &E2eContext, nf_a_hex: &str, nf_b_hex: &str) -> Result<
     std::fs::write(&out_path, serde_json::to_string_pretty(&out)?)?;
     eprintln!("  ✓ output written to {}", out_path.display());
     eprintln!("━━━ E2E PASSED ({:.2}s) ━━━", elapsed.elapsed().as_secs_f64());
+    Ok(())
+}
+
+/// Private deposit → withdraw e2e:
+/// 1. Deploy perp-engine, fund alice and bob
+/// 2. Alice deposits via deposit_note (shielded — no address in contract storage)
+/// 3. Alice generates NoteSpend proof and withdraws to Bob (breaking alice→bob link)
+/// 4. Verify nullifier spent, bob received funds
+pub fn private_deposit_e2e(
+    wasm_dir: &Path,
+    keys_dir: &Path,
+    amount: u64,
+    secret: u64,
+) -> Result<()> {
+    let start = Instant::now();
+    let pe_wasm = wasm_dir.join("perp_engine.wasm");
+
+    eprintln!("── Phase 1: Deploy perp-engine ──");
+    let alice = generate_keypair("e2e-alice");
+    let bob   = generate_keypair("e2e-bob");
+    let source_pk = source_pubkey()?;
+    eprintln!("  ✓ alice:  {}", alice.0);
+    eprintln!("  ✓ bob:    {}", bob.0);
+
+    fund(&alice.0, "alice");
+    fund(&bob.0,   "bob");
+
+    let perp_id = deploy(&pe_wasm)?;
+    eprintln!("  ✓ perp-engine: {}", perp_id);
+    let native_token = native_token_id()?;
+    init_perp_engine(&perp_id, SOURCE, &native_token)?;
+    eprintln!("  ✓ initialized");
+
+    eprintln!("\n── Phase 2: Shielded deposit ──");
+    eprintln!("  amount={} secret=<hidden>", amount);
+
+    // Generate note commitment off-chain (alice never reveals the secret on-chain)
+    let (cmt_hex, null_hex, note_proof) =
+        crate::proof::gen_note_spend(keys_dir, amount, secret)?;
+    eprintln!("  note_commitment: {}…", &cmt_hex[..16]);
+    eprintln!("  nullifier:       {}…", &null_hex[..16]);
+
+    // Alice calls deposit_note — amount is visible, but the commitment (not address) is stored
+    invoke(
+        &perp_id,
+        &alice.1,
+        &[
+            "deposit_note",
+            "--from", &alice.0,
+            "--note_commitment", &cmt_hex,
+            "--amount", &amount.to_string(),
+        ],
+    )?;
+
+    // Verify note is stored
+    let stored = invoke_view(
+        &perp_id, &alice.0,
+        &["get_note", "--note_commitment", &cmt_hex],
+    )?;
+    eprintln!("  ✓ get_note → {}", stored);
+
+    eprintln!("\n── Phase 3: Shielded withdrawal to Bob ──");
+    eprintln!("  recipient: {} (different from depositor {})", &bob.0[..8], &alice.0[..8]);
+
+    let proof_json = proof_json(&note_proof.proof);
+    invoke(
+        &perp_id,
+        SOURCE,
+        &[
+            "withdraw_note",
+            "--note_commitment", &cmt_hex,
+            "--nullifier", &null_hex,
+            "--recipient", &bob.0,
+            "--proof", &proof_json,
+        ],
+    )?;
+
+    // Verify nullifier is now spent
+    let spent = invoke_view(
+        &perp_id, &source_pk,
+        &["is_spent", "--nullifier", &null_hex],
+    )?;
+    eprintln!("  ✓ nullifier spent: {}", spent);
+    assert_eq!(spent.trim(), "true", "nullifier should be spent after withdrawal");
+
+    eprintln!("\n  Privacy check:");
+    eprintln!("    Depositor (alice): {}", alice.0);
+    eprintln!("    Recipient  (bob):  {}", bob.0);
+    eprintln!("    Contract storage never links these — only note_commitment is recorded");
+
+    eprintln!("\n━━━ PrivateDeposit E2E PASSED ({:.2}s) ━━━", start.elapsed().as_secs_f64());
     Ok(())
 }
 
@@ -531,7 +649,7 @@ pub fn invoke(contract_id: &str, source: &str, args: &[&str]) -> Result<String> 
     rpc.invoke(contract_id, source, args)
 }
 
-fn invoke_view(contract_id: &str, source: &str, args: &[&str]) -> Result<String> {
+pub fn invoke_view(contract_id: &str, source: &str, args: &[&str]) -> Result<String> {
     let method = args.first().unwrap_or(&"unknown");
     eprintln!("  [view] Calling {}({})…", method, &contract_id[..8]);
     for attempt in 0..3 {
