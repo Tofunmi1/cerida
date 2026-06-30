@@ -3,7 +3,7 @@ use rand::Rng;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const DEFAULT_RPC_URL: &str = "https://soroban-testnet.stellar.org";
+const DEFAULT_RPC_URL: &str = "https://stellar-testnet.g.alchemy.com/v2/FqjaGAy9IMENhdv2i_3UUVDPZnNClYNq";
 
 pub fn rpc_url() -> String {
     std::env::var("SOROBAN_RPC_URL").unwrap_or_else(|_| DEFAULT_RPC_URL.to_string())
@@ -336,7 +336,7 @@ pub fn deploy_contracts(wasm_dir: &Path) -> Result<(String, String, String, Stri
 
 /// Initialize perp-engine with admin and token (retries on contract-not-found).
 pub fn init_perp_engine(perp_id: &str, admin: &str, token: &str) -> Result<String> {
-    const MAX_ATTEMPTS: u32 = 20;
+    const MAX_ATTEMPTS: u32 = 60;
     const RETRY_SECS: u64 = 10;
     for attempt in 0..MAX_ATTEMPTS {
         match invoke(perp_id, SOURCE, &["initialize", "--admin", admin, "--token", token]) {
@@ -365,7 +365,7 @@ pub fn hex_field(decimal: &str) -> String {
     format!("{:0>64x}", n)
 }
 
-fn proof_json(p: &crate::proof::ProofHex) -> String {
+fn proof_json(p: &rust_circuits::ProofHex) -> String {
     serde_json::json!({"a": p.a, "b": p.b, "c": p.c}).to_string()
 }
 
@@ -482,7 +482,7 @@ fn deploy(wasm: &Path) -> Result<String> {
             std::thread::sleep(std::time::Duration::from_secs(2));
             if let Some(_result) = poll_tx(&tx_hash)? {
                 eprintln!("  [deploy] TX confirmed, waiting 30s for propagation…");
-                std::thread::sleep(std::time::Duration::from_secs(20));
+                std::thread::sleep(std::time::Duration::from_secs(30));
                 eprintln!("  [deploy] ✓ Contract confirmed on-chain: {}", id);
                 return Ok(id);
             }

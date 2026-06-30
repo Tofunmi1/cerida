@@ -1,6 +1,9 @@
-use anyhow::Result;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
 use ark_bn254::Fr;
 use ark_ff::PrimeField;
+use ark_serialize::CanonicalSerialize;
 use clap::{Parser, Subcommand};
 use rust_circuits::{prove_cancel, prove_commitment, prove_match};
 
@@ -34,6 +37,11 @@ enum Command {
         commitment: String,
         #[arg(long)]
         secret: u64,
+    },
+    /// Run setup for all circuits, saving pk.bin and vk.json
+    Setup {
+        #[arg(long, default_value = "circuits/keys")]
+        out_dir: PathBuf,
     },
     OrderMatch {
         #[arg(long)]
@@ -75,6 +83,29 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Setup { out_dir } => {
+            use rust_circuits::{setup_all, vk_to_json};
+            std::fs::create_dir_all(&out_dir)?;
+            let mut rng = rand::thread_rng();
+
+            let results = setup_all(&mut rng)?;
+            let names = ["order_commitment", "order_cancel", "order_match"];
+            for (name, (pk, vk)) in names.iter().zip(results.iter()) {
+                eprintln!("Setting up {}…", name);
+                let pk_path = out_dir.join(format!("{}.pk.bin", name));
+                let mut pk_bytes = Vec::new();
+                pk.serialize_compressed(&mut pk_bytes)?;
+                std::fs::write(&pk_path, &pk_bytes)
+                    .with_context(|| format!("Writing {pk_path:?}"))?;
+                eprintln!("  pk: {pk_path:?} ({} bytes)", pk_bytes.len());
+                let vk_json = vk_to_json(vk);
+                let vk_path = out_dir.join(format!("{}_vk.json", name));
+                let vk_json_str = serde_json::to_string_pretty(&vk_json)?;
+                std::fs::write(&vk_path, &vk_json_str)
+                    .with_context(|| format!("Writing {vk_path:?}"))?;
+                eprintln!("  vk: {vk_path:?} ({} bytes)", vk_json_str.len());
+            }
+        }
         Command::OrderCommitment { side, price, size, leverage, asset_id, nonce, secret } => {
             let out = prove_commitment(
                 Fr::from(side), Fr::from(price), Fr::from(size), Fr::from(leverage),

@@ -16,13 +16,13 @@ circuit-setup:
 	$(MAKE) -C circuits setup-all
 
 # ======== Contracts ========
-build-orderbook: circuit-setup
+build-orderbook:
 	VK_COMMIT_JSON=$(CIRCUIT_KEYS)/order_commitment_vk.json \
 	VK_CANCEL_JSON=$(CIRCUIT_KEYS)/order_cancel_vk.json \
 	  cargo build --target wasm32v1-none --release -p orderbook -p verifier-groth16 -p types
 	ls -la $(ROOT)/target/wasm32v1-none/release/orderbook.wasm
 
-build-perp-engine: circuit-setup
+build-perp-engine:
 	VK_COMMIT_JSON=$(CIRCUIT_KEYS)/order_commitment_vk.json \
 	VK_CANCEL_JSON=$(CIRCUIT_KEYS)/order_cancel_vk.json \
 	VK_MATCH_JSON=$(CIRCUIT_KEYS)/order_match_vk.json \
@@ -33,7 +33,7 @@ build-contracts: build-orderbook build-perp-engine
 
 # ======== Tools ========
 build-tools:
-	cargo build --release --manifest-path tools/prover/Cargo.toml
+	cargo build --release --manifest-path tools/rust-circuits/Cargo.toml
 	cargo build --release --manifest-path tools/e2e/Cargo.toml
 
 # ======== Deploy ========
@@ -50,7 +50,7 @@ deploy: deploy-orderbook deploy-perp-engine
 
 # ======== E2E ========
 e2e: build-contracts build-tools
-	cargo run --release --manifest-path tools/e2e/Cargo.toml -- full
+	cargo run --release --manifest-path tools/e2e/Cargo.toml -- --keys-dir circuits/keys --wasm-dir target/wasm32v1-none/release full
 
 # ======== Clean ========
 clean:

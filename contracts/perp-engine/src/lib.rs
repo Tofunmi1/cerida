@@ -133,40 +133,60 @@ pub struct PerpEngine;
 impl PerpEngine {
     pub fn initialize(env: Env, admin: Address, token: Address) {
         if env.storage().instance().has(&DataKey::Config) {
-            panic!("already initialized");
+            panic!("PerpEngine: already initialized");
         }
         env.storage()
             .instance()
-            .set(&DataKey::Config, &Config { admin, token });
+            .set(&DataKey::Config, &Config { admin: admin.clone(), token: token.clone() });
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("init"),),
+            (admin, token),
+        );
     }
 
     pub fn deposit(env: Env, who: Address, amount: i128) {
         who.require_auth();
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic!("PerpEngine: deposit amount must be positive");
         }
         let cfg = Self::config(&env);
         TokenClient::new(&env, &cfg.token)
             .transfer(&who, &env.current_contract_address(), &amount);
         let key = DataKey::Balance(who.clone());
         let bal = Self::read_balance(&env, &who);
-        env.storage().persistent().set(&key, &(bal + amount));
+        let new_bal = bal + amount;
+        env.storage().persistent().set(&key, &new_bal);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("deposit"),),
+            (who, amount, new_bal),
+        );
     }
 
     pub fn withdraw(env: Env, who: Address, amount: i128) {
         who.require_auth();
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic!("PerpEngine: withdraw amount must be positive");
         }
         let key = DataKey::Balance(who.clone());
         let bal = Self::read_balance(&env, &who);
         if bal < amount {
-            panic!("insufficient balance");
+            panic!("PerpEngine: insufficient balance (have {}, need {})", bal, amount);
         }
-        env.storage().persistent().set(&key, &(bal - amount));
+        let new_bal = bal - amount;
+        env.storage().persistent().set(&key, &new_bal);
         let cfg = Self::config(&env);
         TokenClient::new(&env, &cfg.token)
             .transfer(&env.current_contract_address(), &who, &amount);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("withdraw"),),
+            (who, amount, new_bal),
+        );
     }
 
     pub fn get_balance(env: Env, who: Address) -> i128 {
@@ -192,18 +212,18 @@ impl PerpEngine {
     ) {
         owner.require_auth();
         if collateral <= 0 {
-            panic!("collateral must be positive");
+            panic!("PerpEngine: collateral must be positive");
         }
         if hint_side > 1 {
-            panic!("side must be 0 (long) or 1 (short)");
+            panic!("PerpEngine: side must be 0 (long) or 1 (short), got {}", hint_side);
         }
         if hint_leverage == 0 {
-            panic!("leverage must be >= 1");
+            panic!("PerpEngine: leverage must be >= 1");
         }
 
         let pos_key = DataKey::Position(commitment.clone());
         if env.storage().persistent().has(&pos_key) {
-            panic!("commitment already exists");
+            panic!("PerpEngine: commitment already exists");
         }
 
         let mut pi: Vec<Bn254Fr> = Vec::new(&env);
@@ -211,26 +231,28 @@ impl PerpEngine {
         let vk = load_vk(&env, &VK_COMMIT_IC);
         match verify_groth16(&env, &vk, &proof, &pi) {
             Ok(true) => {}
-            _ => panic!("invalid commitment proof"),
+            _ => panic!("PerpEngine: invalid commitment proof"),
         }
 
         let bal = Self::read_balance(&env, &owner);
         if bal < collateral {
-            panic!("insufficient balance");
+            panic!("PerpEngine: insufficient balance (have {}, need {})", bal, collateral);
         }
+        let new_bal = bal - collateral;
         env.storage()
             .persistent()
-            .set(&DataKey::Balance(owner.clone()), &(bal - collateral));
+            .set(&DataKey::Balance(owner.clone()), &new_bal);
 
+        let created_at = env.ledger().sequence() as u64;
         let meta = PositionMeta {
-            owner,
+            owner: owner.clone(),
             collateral,
             entry_price: hint_price,
             matched_price: 0,
             side: hint_side,
             leverage: hint_leverage,
             status: PositionStatus::Open,
-            created_at: env.ledger().sequence() as u64,
+            created_at,
             match_id: 0,
             funding_at_open: Self::read_funding_cumulative(&env),
         };
@@ -238,6 +260,12 @@ impl PerpEngine {
         env.storage()
             .persistent()
             .extend_ttl(&pos_key, 17280, 17280);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("open"),),
+            (owner, commitment, collateral, hint_side, hint_leverage, hint_price, created_at),
+        );
     }
 
     pub fn cancel_position(
@@ -251,7 +279,7 @@ impl PerpEngine {
 
         let null_key = DataKey::Nullifier(nullifier.clone());
         if env.storage().persistent().has(&null_key) {
-            panic!("nullifier already spent");
+            panic!("PerpEngine: nullifier already spent");
         }
 
         let pos_key = DataKey::Position(commitment.clone());
@@ -259,12 +287,12 @@ impl PerpEngine {
             .storage()
             .persistent()
             .get(&pos_key)
-            .unwrap_or_else(|| panic!("position not found"));
+            .unwrap_or_else(|| panic!("PerpEngine: position not found"));
         if meta.owner != owner {
-            panic!("unauthorized");
+            panic!("PerpEngine: unauthorized caller for cancel_position");
         }
         if meta.status != PositionStatus::Open {
-            panic!("can only cancel an open position");
+            panic!("PerpEngine: can only cancel an open position (status={:?})", meta.status as u32);
         }
 
         let mut pi: Vec<Bn254Fr> = Vec::new(&env);
@@ -272,7 +300,7 @@ impl PerpEngine {
         let vk = load_vk(&env, &VK_CANCEL_IC);
         match verify_groth16(&env, &vk, &proof, &pi) {
             Ok(true) => {}
-            _ => panic!("invalid cancel proof"),
+            _ => panic!("PerpEngine: invalid cancel proof"),
         }
 
         meta.status = PositionStatus::Cancelled;
@@ -280,15 +308,23 @@ impl PerpEngine {
         env.storage().persistent().set(&null_key, &true);
 
         let bal = Self::read_balance(&env, &meta.owner);
+        let returned = meta.collateral;
+        let new_bal = bal + returned;
         env.storage()
             .persistent()
-            .set(&DataKey::Balance(meta.owner.clone()), &(bal + meta.collateral));
+            .set(&DataKey::Balance(meta.owner.clone()), &new_bal);
         env.storage()
             .persistent()
             .extend_ttl(&pos_key, 17280, 17280);
         env.storage()
             .persistent()
             .extend_ttl(&null_key, 17280, 17280);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("cxl_pos"),),
+            (owner, commitment, nullifier, returned, new_bal),
+        );
     }
 
     pub fn match_positions(
@@ -304,10 +340,10 @@ impl PerpEngine {
         let null_key_a = DataKey::Nullifier(nullifier_a.clone());
         let null_key_b = DataKey::Nullifier(nullifier_b.clone());
         if env.storage().persistent().has(&null_key_a) {
-            panic!("nullifier A already spent");
+            panic!("PerpEngine: nullifier A already spent");
         }
         if env.storage().persistent().has(&null_key_b) {
-            panic!("nullifier B already spent");
+            panic!("PerpEngine: nullifier B already spent");
         }
 
         let pos_key_a = DataKey::Position(cmt_a.clone());
@@ -316,15 +352,15 @@ impl PerpEngine {
             .storage()
             .persistent()
             .get(&pos_key_a)
-            .unwrap_or_else(|| panic!("position A not found"));
+            .unwrap_or_else(|| panic!("PerpEngine: position A not found"));
         let mut meta_b: PositionMeta = env
             .storage()
             .persistent()
             .get(&pos_key_b)
-            .unwrap_or_else(|| panic!("position B not found"));
+            .unwrap_or_else(|| panic!("PerpEngine: position B not found"));
 
         if meta_a.status != PositionStatus::Open || meta_b.status != PositionStatus::Open {
-            panic!("both positions must be open");
+            panic!("PerpEngine: both positions must be open (A={:?}, B={:?})", meta_a.status as u32, meta_b.status as u32);
         }
 
         let mut pi: Vec<Bn254Fr> = Vec::new(&env);
@@ -337,7 +373,7 @@ impl PerpEngine {
         let vk = load_vk(&env, &VK_MATCH_IC);
         match verify_groth16(&env, &vk, &proof, &pi) {
             Ok(true) => {}
-            _ => panic!("invalid match proof"),
+            _ => panic!("PerpEngine: invalid match proof"),
         }
 
         let exec_price = field_to_u64(&match_price);
@@ -378,7 +414,7 @@ impl PerpEngine {
         #[allow(deprecated)]
         env.events().publish(
             (soroban_sdk::symbol_short!("match"),),
-            (cmt_a, cmt_b, exec_price, match_id),
+            (cmt_a, cmt_b, exec_price, exec_size, match_id, now),
         );
 
         match_id
@@ -395,7 +431,7 @@ impl PerpEngine {
 
         let null_key = DataKey::Nullifier(nullifier.clone());
         if env.storage().persistent().has(&null_key) {
-            panic!("nullifier already spent");
+            panic!("PerpEngine: nullifier already spent");
         }
 
         let pos_key = DataKey::Position(commitment.clone());
@@ -403,12 +439,12 @@ impl PerpEngine {
             .storage()
             .persistent()
             .get(&pos_key)
-            .unwrap_or_else(|| panic!("position not found"));
+            .unwrap_or_else(|| panic!("PerpEngine: position not found"));
         if meta.owner != owner {
-            panic!("unauthorized");
+            panic!("PerpEngine: unauthorized caller for close_position");
         }
         if meta.status != PositionStatus::Matched {
-            panic!("can only close a matched position");
+            panic!("PerpEngine: can only close a matched position (status={:?})", meta.status as u32);
         }
 
         let mut pi: Vec<Bn254Fr> = Vec::new(&env);
@@ -416,7 +452,7 @@ impl PerpEngine {
         let vk = load_vk(&env, &VK_CANCEL_IC);
         match verify_groth16(&env, &vk, &proof, &pi) {
             Ok(true) => {}
-            _ => panic!("invalid close proof"),
+            _ => panic!("PerpEngine: invalid close proof"),
         }
 
         let oracle_price = Self::require_oracle_price(&env);
@@ -455,7 +491,7 @@ impl PerpEngine {
         #[allow(deprecated)]
         env.events().publish(
             (soroban_sdk::symbol_short!("close"),),
-            (commitment, settlement, close_price),
+            (commitment, nullifier, settlement, close_price),
         );
 
         settlement
@@ -473,10 +509,10 @@ impl PerpEngine {
             .storage()
             .persistent()
             .get(&pos_key)
-            .unwrap_or_else(|| panic!("position not found"));
+            .unwrap_or_else(|| panic!("PerpEngine: position not found"));
 
         if meta.status != PositionStatus::Matched {
-            panic!("can only liquidate a matched position");
+            panic!("PerpEngine: can only liquidate a matched position (status={:?})", meta.status as u32);
         }
 
         let oracle_price = Self::require_oracle_price(&env);
@@ -493,7 +529,7 @@ impl PerpEngine {
 
         let mm = meta.collateral * MAINTENANCE_MARGIN as i128 / 10 / meta.leverage as i128;
         if settlement >= mm {
-            panic!("position is not under-collateralized");
+            panic!("PerpEngine: position is not under-collateralized (settlement={}, mm={})", settlement, mm);
         }
 
         let reward = meta.collateral * LIQUIDATOR_REWARD_NUM / LIQUIDATOR_REWARD_DEN;
@@ -552,10 +588,7 @@ impl PerpEngine {
             heartbeat: 3600,
         });
         if cfg.admin != admin {
-            panic!("unauthorized");
-        }
-        if cfg.admin != admin {
-            panic!("unauthorized");
+            panic!("PerpEngine: unauthorized oracle admin");
         }
         cfg.price = price;
         cfg.last_updated = env.ledger().sequence() as u64;
@@ -591,9 +624,9 @@ impl PerpEngine {
             .storage()
             .persistent()
             .get(&DataKey::Match(match_id))
-            .unwrap_or_else(|| panic!("match not found"));
+            .unwrap_or_else(|| panic!("PerpEngine: match {} not found", match_id));
         if record.closed {
-            panic!("match already settled");
+            panic!("PerpEngine: match {} already settled", match_id);
         }
 
         let oracle_price = Self::require_oracle_price(&env);
@@ -604,15 +637,15 @@ impl PerpEngine {
             .storage()
             .persistent()
             .get(&pos_key_a)
-            .unwrap_or_else(|| panic!("position A not found"));
+            .unwrap_or_else(|| panic!("PerpEngine: position A not found for match {}", match_id));
         let mut meta_b: PositionMeta = env
             .storage()
             .persistent()
             .get(&pos_key_b)
-            .unwrap_or_else(|| panic!("position B not found"));
+            .unwrap_or_else(|| panic!("PerpEngine: position B not found for match {}", match_id));
 
         if meta_a.status != PositionStatus::Matched {
-            panic!("position A must be matched");
+            panic!("PerpEngine: position A must be matched (status={:?})", meta_a.status as u32);
         }
 
         let (settlement_a, funding_a) = Self::compute_settlement_with_funding(
@@ -727,7 +760,7 @@ impl PerpEngine {
         env.storage()
             .instance()
             .get(&DataKey::Config)
-            .unwrap_or_else(|| panic!("not initialized"))
+            .unwrap_or_else(|| panic!("PerpEngine: not initialized"))
     }
 
     fn next_match_id(env: &Env) -> u64 {
@@ -749,13 +782,13 @@ impl PerpEngine {
     }
 
     fn require_oracle_price(env: &Env) -> u64 {
-        let cfg = Self::read_oracle_config(env).unwrap_or_else(|| panic!("oracle not initialized"));
+        let cfg = Self::read_oracle_config(env).unwrap_or_else(|| panic!("PerpEngine: oracle not initialized"));
         if cfg.price == 0 {
-            panic!("oracle price not set");
+            panic!("PerpEngine: oracle price not set");
         }
         let now = env.ledger().sequence() as u64;
         if now.saturating_sub(cfg.last_updated) > cfg.heartbeat {
-            panic!("oracle price stale");
+            panic!("PerpEngine: oracle price stale (last_updated={}, heartbeat={})", cfg.last_updated, cfg.heartbeat);
         }
         cfg.price
     }
@@ -817,7 +850,7 @@ impl PerpEngine {
             .storage()
             .persistent()
             .get(&DataKey::Match(match_id))
-            .unwrap_or_else(|| panic!("match not found"));
+            .unwrap_or_else(|| panic!("PerpEngine: match {} not found in try_close_match", match_id));
         if record.closed {
             return;
         }

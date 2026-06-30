@@ -100,7 +100,7 @@ impl Orderbook {
 
         let order_key = DataKey::Order(commitment.clone());
         if env.storage().persistent().has(&order_key) {
-            panic!("commitment already exists");
+            panic!("Orderbook: commitment already exists");
         }
 
         let mut pi: Vec<Bn254Fr> = Vec::new(&env);
@@ -109,7 +109,7 @@ impl Orderbook {
         let vk = load_vk(&env, &VK_COMMIT_IC);
         match verify_groth16(&env, &vk, &proof, &pi) {
             Ok(true) => {}
-            _ => panic!("invalid commitment proof"),
+            _ => panic!("Orderbook: invalid commitment proof"),
         }
 
         let meta = OrderMeta {
@@ -122,6 +122,12 @@ impl Orderbook {
 
         env.storage().persistent().set(&order_key, &meta);
         env.storage().persistent().extend_ttl(&order_key, 17280, 17280);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("place"),),
+            (owner, commitment, hint, meta.created_at),
+        );
     }
 
     pub fn cancel_order(
@@ -135,7 +141,7 @@ impl Orderbook {
 
         let null_key = DataKey::Nullifier(nullifier.clone());
         if env.storage().persistent().has(&null_key) {
-            panic!("nullifier already spent");
+            panic!("Orderbook: nullifier already spent");
         }
 
         let order_key = DataKey::Order(commitment.clone());
@@ -143,13 +149,13 @@ impl Orderbook {
             .storage()
             .persistent()
             .get(&order_key)
-            .unwrap_or_else(|| panic!("commitment not found"));
+            .unwrap_or_else(|| panic!("Orderbook: commitment not found"));
 
         if meta.owner != owner {
-            panic!("unauthorized");
+            panic!("Orderbook: unauthorized caller for cancel_order");
         }
         if meta.status != OrderStatus::Open {
-            panic!("order is not open");
+            panic!("Orderbook: order is not open (status={:?})", meta.status as u32);
         }
 
         let mut pi: Vec<Bn254Fr> = Vec::new(&env);
@@ -158,7 +164,7 @@ impl Orderbook {
         let vk = load_vk(&env, &VK_CANCEL_IC);
         match verify_groth16(&env, &vk, &proof, &pi) {
             Ok(true) => {}
-            _ => panic!("invalid cancel proof"),
+            _ => panic!("Orderbook: invalid cancel proof"),
         }
 
         meta.status = OrderStatus::Cancelled;
@@ -166,6 +172,12 @@ impl Orderbook {
         env.storage().persistent().set(&null_key, &true);
         env.storage().persistent().extend_ttl(&order_key, 17280, 17280);
         env.storage().persistent().extend_ttl(&null_key, 17280, 17280);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("cancel"),),
+            (owner, commitment, nullifier, meta.created_at),
+        );
     }
 
     pub fn status(env: Env, commitment: BytesN<32>) -> Option<OrderStatus> {

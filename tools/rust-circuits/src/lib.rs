@@ -1,12 +1,14 @@
 pub mod circuits;
 pub mod poseidon2;
 
-use ark_bn254::{Bn254, Fr, G1Affine, G2Affine};
-use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField};
-use ark_groth16::Groth16;
+use ark_bn254::{Bn254, Fr, Fq, G1Affine, G2Affine};
+use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField, UniformRand};
+use ark_groth16::{Groth16, ProvingKey, VerifyingKey};
 use ark_relations::gr1cs::{ConstraintSynthesizer, SynthesisError};
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::GR1CSVar;
+use ark_serialize::CanonicalDeserialize;
+use num_bigint::BigUint;
 use circuits::cancel::OrderCancel;
 use circuits::commitment::OrderCommitment;
 use circuits::match_circuit::OrderMatch;
@@ -45,6 +47,116 @@ pub fn g2_to_hex(g2: &G2Affine) -> String {
     )
 }
 
+pub fn fr_to_biguint(f: &Fr) -> BigUint {
+    BigUint::from_bytes_be(&f.into_bigint().to_bytes_be())
+}
+
+fn fq_to_biguint(f: &Fq) -> BigUint {
+    BigUint::from_bytes_be(&f.into_bigint().to_bytes_be())
+}
+
+fn g1_to_json(g1: &G1Affine) -> serde_json::Value {
+    serde_json::json!([
+        fq_to_biguint(&g1.x).to_string(),
+        fq_to_biguint(&g1.y).to_string(),
+        "1"
+    ])
+}
+
+fn g2_to_json(g2: &G2Affine) -> serde_json::Value {
+    serde_json::json!([
+        [
+            fq_to_biguint(&g2.x.c0).to_string(),
+            fq_to_biguint(&g2.x.c1).to_string(),
+        ],
+        [
+            fq_to_biguint(&g2.y.c0).to_string(),
+            fq_to_biguint(&g2.y.c1).to_string(),
+        ],
+        ["1", "0"]
+    ])
+}
+
+pub fn vk_to_json(vk: &VerifyingKey<Bn254>) -> serde_json::Value {
+    let ic: Vec<serde_json::Value> = vk.gamma_abc_g1.iter().map(|g1| g1_to_json(g1)).collect();
+    serde_json::json!({
+        "protocol": "groth16",
+        "curve": "bn128",
+        "nPublic": ic.len() - 1,
+        "vk_alpha_1": g1_to_json(&vk.alpha_g1),
+        "vk_beta_2": g2_to_json(&vk.beta_g2),
+        "vk_gamma_2": g2_to_json(&vk.gamma_g2),
+        "vk_delta_2": g2_to_json(&vk.delta_g2),
+        "vk_alphabeta_12": serde_json::Value::Null,
+        "IC": ic,
+    })
+}
+
+/// Full setup: generates a single shared CRS (alpha/beta/gamma/delta) and produces
+/// proving/verifying keys for all three circuits. All VKs will share the same
+/// alpha_g1, beta_g2, gamma_g2, delta_g2 — this is required by the Soroban contracts.
+fn gen_with_crs(
+    circuit: impl ConstraintSynthesizer<Fr>,
+    alpha: Fr, beta: Fr, gamma: Fr, delta: Fr,
+    g1_gen: ark_bn254::G1Projective, g2_gen: ark_bn254::G2Projective,
+    rng: &mut impl rand::Rng,
+) -> Result<(ProvingKey<Bn254>, VerifyingKey<Bn254>), SynthesisError> {
+    let pk = Groth16::<Bn254>::generate_parameters_with_qap(
+        circuit, alpha, beta, gamma, delta,
+        g1_gen, g2_gen, rng,
+    )?;
+    let vk = pk.vk.clone();
+    Ok((pk, vk))
+}
+
+pub fn setup_all(rng: &mut impl rand::Rng) -> Result<[(ProvingKey<Bn254>, VerifyingKey<Bn254>); 3], SynthesisError> {
+    let alpha = Fr::rand(rng);
+    let beta = Fr::rand(rng);
+    let gamma = Fr::ONE;
+    let delta = Fr::rand(rng);
+    let g1_gen = ark_bn254::G1Projective::rand(rng);
+    let g2_gen = ark_bn254::G2Projective::rand(rng);
+
+    let commit = gen_with_crs(
+        OrderCommitment {
+            side: Fr::ZERO, price: Fr::ZERO, size: Fr::ZERO,
+            leverage: Fr::ZERO, asset: Fr::ZERO, is_market: Fr::ZERO,
+            nonce: Fr::ZERO, secret: Fr::ZERO, commitment: Fr::ZERO,
+        },
+        alpha, beta, gamma, delta, g1_gen, g2_gen, rng,
+    )?;
+
+    let cancel = gen_with_crs(
+        OrderCancel { commitment: Fr::ZERO, secret: Fr::ZERO, nullifier: Fr::ZERO },
+        alpha, beta, gamma, delta, g1_gen, g2_gen, rng,
+    )?;
+
+    let r#match = gen_with_crs(
+        OrderMatch {
+            side_a: Fr::ZERO, price_a: Fr::ZERO, size_a: Fr::ZERO,
+            leverage_a: Fr::ZERO, asset_a: Fr::ZERO, is_market_a: Fr::ZERO,
+            nonce_a: Fr::ZERO, secret_a: Fr::ZERO,
+            side_b: Fr::ONE, price_b: Fr::ZERO, size_b: Fr::ZERO,
+            leverage_b: Fr::ZERO, asset_b: Fr::ZERO, is_market_b: Fr::ZERO,
+            nonce_b: Fr::ZERO, secret_b: Fr::ZERO,
+            mp: Fr::ZERO, ms: Fr::ZERO,
+            cmt_a: Fr::ZERO, cmt_b: Fr::ZERO,
+            match_price: Fr::ZERO, match_size: Fr::ZERO,
+            nullifier_a: Fr::ZERO, nullifier_b: Fr::ZERO,
+        },
+        alpha, beta, gamma, delta, g1_gen, g2_gen, rng,
+    )?;
+
+    Ok([commit, cancel, r#match])
+}
+
+pub fn load_pk(path: impl AsRef<std::path::Path>) -> std::io::Result<ProvingKey<Bn254>> {
+    let bytes = std::fs::read(path)?;
+    let pk = ProvingKey::deserialize_compressed(bytes.as_slice())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    Ok(pk)
+}
+
 fn prove_raw(
     setup: impl ConstraintSynthesizer<Fr>,
     circuit: impl ConstraintSynthesizer<Fr>,
@@ -53,6 +165,26 @@ fn prove_raw(
 ) -> Result<ProofOutput, SynthesisError> {
     let pk = Groth16::<Bn254>::generate_random_parameters_with_reduction(setup, rng)?;
     let proof = Groth16::<Bn254>::create_random_proof_with_reduction(circuit, &pk, rng)?;
+    Ok(ProofOutput {
+        proof: ProofHex {
+            a: g1_to_hex(&proof.a),
+            b: g2_to_hex(&proof.b),
+            c: g1_to_hex(&proof.c),
+        },
+        public_inputs: public_inputs
+            .iter()
+            .map(|f| f.into_bigint().to_string())
+            .collect(),
+    })
+}
+
+fn prove_with_pk(
+    pk: &ProvingKey<Bn254>,
+    circuit: impl ConstraintSynthesizer<Fr>,
+    public_inputs: Vec<Fr>,
+    rng: &mut impl rand::Rng,
+) -> Result<ProofOutput, SynthesisError> {
+    let proof = Groth16::<Bn254>::create_random_proof_with_reduction(circuit, pk, rng)?;
     Ok(ProofOutput {
         proof: ProofHex {
             a: g1_to_hex(&proof.a),
@@ -127,6 +259,17 @@ pub fn prove_cancel(
     prove_raw(setup, circuit, vec![nullifier], &mut rng)
 }
 
+pub fn prove_commitment_with_pk(
+    pk: &ProvingKey<Bn254>,
+    side: Fr, price: Fr, size: Fr, leverage: Fr,
+    asset: Fr, is_market: Fr, nonce: Fr, secret: Fr,
+) -> Result<ProofOutput, SynthesisError> {
+    let cmt = compute_commitment(side, price, size, leverage, asset, is_market, nonce, secret);
+    let mut rng = rand::thread_rng();
+    let circuit = OrderCommitment { side, price, size, leverage, asset, is_market, nonce, secret, commitment: cmt };
+    prove_with_pk(pk, circuit, vec![cmt], &mut rng)
+}
+
 pub fn prove_match(
     a_side: Fr, a_price: Fr, a_size: Fr, a_lev: Fr,
     a_asset: Fr, a_market: Fr, a_nonce: Fr, a_secret: Fr,
@@ -162,6 +305,42 @@ pub fn prove_match(
     };
     let public = vec![cmt_a, cmt_b, mp, ms, null_a, null_b];
     prove_raw(setup, circuit, public, &mut rng)
+}
+
+pub fn prove_cancel_with_pk(
+    pk: &ProvingKey<Bn254>,
+    commitment: Fr, secret: Fr,
+) -> Result<ProofOutput, SynthesisError> {
+    let nullifier = compute_nullifier(commitment, secret);
+    let mut rng = rand::thread_rng();
+    let circuit = OrderCancel { commitment, secret, nullifier };
+    prove_with_pk(pk, circuit, vec![nullifier], &mut rng)
+}
+
+pub fn prove_match_with_pk(
+    pk: &ProvingKey<Bn254>,
+    a_side: Fr, a_price: Fr, a_size: Fr, a_lev: Fr,
+    a_asset: Fr, a_market: Fr, a_nonce: Fr, a_secret: Fr,
+    b_side: Fr, b_price: Fr, b_size: Fr, b_lev: Fr,
+    b_asset: Fr, b_market: Fr, b_nonce: Fr, b_secret: Fr,
+    mp: Fr, ms: Fr,
+) -> Result<ProofOutput, SynthesisError> {
+    let cmt_a = compute_commitment(a_side, a_price, a_size, a_lev, a_asset, a_market, a_nonce, a_secret);
+    let cmt_b = compute_commitment(b_side, b_price, b_size, b_lev, b_asset, b_market, b_nonce, b_secret);
+    let null_a = compute_match_nullifier(cmt_a, mp, ms);
+    let null_b = compute_match_nullifier(cmt_b, mp, ms);
+
+    let mut rng = rand::thread_rng();
+    let circuit = OrderMatch {
+        side_a: a_side, price_a: a_price, size_a: a_size, leverage_a: a_lev,
+        asset_a: a_asset, is_market_a: a_market, nonce_a: a_nonce, secret_a: a_secret,
+        side_b: b_side, price_b: b_price, size_b: b_size, leverage_b: b_lev,
+        asset_b: b_asset, is_market_b: b_market, nonce_b: b_nonce, secret_b: b_secret,
+        mp, ms, cmt_a, cmt_b, match_price: mp, match_size: ms,
+        nullifier_a: null_a, nullifier_b: null_b,
+    };
+    let public = vec![cmt_a, cmt_b, mp, ms, null_a, null_b];
+    prove_with_pk(pk, circuit, public, &mut rng)
 }
 
 #[cfg(test)]

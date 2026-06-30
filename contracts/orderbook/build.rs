@@ -15,6 +15,10 @@ fn main() {
         panic!("VK_COMMIT_JSON and VK_CANCEL_JSON env vars must be set. Run with:\n  VK_COMMIT_JSON=circuits/keys/order_commitment_vk.json VK_CANCEL_JSON=circuits/keys/order_cancel_vk.json");
     }
 
+    // Re-run build script if the VK JSON files change on disk
+    println!("cargo:rerun-if-changed={}", commit_path);
+    println!("cargo:rerun-if-changed={}", cancel_path);
+
     let commit_vk = read_vk_json(&commit_path);
     let cancel_vk = read_vk_json(&cancel_path);
 

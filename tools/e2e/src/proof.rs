@@ -1,75 +1,48 @@
-use anyhow::{Context, Result};
-use ark_bn254::{Bn254, G1Affine, G2Affine};
-use ark_circom::{CircomBuilder, CircomConfig, CircomReduction, read_zkey};
-use ark_ff::{BigInteger, PrimeField};
-use ark_groth16::Groth16;
-use rand::thread_rng;
-use serde::Serialize;
 use std::path::Path;
+use std::str::FromStr;
 
-#[derive(Serialize)]
-pub struct ProofHex {
-    pub a: String,
-    pub b: String,
-    pub c: String,
+use anyhow::{Context, Result};
+use ark_bn254::{Bn254, Fr, Fq, Fq2, G1Affine, G2Affine};
+use ark_ff::{AdditiveGroup, Field, PrimeField};
+use ark_groth16::{Groth16, ProvingKey, prepare_verifying_key};
+use rust_circuits::{ProofOutput, load_pk};
+
+pub type RawProof = ProofOutput;
+
+fn pk_path(keys_dir: &Path, name: &str) -> std::path::PathBuf {
+    keys_dir.join(format!("{}.pk.bin", name))
 }
 
-#[derive(Serialize)]
-pub struct RawProof {
-    pub proof: ProofHex,
-    pub public_inputs: Vec<String>,
-}
+/// Verify the proof locally using the VK from the loaded proving key.
+fn verify_proof_raw(pk: &ProvingKey<Bn254>, proof: &ProofOutput, public: &[Fr]) {
+    let vk = &pk.vk;
+    let pvk = prepare_verifying_key(vk);
 
-fn g1_to_hex(g1: &G1Affine) -> String {
-    let x_be = g1.x.into_bigint().to_bytes_be();
-    let y_be = g1.y.into_bigint().to_bytes_be();
-    format!("{}{}", hex::encode(x_be), hex::encode(y_be))
-}
+    // Parse proof points from hex (coordinates are Fq base field elements)
+    let parse_g1 = |hex: &str| -> G1Affine {
+        let x = Fq::from_be_bytes_mod_order(&hex::decode(&hex[..64]).unwrap());
+        let y = Fq::from_be_bytes_mod_order(&hex::decode(&hex[64..]).unwrap());
+        G1Affine::new(x, y)
+    };
+    let parse_g2 = |hex: &str| -> G2Affine {
+        let x_c1 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[..64]).unwrap());
+        let x_c0 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[64..128]).unwrap());
+        let y_c1 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[128..192]).unwrap());
+        let y_c0 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[192..]).unwrap());
+        G2Affine::new(
+            Fq2::new(x_c0, x_c1),
+            Fq2::new(y_c0, y_c1),
+        )
+    };
 
-fn g2_to_hex(g2: &G2Affine) -> String {
-    let c0_be = g2.x.c0.into_bigint().to_bytes_be();
-    let c1_be = g2.x.c1.into_bigint().to_bytes_be();
-    let d0_be = g2.y.c0.into_bigint().to_bytes_be();
-    let d1_be = g2.y.c1.into_bigint().to_bytes_be();
-    format!(
-        "{}{}{}{}",
-        hex::encode(c1_be),
-        hex::encode(c0_be),
-        hex::encode(d1_be),
-        hex::encode(d0_be),
-    )
-}
+    let proof_ark = ark_groth16::Proof {
+        a: parse_g1(&proof.proof.a).into(),
+        b: parse_g2(&proof.proof.b).into(),
+        c: parse_g1(&proof.proof.c).into(),
+    };
 
-fn run(_wasm: &Path, _r1cs: &Path, zkey: &Path, builder: CircomBuilder<Bn254>) -> Result<RawProof> {
-    let zkey_file =
-        std::fs::File::open(zkey).with_context(|| format!("Failed to open zkey: {}", zkey.display()))?;
-    let mut reader = std::io::BufReader::new(zkey_file);
-    let (proving_key, _matrices) =
-        read_zkey(&mut reader).map_err(|e| anyhow::anyhow!("Failed to read zkey: {e}"))?;
-
-    let circom = builder
-        .build()
-        .map_err(|e| anyhow::anyhow!("Failed to build circuit: {e}"))?;
-    let public_inputs = circom
-        .get_public_inputs()
-        .ok_or_else(|| anyhow::anyhow!("No public inputs in circuit"))?;
-
-    let mut rng = thread_rng();
-    let proof = Groth16::<Bn254, CircomReduction>::create_random_proof_with_reduction(
-        circom,
-        &proving_key,
-        &mut rng,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to generate proof: {e}"))?;
-
-    Ok(RawProof {
-        proof: ProofHex {
-            a: g1_to_hex(&proof.a),
-            b: g2_to_hex(&proof.b),
-            c: g1_to_hex(&proof.c),
-        },
-        public_inputs: public_inputs.iter().map(|f| f.into_bigint().to_string()).collect(),
-    })
+    let result = Groth16::<Bn254>::verify_proof(&pvk, &proof_ark, public).unwrap();
+    assert!(result, "LOCAL VERIFICATION FAILED — generated proof does not verify against exported VK!");
 }
 
 pub fn gen_commitment(
@@ -83,67 +56,48 @@ pub fn gen_commitment(
     nonce: u64,
     secret: u64,
 ) -> Result<RawProof> {
-    let wasm = keys_dir.join("order_commitment_js/order_commitment.wasm");
-    let r1cs = keys_dir.join("order_commitment.r1cs");
-    let zkey = keys_dir.join("order_commitment.zkey");
-    let cfg =
-        CircomConfig::<Bn254>::new(&wasm, &r1cs).map_err(|e| anyhow::anyhow!("Failed to load circuit: {e}"))?;
-    let mut builder = CircomBuilder::new(cfg);
-    builder.push_input("side", side as i64);
-    builder.push_input("price", price as i64);
-    builder.push_input("size", size as i64);
-    builder.push_input("leverage", leverage as i64);
-    builder.push_input("asset", asset as i64);
-    builder.push_input("is_market", is_market as i64);
-    builder.push_input("nonce", nonce as i64);
-    builder.push_input("secret", secret as i64);
-    run(&wasm, &r1cs, &zkey, builder)
+    let pk = load_pk(&pk_path(keys_dir, "order_commitment"))
+        .with_context(|| format!("Failed to load commitment proving key from {}", keys_dir.display()))?;
+    let is_market_fr = if is_market != 0 { Fr::ONE } else { Fr::ZERO };
+    let out = rust_circuits::prove_commitment_with_pk(
+        &pk,
+        Fr::from(side), Fr::from(price), Fr::from(size),
+        Fr::from(leverage), Fr::from(asset), is_market_fr,
+        Fr::from(nonce), Fr::from(secret),
+    )?;
+    // Verify proof locally before trusting on-chain
+    let cmt = Fr::from_str(&out.public_inputs[0]).unwrap();
+    verify_proof_raw(&pk, &out, &[cmt]);
+    Ok(out)
 }
 
 pub fn gen_match(
     keys_dir: &Path,
-    side_a: u64,
-    price_a: u64,
-    size_a: u64,
-    leverage_a: u64,
-    asset_a: u64,
-    is_market_a: u64,
-    nonce_a: u64,
-    secret_a: u64,
-    side_b: u64,
-    price_b: u64,
-    size_b: u64,
-    leverage_b: u64,
-    asset_b: u64,
-    is_market_b: u64,
-    nonce_b: u64,
-    secret_b: u64,
-    mp: u64,
-    ms: u64,
+    side_a: u64, price_a: u64, size_a: u64, leverage_a: u64,
+    asset_a: u64, is_market_a: u64, nonce_a: u64, secret_a: u64,
+    side_b: u64, price_b: u64, size_b: u64, leverage_b: u64,
+    asset_b: u64, is_market_b: u64, nonce_b: u64, secret_b: u64,
+    mp: u64, ms: u64,
 ) -> Result<RawProof> {
-    let wasm = keys_dir.join("order_match_js/order_match.wasm");
-    let r1cs = keys_dir.join("order_match.r1cs");
-    let zkey = keys_dir.join("order_match.zkey");
-    let cfg =
-        CircomConfig::<Bn254>::new(&wasm, &r1cs).map_err(|e| anyhow::anyhow!("Failed to load circuit: {e}"))?;
-    let mut builder = CircomBuilder::new(cfg);
-    builder.push_input("side_a", side_a as i64);
-    builder.push_input("price_a", price_a as i64);
-    builder.push_input("size_a", size_a as i64);
-    builder.push_input("leverage_a", leverage_a as i64);
-    builder.push_input("asset_a", asset_a as i64);
-    builder.push_input("is_market_a", is_market_a as i64);
-    builder.push_input("nonce_a", nonce_a as i64);
-    builder.push_input("secret_a", secret_a as i64);
-    builder.push_input("side_b", side_b as i64);
-    builder.push_input("price_b", price_b as i64);
-    builder.push_input("size_b", size_b as i64);
-    builder.push_input("leverage_b", leverage_b as i64);
-    builder.push_input("asset_b", asset_b as i64);
-    builder.push_input("is_market_b", is_market_b as i64);
-    builder.push_input("nonce_b", nonce_b as i64);
-    builder.push_input("secret_b", secret_b as i64);
-    builder.push_input("mp", mp as i64);
-    builder.push_input("ms", ms as i64);
-    run(&wasm, &r1cs, &zkey, builder)
+    let pk = load_pk(&pk_path(keys_dir, "order_match"))
+        .with_context(|| format!("Failed to load match proving key from {}", keys_dir.display()))?;
+    let is_market_a_fr = if is_market_a != 0 { Fr::ONE } else { Fr::ZERO };
+    let is_market_b_fr = if is_market_b != 0 { Fr::ONE } else { Fr::ZERO };
+    let out = rust_circuits::prove_match_with_pk(
+        &pk,
+        Fr::from(side_a), Fr::from(price_a), Fr::from(size_a), Fr::from(leverage_a),
+        Fr::from(asset_a), is_market_a_fr, Fr::from(nonce_a), Fr::from(secret_a),
+        Fr::from(side_b), Fr::from(price_b), Fr::from(size_b), Fr::from(leverage_b),
+        Fr::from(asset_b), is_market_b_fr, Fr::from(nonce_b), Fr::from(secret_b),
+        Fr::from(mp), Fr::from(ms),
+    )?;
+    // Verify proof locally before trusting on-chain
+    let cmt_a = Fr::from_str(&out.public_inputs[0]).unwrap();
+    let cmt_b = Fr::from_str(&out.public_inputs[1]).unwrap();
+    let mp_fr = Fr::from_str(&out.public_inputs[2]).unwrap();
+    let ms_fr = Fr::from_str(&out.public_inputs[3]).unwrap();
+    let nf_a = Fr::from_str(&out.public_inputs[4]).unwrap();
+    let nf_b = Fr::from_str(&out.public_inputs[5]).unwrap();
+    verify_proof_raw(&pk, &out, &[cmt_a, cmt_b, mp_fr, ms_fr, nf_a, nf_b]);
+    Ok(out)
 }
