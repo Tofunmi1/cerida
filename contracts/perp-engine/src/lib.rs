@@ -497,6 +497,51 @@ impl PerpEngine {
         settlement
     }
 
+    pub fn add_margin(
+        env: Env,
+        owner: Address,
+        commitment: BytesN<32>,
+        amount: i128,
+    ) {
+        owner.require_auth();
+        if amount <= 0 {
+            panic!("PerpEngine: amount must be positive");
+        }
+
+        let pos_key = DataKey::Position(commitment.clone());
+        let mut meta: PositionMeta = env
+            .storage()
+            .persistent()
+            .get(&pos_key)
+            .unwrap_or_else(|| panic!("PerpEngine: position not found"));
+
+        if meta.owner != owner {
+            panic!("PerpEngine: unauthorized");
+        }
+        if meta.status != PositionStatus::Open && meta.status != PositionStatus::Matched {
+            panic!("PerpEngine: can only add margin to an open or matched position");
+        }
+
+        let bal = Self::read_balance(&env, &owner);
+        if bal < amount {
+            panic!("PerpEngine: insufficient balance (have {}, need {})", bal, amount);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(owner.clone()), &(bal - amount));
+
+        meta.collateral += amount;
+        env.storage().persistent().set(&pos_key, &meta);
+        env.storage().persistent().extend_ttl(&pos_key, 17280, 17280);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("add_mgn"),),
+            (owner, commitment, amount, meta.collateral),
+        );
+    }
+
     pub fn liquidate(
         env: Env,
         commitment: BytesN<32>,
@@ -1256,5 +1301,85 @@ mod test {
         let (env, cid, _admin) = setup();
         let client = PerpEngineClient::new(&env, &cid);
         assert!(client.get_match_record(&999).is_none());
+    }
+
+    #[test]
+    fn test_add_margin_open_position() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cfg = client.get_config();
+        let asset = StellarAssetClient::new(&env, &cfg.token);
+        asset.mint(&owner, &2000);
+        client.deposit(&owner, &2000);
+
+        let cmt = BytesN::from_array(&env, &[1u8; 32]);
+        create_position(&env, &cid, &owner, &cmt, 1000, 5, 0, 100, PositionStatus::Open, 0);
+        // deposit set balance to 2000; open_position would deduct 1000, simulate that
+        env.as_contract(&cid, || {
+            env.storage().persistent().set(&DataKey::Balance(owner.clone()), &1000i128);
+        });
+
+        client.add_margin(&owner, &cmt, &500);
+
+        let pos = client.get_position(&cmt).unwrap();
+        assert_eq!(pos.collateral, 1500);
+        assert_eq!(client.get_balance(&owner), 500);
+    }
+
+    #[test]
+    fn test_add_margin_matched_position() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cfg = client.get_config();
+        let asset = StellarAssetClient::new(&env, &cfg.token);
+        asset.mint(&owner, &2000);
+        client.deposit(&owner, &2000);
+
+        let cmt = BytesN::from_array(&env, &[2u8; 32]);
+        create_position(&env, &cid, &owner, &cmt, 1000, 10, 1, 200, PositionStatus::Matched, 1);
+        env.as_contract(&cid, || {
+            env.storage().persistent().set(&DataKey::Balance(owner.clone()), &1000i128);
+        });
+
+        client.add_margin(&owner, &cmt, &300);
+
+        let pos = client.get_position(&cmt).unwrap();
+        assert_eq!(pos.collateral, 1300);
+        assert_eq!(client.get_balance(&owner), 700);
+    }
+
+    #[test]
+    #[should_panic(expected = "insufficient balance")]
+    fn test_add_margin_insufficient_balance() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+
+        let cmt = BytesN::from_array(&env, &[3u8; 32]);
+        create_position(&env, &cid, &owner, &cmt, 1000, 5, 0, 100, PositionStatus::Open, 0);
+        // owner has 0 balance, adding margin should fail
+        client.add_margin(&owner, &cmt, &500);
+    }
+
+    #[test]
+    #[should_panic(expected = "can only add margin")]
+    fn test_add_margin_closed_position_reverts() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cfg = client.get_config();
+        let asset = StellarAssetClient::new(&env, &cfg.token);
+        asset.mint(&owner, &2000);
+        client.deposit(&owner, &2000);
+
+        let cmt = BytesN::from_array(&env, &[4u8; 32]);
+        create_position(&env, &cid, &owner, &cmt, 1000, 5, 0, 100, PositionStatus::Closed, 0);
+        env.as_contract(&cid, || {
+            env.storage().persistent().set(&DataKey::Balance(owner.clone()), &1000i128);
+        });
+
+        client.add_margin(&owner, &cmt, &100);
     }
 }
