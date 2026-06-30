@@ -61,6 +61,11 @@ jobs:
         run: cargo fmt --all --manifest-path tools/rust-circuits/Cargo.toml -- --check
 
       - name: clippy (workspace)
+        env:
+          VK_COMMIT_JSON:     ${{ env.CIRCUIT_KEYS }}/order_commitment_vk.json
+          VK_CANCEL_JSON:     ${{ env.CIRCUIT_KEYS }}/order_cancel_vk.json
+          VK_MATCH_JSON:      ${{ env.CIRCUIT_KEYS }}/order_match_vk.json
+          VK_NOTE_SPEND_JSON: ${{ env.CIRCUIT_KEYS }}/note_spend_vk.json
         run: cargo clippy --all-targets -- -D warnings
 
       - name: clippy (rust-circuits)
