@@ -1,8 +1,9 @@
 #![no_std]
 
 use soroban_sdk::{
-    Bytes, BytesN, Vec, contracterror, contracttype,
+    contracterror, contracttype,
     crypto::bn254::{Bn254G1Affine, Bn254G2Affine},
+    Bytes, BytesN, Vec,
 };
 
 #[contracterror]

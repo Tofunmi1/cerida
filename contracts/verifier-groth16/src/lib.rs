@@ -2,12 +2,12 @@
 
 extern crate alloc;
 
-pub use types::{Groth16Error, Groth16Proof, VerificationKeyBytes};
 use soroban_sdk::{
-    BytesN, Env, Vec, contract, contractimpl,
+    contract, contractimpl,
     crypto::bn254::{Bn254Fr, Bn254G1Affine as G1Affine, Bn254G2Affine as G2Affine},
-    vec,
+    vec, BytesN, Env, Vec,
 };
+pub use types::{Groth16Error, Groth16Proof, VerificationKeyBytes};
 
 include!(concat!(env!("OUT_DIR"), "/vk.rs"));
 
