@@ -1,3 +1,11 @@
+#![allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::assign_op_pattern,
+    clippy::needless_range_loop,
+    clippy::redundant_closure
+)]
+
 pub mod circuits;
 pub mod poseidon2;
 
