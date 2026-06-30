@@ -12,6 +12,7 @@ use num_bigint::BigUint;
 use circuits::cancel::OrderCancel;
 use circuits::commitment::OrderCommitment;
 use circuits::match_circuit::OrderMatch;
+use circuits::note_spend::NoteSpend;
 use poseidon2::{poseidon2_hash_t3, poseidon2_hash_t4};
 
 #[derive(serde::Serialize)]
@@ -109,7 +110,7 @@ fn gen_with_crs(
     Ok((pk, vk))
 }
 
-pub fn setup_all(rng: &mut impl rand::Rng) -> Result<[(ProvingKey<Bn254>, VerifyingKey<Bn254>); 3], SynthesisError> {
+pub fn setup_all(rng: &mut impl rand::Rng) -> Result<[(ProvingKey<Bn254>, VerifyingKey<Bn254>); 4], SynthesisError> {
     let alpha = Fr::rand(rng);
     let beta = Fr::rand(rng);
     let gamma = Fr::ONE;
@@ -147,7 +148,12 @@ pub fn setup_all(rng: &mut impl rand::Rng) -> Result<[(ProvingKey<Bn254>, Verify
         alpha, beta, gamma, delta, g1_gen, g2_gen, rng,
     )?;
 
-    Ok([commit, cancel, r#match])
+    let note_spend = gen_with_crs(
+        NoteSpend { amount: Fr::ZERO, secret: Fr::ZERO, note_commitment: Fr::ZERO, nullifier: Fr::ZERO },
+        alpha, beta, gamma, delta, g1_gen, g2_gen, rng,
+    )?;
+
+    Ok([commit, cancel, r#match, note_spend])
 }
 
 pub fn load_pk(path: impl AsRef<std::path::Path>) -> std::io::Result<ProvingKey<Bn254>> {
@@ -305,6 +311,39 @@ pub fn prove_match(
     };
     let public = vec![cmt_a, cmt_b, mp, ms, null_a, null_b];
     prove_raw(setup, circuit, public, &mut rng)
+}
+
+pub fn compute_note_commitment(amount: Fr, secret: Fr) -> Fr {
+    let pa = FpVar::Constant(amount);
+    let ps = FpVar::Constant(secret);
+    poseidon2_hash_t3(&pa, &ps, 8).unwrap().value().unwrap()
+}
+
+pub fn compute_note_nullifier(note_commitment: Fr, secret: Fr) -> Fr {
+    let pc = FpVar::Constant(note_commitment);
+    let ps = FpVar::Constant(secret);
+    poseidon2_hash_t3(&pc, &ps, 9).unwrap().value().unwrap()
+}
+
+pub fn prove_note_spend(amount: Fr, secret: Fr) -> Result<ProofOutput, SynthesisError> {
+    let note_cmt = compute_note_commitment(amount, secret);
+    let nullifier = compute_note_nullifier(note_cmt, secret);
+    let mut rng = rand::thread_rng();
+    let setup = NoteSpend { amount: Fr::ZERO, secret: Fr::ZERO, note_commitment: Fr::ZERO, nullifier: Fr::ZERO };
+    let circuit = NoteSpend { amount, secret, note_commitment: note_cmt, nullifier };
+    prove_raw(setup, circuit, vec![note_cmt, nullifier], &mut rng)
+}
+
+pub fn prove_note_spend_with_pk(
+    pk: &ProvingKey<Bn254>,
+    amount: Fr,
+    secret: Fr,
+) -> Result<ProofOutput, SynthesisError> {
+    let note_cmt = compute_note_commitment(amount, secret);
+    let nullifier = compute_note_nullifier(note_cmt, secret);
+    let mut rng = rand::thread_rng();
+    let circuit = NoteSpend { amount, secret, note_commitment: note_cmt, nullifier };
+    prove_with_pk(pk, circuit, vec![note_cmt, nullifier], &mut rng)
 }
 
 pub fn prove_cancel_with_pk(
@@ -533,6 +572,53 @@ mod tests {
         let null_b = compute_match_nullifier(cmt_b, mp, ms);
         let circuit = OrderMatch { side_a: a[0], price_a: a[1], size_a: a[2], leverage_a: a[3], asset_a: a[4], is_market_a: a[5], nonce_a: a[6], secret_a: a[7], side_b: b[0], price_b: b[1], size_b: b[2], leverage_b: b[3], asset_b: b[4], is_market_b: b[5], nonce_b: b[6], secret_b: b[7], mp, ms, cmt_a, cmt_b, match_price: mp, match_size: ms, nullifier_a: null_a, nullifier_b: null_b };
         let cs = ConstraintSystem::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn test_note_spend_cs_satisfied() {
+        use ark_relations::gr1cs::ConstraintSystem;
+        let amount = Fr::from(1_000_000u64);
+        let secret = Fr::from(999888777u64);
+        let note_cmt = compute_note_commitment(amount, secret);
+        let nullifier = compute_note_nullifier(note_cmt, secret);
+        let cs = ConstraintSystem::new_ref();
+        let circuit = circuits::note_spend::NoteSpend { amount, secret, note_commitment: note_cmt, nullifier };
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn test_note_spend_groth16() -> Result<(), SynthesisError> {
+        let rng = &mut ark_std::test_rng();
+        let amount = Fr::from(500_000u64);
+        let secret = Fr::from(42424242u64);
+        let note_cmt = compute_note_commitment(amount, secret);
+        let nullifier = compute_note_nullifier(note_cmt, secret);
+        let setup_circuit = circuits::note_spend::NoteSpend {
+            amount: Fr::ZERO, secret: Fr::ZERO, note_commitment: Fr::ZERO, nullifier: Fr::ZERO,
+        };
+        let pk = Groth16::<Bn254>::generate_random_parameters_with_reduction(setup_circuit, rng)?;
+        let vk = pk.vk.clone();
+        let prove_circuit = circuits::note_spend::NoteSpend { amount, secret, note_commitment: note_cmt, nullifier };
+        let proof = Groth16::<Bn254>::create_random_proof_with_reduction(prove_circuit, &pk, rng)?;
+        let pvk = prepare_verifying_key(&vk);
+        assert!(Groth16::<Bn254>::verify_proof(&pvk, &proof, &[note_cmt, nullifier])?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_note_spend_wrong_nullifier_unsatisfied() {
+        use ark_relations::gr1cs::ConstraintSystem;
+        let amount = Fr::from(1000u64);
+        let secret = Fr::from(12345u64);
+        let note_cmt = compute_note_commitment(amount, secret);
+        let wrong_null = Fr::from(999u64);
+        let cs = ConstraintSystem::new_ref();
+        let circuit = circuits::note_spend::NoteSpend {
+            amount, secret, note_commitment: note_cmt, nullifier: wrong_null,
+        };
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
     }

@@ -5,7 +5,7 @@ use ark_bn254::Fr;
 use ark_ff::PrimeField;
 use ark_serialize::CanonicalSerialize;
 use clap::{Parser, Subcommand};
-use rust_circuits::{prove_cancel, prove_commitment, prove_match};
+use rust_circuits::{prove_cancel, prove_commitment, prove_match, prove_note_spend};
 
 #[derive(Parser)]
 #[command(name = "rust-prover")]
@@ -42,6 +42,12 @@ enum Command {
     Setup {
         #[arg(long, default_value = "circuits/keys")]
         out_dir: PathBuf,
+    },
+    NoteSpend {
+        #[arg(long)]
+        amount: u64,
+        #[arg(long)]
+        secret: u64,
     },
     OrderMatch {
         #[arg(long)]
@@ -89,7 +95,7 @@ fn main() -> Result<()> {
             let mut rng = rand::thread_rng();
 
             let results = setup_all(&mut rng)?;
-            let names = ["order_commitment", "order_cancel", "order_match"];
+            let names = ["order_commitment", "order_cancel", "order_match", "note_spend"];
             for (name, (pk, vk)) in names.iter().zip(results.iter()) {
                 eprintln!("Setting up {}…", name);
                 let pk_path = out_dir.join(format!("{}.pk.bin", name));
@@ -111,6 +117,10 @@ fn main() -> Result<()> {
                 Fr::from(side), Fr::from(price), Fr::from(size), Fr::from(leverage),
                 Fr::from(asset_id), Fr::from(0), Fr::from(nonce), Fr::from(secret),
             )?;
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Command::NoteSpend { amount, secret } => {
+            let out = prove_note_spend(Fr::from(amount), Fr::from(secret))?;
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Command::OrderCancel { commitment, secret } => {

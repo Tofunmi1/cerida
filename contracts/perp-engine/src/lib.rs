@@ -91,6 +91,7 @@ pub enum DataKey {
     Match(u64),
     NextMatchId,
     FundingState,
+    Note(BytesN<32>),
 }
 
 #[contracttype]
@@ -540,6 +541,132 @@ impl PerpEngine {
             (soroban_sdk::symbol_short!("add_mgn"),),
             (owner, commitment, amount, meta.collateral),
         );
+    }
+
+    /// Deposit tokens and record a shielded note commitment (no address stored).
+    /// note_commitment = Poseidon2(amount, secret) — computed client-side.
+    pub fn deposit_note(env: Env, from: Address, note_commitment: BytesN<32>, amount: i128) {
+        from.require_auth();
+        if amount <= 0 {
+            panic!("PerpEngine: deposit amount must be positive");
+        }
+        let note_key = DataKey::Note(note_commitment.clone());
+        if env.storage().persistent().has(&note_key) {
+            panic!("PerpEngine: note commitment already exists");
+        }
+        let cfg = Self::config(&env);
+        TokenClient::new(&env, &cfg.token)
+            .transfer(&from, &env.current_contract_address(), &amount);
+        env.storage().persistent().set(&note_key, &amount);
+        env.storage().persistent().extend_ttl(&note_key, 17280, 17280);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("dep_note"),),
+            (note_commitment, amount),
+        );
+    }
+
+    /// Withdraw a shielded note to any recipient by proving knowledge of the secret.
+    /// Proof: NoteSpend — public inputs [note_commitment, nullifier].
+    pub fn withdraw_note(
+        env: Env,
+        note_commitment: BytesN<32>,
+        nullifier: BytesN<32>,
+        recipient: Address,
+        proof: Groth16Proof,
+    ) {
+        let null_key = DataKey::Nullifier(nullifier.clone());
+        if env.storage().persistent().has(&null_key) {
+            panic!("PerpEngine: nullifier already spent");
+        }
+        let note_key = DataKey::Note(note_commitment.clone());
+        let amount: i128 = env
+            .storage()
+            .persistent()
+            .get(&note_key)
+            .unwrap_or_else(|| panic!("PerpEngine: note not found"));
+
+        let mut pi: Vec<Bn254Fr> = Vec::new(&env);
+        pi.push_back(Bn254Fr::from_bytes(note_commitment.clone()));
+        pi.push_back(Bn254Fr::from_bytes(nullifier.clone()));
+        let vk = load_vk(&env, &VK_NOTE_SPEND_IC);
+        match verify_groth16(&env, &vk, &proof, &pi) {
+            Ok(true) => {}
+            _ => panic!("PerpEngine: invalid note spend proof"),
+        }
+
+        env.storage().persistent().set(&null_key, &true);
+        env.storage().persistent().extend_ttl(&null_key, 17280, 17280);
+
+        let cfg = Self::config(&env);
+        TokenClient::new(&env, &cfg.token)
+            .transfer(&env.current_contract_address(), &recipient, &amount);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("wdraw_n"),),
+            (note_commitment, nullifier, recipient, amount),
+        );
+    }
+
+    /// Add margin to a position by spending a shielded note (no address linkage).
+    /// Proof: NoteSpend — public inputs [note_commitment, nullifier].
+    pub fn add_margin_from_note(
+        env: Env,
+        note_commitment: BytesN<32>,
+        nullifier: BytesN<32>,
+        position_commitment: BytesN<32>,
+        proof: Groth16Proof,
+    ) {
+        let null_key = DataKey::Nullifier(nullifier.clone());
+        if env.storage().persistent().has(&null_key) {
+            panic!("PerpEngine: nullifier already spent");
+        }
+        let note_key = DataKey::Note(note_commitment.clone());
+        let amount: i128 = env
+            .storage()
+            .persistent()
+            .get(&note_key)
+            .unwrap_or_else(|| panic!("PerpEngine: note not found"));
+
+        let mut pi: Vec<Bn254Fr> = Vec::new(&env);
+        pi.push_back(Bn254Fr::from_bytes(note_commitment.clone()));
+        pi.push_back(Bn254Fr::from_bytes(nullifier.clone()));
+        let vk = load_vk(&env, &VK_NOTE_SPEND_IC);
+        match verify_groth16(&env, &vk, &proof, &pi) {
+            Ok(true) => {}
+            _ => panic!("PerpEngine: invalid note spend proof"),
+        }
+
+        env.storage().persistent().set(&null_key, &true);
+        env.storage().persistent().extend_ttl(&null_key, 17280, 17280);
+
+        let pos_key = DataKey::Position(position_commitment.clone());
+        let mut meta: PositionMeta = env
+            .storage()
+            .persistent()
+            .get(&pos_key)
+            .unwrap_or_else(|| panic!("PerpEngine: position not found"));
+        if meta.status != PositionStatus::Open && meta.status != PositionStatus::Matched {
+            panic!("PerpEngine: can only add margin to an open or matched position");
+        }
+
+        meta.collateral += amount;
+        env.storage().persistent().set(&pos_key, &meta);
+        env.storage().persistent().extend_ttl(&pos_key, 17280, 17280);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("mgn_note"),),
+            (note_commitment, nullifier, position_commitment, amount, meta.collateral),
+        );
+    }
+
+    pub fn get_note(env: Env, note_commitment: BytesN<32>) -> Option<i128> {
+        env.storage()
+            .persistent()
+            .get::<_, i128>(&DataKey::Note(note_commitment))
     }
 
     pub fn liquidate(
@@ -1361,6 +1488,54 @@ mod test {
         create_position(&env, &cid, &owner, &cmt, 1000, 5, 0, 100, PositionStatus::Open, 0);
         // owner has 0 balance, adding margin should fail
         client.add_margin(&owner, &cmt, &500);
+    }
+
+    #[test]
+    fn test_deposit_note_stores_note() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let depositor = Address::generate(&env);
+        let cfg = client.get_config();
+        let asset = StellarAssetClient::new(&env, &cfg.token);
+        asset.mint(&depositor, &1000);
+
+        let note_cmt = BytesN::from_array(&env, &[10u8; 32]);
+        client.deposit_note(&depositor, &note_cmt, &1000);
+
+        assert_eq!(client.get_note(&note_cmt), Some(1000));
+    }
+
+    #[test]
+    #[should_panic(expected = "deposit amount must be positive")]
+    fn test_deposit_note_zero_amount_reverts() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let depositor = Address::generate(&env);
+        let note_cmt = BytesN::from_array(&env, &[11u8; 32]);
+        client.deposit_note(&depositor, &note_cmt, &0);
+    }
+
+    #[test]
+    #[should_panic(expected = "note commitment already exists")]
+    fn test_deposit_note_duplicate_reverts() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let depositor = Address::generate(&env);
+        let cfg = client.get_config();
+        let asset = StellarAssetClient::new(&env, &cfg.token);
+        asset.mint(&depositor, &2000);
+
+        let note_cmt = BytesN::from_array(&env, &[12u8; 32]);
+        client.deposit_note(&depositor, &note_cmt, &1000);
+        client.deposit_note(&depositor, &note_cmt, &500);
+    }
+
+    #[test]
+    fn test_get_note_nonexistent_returns_none() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let note_cmt = BytesN::from_array(&env, &[99u8; 32]);
+        assert_eq!(client.get_note(&note_cmt), None);
     }
 
     #[test]
