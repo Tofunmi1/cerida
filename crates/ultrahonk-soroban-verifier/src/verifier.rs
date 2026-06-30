@@ -1,9 +1,9 @@
-use alloc::vec::Vec;
 use crate::field::Bn254Fr;
 use crate::shplemini::Shplemini;
 use crate::sumcheck::Sumcheck;
 use crate::transcript::Transcript;
-use crate::types::{RelationParameters, VerificationKey, Proof};
+use crate::types::{Proof, RelationParameters, VerificationKey};
+use alloc::vec::Vec;
 use soroban_sdk::Env;
 
 pub struct UltraHonkVerifier;
@@ -26,10 +26,21 @@ impl UltraHonkVerifier {
         let gamma = transcript.get_challenge();
         let alpha = transcript.get_challenge();
 
-        let relation_params = RelationParameters { eta, beta, gamma, alpha };
+        let relation_params = RelationParameters {
+            eta,
+            beta,
+            gamma,
+            alpha,
+        };
 
-        Self::verify_oink_phase(env, vk, proof, &mut transcript, &relation_params, public_inputs)
-            && Self::verify_decider_phase(env, vk, proof, &mut transcript, &relation_params, alpha)
+        Self::verify_oink_phase(
+            env,
+            vk,
+            proof,
+            &mut transcript,
+            &relation_params,
+            public_inputs,
+        ) && Self::verify_decider_phase(env, vk, proof, &mut transcript, &relation_params, alpha)
     }
 
     fn verify_oink_phase(
@@ -54,7 +65,11 @@ impl UltraHonkVerifier {
         let sumcheck_ok = Sumcheck::verify(
             env,
             &proof.sumcheck_univariates,
-            &proof.sumcheck_evaluations.iter().map(|g| g.x).collect::<Vec<_>>(),
+            &proof
+                .sumcheck_evaluations
+                .iter()
+                .map(|g| g.x)
+                .collect::<Vec<_>>(),
             vk.circuit_size,
             relation_params,
             alpha,
@@ -78,16 +93,35 @@ impl UltraHonkVerifier {
         let rho = transcript.get_challenge();
 
         let batch_opening_commitments: Vec<crate::types::G1Commitment> = alloc::vec![
-            vk.qm.clone(), vk.qc.clone(), vk.ql.clone(), vk.qr.clone(),
-            vk.qo.clone(), vk.q4.clone(),
-            vk.qlookup.clone(), vk.qdelta.clone(), vk.qecc.clone(),
-            vk.s1.clone(), vk.s2.clone(), vk.s3.clone(), vk.s4.clone(),
-            vk.t1.clone(), vk.t2.clone(), vk.t3.clone(), vk.t4.clone(),
-            vk.id1.clone(), vk.id2.clone(), vk.id3.clone(), vk.id4.clone(),
+            vk.qm.clone(),
+            vk.qc.clone(),
+            vk.ql.clone(),
+            vk.qr.clone(),
+            vk.qo.clone(),
+            vk.q4.clone(),
+            vk.qlookup.clone(),
+            vk.qdelta.clone(),
+            vk.qecc.clone(),
+            vk.s1.clone(),
+            vk.s2.clone(),
+            vk.s3.clone(),
+            vk.s4.clone(),
+            vk.t1.clone(),
+            vk.t2.clone(),
+            vk.t3.clone(),
+            vk.t4.clone(),
+            vk.id1.clone(),
+            vk.id2.clone(),
+            vk.id3.clone(),
+            vk.id4.clone(),
             vk.lagrange_1.clone(),
         ];
 
-        let batch_evaluations = proof.sumcheck_evaluations.iter().map(|g| g.x).collect::<Vec<_>>();
+        let batch_evaluations = proof
+            .sumcheck_evaluations
+            .iter()
+            .map(|g| g.x)
+            .collect::<Vec<_>>();
 
         Shplemini::verify(
             env,

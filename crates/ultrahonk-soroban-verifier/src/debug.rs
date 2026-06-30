@@ -1,18 +1,16 @@
-use core::fmt::Write;
 use crate::field::Bn254Fr;
 use alloc::string::String;
+use core::fmt::Write;
 use soroban_sdk::Env;
 
 pub struct Debug;
 
 impl Debug {
     pub fn fmt_hex(env: Env, data: &[u8]) -> soroban_sdk::String {
-        let hex_string = data
-            .iter()
-            .fold(String::new(), |mut acc, byte| {
-                let _ = core::write!(&mut acc, "{:02x}", byte);
-                acc
-            });
+        let hex_string = data.iter().fold(String::new(), |mut acc, byte| {
+            let _ = core::write!(&mut acc, "{:02x}", byte);
+            acc
+        });
         soroban_sdk::String::from_str(&env, &hex_string)
     }
 

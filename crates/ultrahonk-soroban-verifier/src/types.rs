@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use crate::field::Bn254Fr;
+use alloc::vec::Vec;
 
 #[derive(Clone, Copy, Debug)]
 pub struct G1Commitment {

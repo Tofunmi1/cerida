@@ -1,5 +1,5 @@
 use crate::field::Bn254Fr;
-use crate::types::{VerificationKey, Proof, G1Commitment};
+use crate::types::{G1Commitment, Proof, VerificationKey};
 
 pub fn parse_vk(bytes: &[u8]) -> VerificationKey {
     let num_bytes = bytes.len();
@@ -118,12 +118,8 @@ pub fn parse_proof(bytes: &[u8]) -> Proof {
 
     Proof {
         sumcheck_univariates: (0..15_488 / 32).map(|_| read_field(&mut offset)).collect(),
-        sumcheck_evaluations: (0..48)
-            .map(|_| read_g1(&mut offset))
-            .collect(),
-        gemini_fold_comms: (0..24)
-            .map(|_| read_g1(&mut offset))
-            .collect(),
+        sumcheck_evaluations: (0..48).map(|_| read_g1(&mut offset)).collect(),
+        gemini_fold_comms: (0..24).map(|_| read_g1(&mut offset)).collect(),
         gemini_initial_shifted: read_g1(&mut offset),
         shplonk_q: read_g1(&mut offset),
         kzg_quotient: read_g1(&mut offset),

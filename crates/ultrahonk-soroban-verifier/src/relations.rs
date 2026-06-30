@@ -83,8 +83,8 @@ impl Relations {
             let w_4_beta_sig_4 = (w_4 + beta * sigma_4) + gamma;
             w_l_beta_sig_1 * w_r_beta_sig_2 * w_o_beta_sig_3 * w_4_beta_sig_4
         };
-        let product_check = z_perm * grand_product_numerator
-            - z_perm_shift * grand_product_denominator;
+        let product_check =
+            z_perm * grand_product_numerator - z_perm_shift * grand_product_denominator;
         result = result + product_check * *alpha_pow;
         *alpha_pow = *alpha_pow * alpha;
 
@@ -261,8 +261,10 @@ impl Relations {
         result = result + identity_0 * *alpha_pow;
         *alpha_pow = *alpha_pow * alpha;
 
-        let identity_1 = (w_l * w_l - s_box_0) + (w_r * w_r - s_box_1)
-            + (w_o * w_o - s_box_2) + (w_4 * w_4 - s_box_3);
+        let identity_1 = (w_l * w_l - s_box_0)
+            + (w_r * w_r - s_box_1)
+            + (w_o * w_o - s_box_2)
+            + (w_4 * w_4 - s_box_3);
 
         result = result + identity_1 * *alpha_pow;
         *alpha_pow = *alpha_pow * alpha;
@@ -288,16 +290,12 @@ impl Relations {
         let s_box_1 = Self::poseidon_s_box(w_r);
         let s_box_2 = Self::poseidon_s_box(w_o);
 
-        let identity_0 = (s_box_0 - ql * w_r)
-            + (s_box_1 - qr * w_o)
-            + (s_box_2 - qo * w_4);
+        let identity_0 = (s_box_0 - ql * w_r) + (s_box_1 - qr * w_o) + (s_box_2 - qo * w_4);
 
         result = result + identity_0 * *alpha_pow;
         *alpha_pow = *alpha_pow * alpha;
 
-        let identity_1 = (w_l * w_l - s_box_0)
-            + (w_r * w_r - s_box_1)
-            + (w_o * w_o - s_box_2);
+        let identity_1 = (w_l * w_l - s_box_0) + (w_r * w_r - s_box_1) + (w_o * w_o - s_box_2);
 
         result = result + identity_1 * *alpha_pow;
         *alpha_pow = *alpha_pow * alpha;
@@ -343,62 +341,132 @@ pub fn evaluate_gate_constraints(
     let mut result = Bn254Fr::zero();
     let mut alpha_pow = Bn254Fr::one();
 
-    result = result + Relations::evaluate_ultra_arithmetic(
-        w_l, w_r, w_o, w_4,
-        q_selectors[0], q_selectors[1], q_selectors[2],
-        q_selectors[3], q_selectors[4], q_selectors[5],
-        alpha, &mut alpha_pow,
-    );
+    result = result
+        + Relations::evaluate_ultra_arithmetic(
+            w_l,
+            w_r,
+            w_o,
+            w_4,
+            q_selectors[0],
+            q_selectors[1],
+            q_selectors[2],
+            q_selectors[3],
+            q_selectors[4],
+            q_selectors[5],
+            alpha,
+            &mut alpha_pow,
+        );
 
-    result = result + Relations::evaluate_permutation(
-        w_l, w_r, w_o, w_4,
-        id_evals[0], id_evals[1], id_evals[2], id_evals[3],
-        sigma_evals[0], sigma_evals[1], sigma_evals[2], sigma_evals[3],
-        z_perm, z_perm_shift,
-        relation_params.beta, relation_params.gamma,
-        alpha, &mut alpha_pow,
-    );
+    result = result
+        + Relations::evaluate_permutation(
+            w_l,
+            w_r,
+            w_o,
+            w_4,
+            id_evals[0],
+            id_evals[1],
+            id_evals[2],
+            id_evals[3],
+            sigma_evals[0],
+            sigma_evals[1],
+            sigma_evals[2],
+            sigma_evals[3],
+            z_perm,
+            z_perm_shift,
+            relation_params.beta,
+            relation_params.gamma,
+            alpha,
+            &mut alpha_pow,
+        );
 
-    result = result + Relations::evaluate_lookup(
-        w_l, w_r, w_o, w_4,
-        q_selectors[6],
-        table_evals[0], table_evals[1], table_evals[2], table_evals[3],
-        z_lookup, z_lookup_shift,
-        relation_params.beta, relation_params.gamma,
-        alpha, &mut alpha_pow,
-    );
+    result = result
+        + Relations::evaluate_lookup(
+            w_l,
+            w_r,
+            w_o,
+            w_4,
+            q_selectors[6],
+            table_evals[0],
+            table_evals[1],
+            table_evals[2],
+            table_evals[3],
+            z_lookup,
+            z_lookup_shift,
+            relation_params.beta,
+            relation_params.gamma,
+            alpha,
+            &mut alpha_pow,
+        );
 
-    result = result + Relations::evaluate_delta_range_constraint(
-        w_l, w_r, w_o, w_4,
-        q_selectors[7],
-        alpha, &mut alpha_pow,
-    );
+    result = result
+        + Relations::evaluate_delta_range_constraint(
+            w_l,
+            w_r,
+            w_o,
+            w_4,
+            q_selectors[7],
+            alpha,
+            &mut alpha_pow,
+        );
 
-    result = result + Relations::evaluate_elliptic(
-        w_l, w_r, w_o, w_4,
-        q_selectors[9], q_selectors[6],
-        alpha, &mut alpha_pow,
-    );
+    result = result
+        + Relations::evaluate_elliptic(
+            w_l,
+            w_r,
+            w_o,
+            w_4,
+            q_selectors[9],
+            q_selectors[6],
+            alpha,
+            &mut alpha_pow,
+        );
 
-    result = result + Relations::evaluate_auxiliary(
-        w_l, w_r, w_o, w_4,
-        q_selectors[0], q_selectors[1], q_selectors[2],
-        q_selectors[3], q_selectors[4], q_selectors[5],
-        q_selectors[6], q_selectors[7], q_selectors[9],
-        alpha, &mut alpha_pow,
-    );
+    result = result
+        + Relations::evaluate_auxiliary(
+            w_l,
+            w_r,
+            w_o,
+            w_4,
+            q_selectors[0],
+            q_selectors[1],
+            q_selectors[2],
+            q_selectors[3],
+            q_selectors[4],
+            q_selectors[5],
+            q_selectors[6],
+            q_selectors[7],
+            q_selectors[9],
+            alpha,
+            &mut alpha_pow,
+        );
 
-    result = result + Relations::evaluate_poseidon2_external(
-        w_l, w_r, w_o, w_4,
-        q_selectors[2], q_selectors[3], q_selectors[4], q_selectors[5],
-        alpha, &mut alpha_pow,
-    );
+    result = result
+        + Relations::evaluate_poseidon2_external(
+            w_l,
+            w_r,
+            w_o,
+            w_4,
+            q_selectors[2],
+            q_selectors[3],
+            q_selectors[4],
+            q_selectors[5],
+            alpha,
+            &mut alpha_pow,
+        );
 
-    result = result + Relations::evaluate_poseidon2_internal(
-        w_l, w_r, w_o, w_4,
-        q_selectors[2], q_selectors[3], q_selectors[4], q_selectors[5],
-        alpha, &mut alpha_pow,
-    );
+    result = result
+        + Relations::evaluate_poseidon2_internal(
+            w_l,
+            w_r,
+            w_o,
+            w_4,
+            q_selectors[2],
+            q_selectors[3],
+            q_selectors[4],
+            q_selectors[5],
+            alpha,
+            &mut alpha_pow,
+        );
 
     result
 }

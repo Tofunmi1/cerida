@@ -86,7 +86,7 @@ pub fn g1_add(env: &Env, a: &G1Point, b: &G1Point) -> G1Point {
 }
 
 pub fn g1_msm(env: &Env, points: &[G1Point], scalars: &[Bn254Fr]) -> G1Point {
-    use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254Fr as SdkBn254Fr};
+    use soroban_sdk::crypto::bn254::{Bn254Fr as SdkBn254Fr, Bn254G1Affine};
     let bn = env.crypto().bn254();
     let mut sdk_points: Vec<Bn254G1Affine> = Vec::new(env);
     let mut sdk_scalars: Vec<SdkBn254Fr> = Vec::new(env);

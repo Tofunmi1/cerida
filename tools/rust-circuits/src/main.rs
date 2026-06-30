@@ -95,7 +95,12 @@ fn main() -> Result<()> {
             let mut rng = rand::thread_rng();
 
             let results = setup_all(&mut rng)?;
-            let names = ["order_commitment", "order_cancel", "order_match", "note_spend"];
+            let names = [
+                "order_commitment",
+                "order_cancel",
+                "order_match",
+                "note_spend",
+            ];
             for (name, (pk, vk)) in names.iter().zip(results.iter()) {
                 eprintln!("Setting up {}…", name);
                 let pk_path = out_dir.join(format!("{}.pk.bin", name));
@@ -112,10 +117,24 @@ fn main() -> Result<()> {
                 eprintln!("  vk: {vk_path:?} ({} bytes)", vk_json_str.len());
             }
         }
-        Command::OrderCommitment { side, price, size, leverage, asset_id, nonce, secret } => {
+        Command::OrderCommitment {
+            side,
+            price,
+            size,
+            leverage,
+            asset_id,
+            nonce,
+            secret,
+        } => {
             let out = prove_commitment(
-                Fr::from(side), Fr::from(price), Fr::from(size), Fr::from(leverage),
-                Fr::from(asset_id), Fr::from(0), Fr::from(nonce), Fr::from(secret),
+                Fr::from(side),
+                Fr::from(price),
+                Fr::from(size),
+                Fr::from(leverage),
+                Fr::from(asset_id),
+                Fr::from(0),
+                Fr::from(nonce),
+                Fr::from(secret),
             )?;
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
@@ -132,16 +151,42 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Command::OrderMatch {
-            side_a, price_a, size_a, leverage_a, asset_id_a, nonce_a, secret_a,
-            side_b, price_b, size_b, leverage_b, asset_id_b, nonce_b, secret_b,
-            match_price, match_size,
+            side_a,
+            price_a,
+            size_a,
+            leverage_a,
+            asset_id_a,
+            nonce_a,
+            secret_a,
+            side_b,
+            price_b,
+            size_b,
+            leverage_b,
+            asset_id_b,
+            nonce_b,
+            secret_b,
+            match_price,
+            match_size,
         } => {
             let out = prove_match(
-                Fr::from(side_a), Fr::from(price_a), Fr::from(size_a), Fr::from(leverage_a),
-                Fr::from(asset_id_a), Fr::from(0), Fr::from(nonce_a), Fr::from(secret_a),
-                Fr::from(side_b), Fr::from(price_b), Fr::from(size_b), Fr::from(leverage_b),
-                Fr::from(asset_id_b), Fr::from(0), Fr::from(nonce_b), Fr::from(secret_b),
-                Fr::from(match_price), Fr::from(match_size),
+                Fr::from(side_a),
+                Fr::from(price_a),
+                Fr::from(size_a),
+                Fr::from(leverage_a),
+                Fr::from(asset_id_a),
+                Fr::from(0),
+                Fr::from(nonce_a),
+                Fr::from(secret_a),
+                Fr::from(side_b),
+                Fr::from(price_b),
+                Fr::from(size_b),
+                Fr::from(leverage_b),
+                Fr::from(asset_id_b),
+                Fr::from(0),
+                Fr::from(nonce_b),
+                Fr::from(secret_b),
+                Fr::from(match_price),
+                Fr::from(match_size),
             )?;
             println!("{}", serde_json::to_string_pretty(&out)?);
         }

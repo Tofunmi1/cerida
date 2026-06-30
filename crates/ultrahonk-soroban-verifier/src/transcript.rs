@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
 use crate::field::Bn254Fr;
 use crate::hash::keccak256;
+use alloc::vec::Vec;
 use soroban_sdk::Env;
 
 pub struct Transcript {

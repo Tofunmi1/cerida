@@ -8,11 +8,7 @@ use ark_r1cs_std::eq::EqGadget;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_relations::gr1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 
-fn enforce_cond_le(
-    condition: FpVar<Fr>,
-    a: FpVar<Fr>,
-    b: FpVar<Fr>,
-) -> Result<(), SynthesisError> {
+fn enforce_cond_le(condition: FpVar<Fr>, a: FpVar<Fr>, b: FpVar<Fr>) -> Result<(), SynthesisError> {
     let diff = b - a;
     let cond_diff = condition * diff;
     let bits = cond_diff.to_bits_be()?;

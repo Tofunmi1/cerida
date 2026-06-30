@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
 use crate::field::Bn254Fr;
 use crate::types::RelationParameters;
+use alloc::vec::Vec;
 
 pub struct Sumcheck;
 
@@ -27,7 +27,11 @@ impl Sumcheck {
             idx += expected_partial_length;
 
             let eval_0 = partial[0];
-            let eval_1 = if partial.len() > 1 { partial[1] } else { Bn254Fr::zero() };
+            let eval_1 = if partial.len() > 1 {
+                partial[1]
+            } else {
+                Bn254Fr::zero()
+            };
 
             let sum = eval_0 + eval_1;
             let expected = if round == 0 {
@@ -42,10 +46,8 @@ impl Sumcheck {
                 return false;
             }
 
-            let challenge = Bn254Fr::from_bytes_be(&crate::hash::keccak256(
-                env,
-                &partial[0].to_bytes_be(),
-            ));
+            let challenge =
+                Bn254Fr::from_bytes_be(&crate::hash::keccak256(env, &partial[0].to_bytes_be()));
             round_challenges.push(challenge);
         }
 

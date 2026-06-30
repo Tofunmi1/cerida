@@ -44,10 +44,13 @@ impl Shplemini {
 
             let mut scaled = g1_msm(
                 env,
-                &[comm_neg, G1Point {
-                    x: Bn254Fr::from_bytes_be(&Bn254Fr::zero().to_bytes_be()),
-                    y: Bn254Fr::from_bytes_be(&Bn254Fr::zero().to_bytes_be()),
-                }],
+                &[
+                    comm_neg,
+                    G1Point {
+                        x: Bn254Fr::from_bytes_be(&Bn254Fr::zero().to_bytes_be()),
+                        y: Bn254Fr::from_bytes_be(&Bn254Fr::zero().to_bytes_be()),
+                    },
+                ],
                 &[rho_pow, rho_pow * eval],
             );
             accumulator = g1_add(env, &accumulator, &scaled);
@@ -74,10 +77,13 @@ impl Shplemini {
 
         let pairing_result = pairing_check(
             env,
-            &[pairing_lhs, G1Point {
-                x: Bn254Fr::from_bytes_be(&Bn254Fr::zero().to_bytes_be()),
-                y: Bn254Fr::from_bytes_be(&Bn254Fr::zero().to_bytes_be()),
-            }],
+            &[
+                pairing_lhs,
+                G1Point {
+                    x: Bn254Fr::from_bytes_be(&Bn254Fr::zero().to_bytes_be()),
+                    y: Bn254Fr::from_bytes_be(&Bn254Fr::zero().to_bytes_be()),
+                },
+            ],
             &[
                 G2Point {
                     x: [Bn254Fr::zero(), Bn254Fr::zero()],

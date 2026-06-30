@@ -1,18 +1,18 @@
 pub mod circuits;
 pub mod poseidon2;
 
-use ark_bn254::{Bn254, Fr, Fq, G1Affine, G2Affine};
+use ark_bn254::{Bn254, Fq, Fr, G1Affine, G2Affine};
 use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField, UniformRand};
 use ark_groth16::{Groth16, ProvingKey, VerifyingKey};
-use ark_relations::gr1cs::{ConstraintSynthesizer, SynthesisError};
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::GR1CSVar;
+use ark_relations::gr1cs::{ConstraintSynthesizer, SynthesisError};
 use ark_serialize::CanonicalDeserialize;
-use num_bigint::BigUint;
 use circuits::cancel::OrderCancel;
 use circuits::commitment::OrderCommitment;
 use circuits::match_circuit::OrderMatch;
 use circuits::note_spend::NoteSpend;
+use num_bigint::BigUint;
 use poseidon2::{poseidon2_hash_t3, poseidon2_hash_t4};
 
 #[derive(serde::Serialize)]
@@ -98,19 +98,24 @@ pub fn vk_to_json(vk: &VerifyingKey<Bn254>) -> serde_json::Value {
 /// alpha_g1, beta_g2, gamma_g2, delta_g2 — this is required by the Soroban contracts.
 fn gen_with_crs(
     circuit: impl ConstraintSynthesizer<Fr>,
-    alpha: Fr, beta: Fr, gamma: Fr, delta: Fr,
-    g1_gen: ark_bn254::G1Projective, g2_gen: ark_bn254::G2Projective,
+    alpha: Fr,
+    beta: Fr,
+    gamma: Fr,
+    delta: Fr,
+    g1_gen: ark_bn254::G1Projective,
+    g2_gen: ark_bn254::G2Projective,
     rng: &mut impl rand::Rng,
 ) -> Result<(ProvingKey<Bn254>, VerifyingKey<Bn254>), SynthesisError> {
     let pk = Groth16::<Bn254>::generate_parameters_with_qap(
-        circuit, alpha, beta, gamma, delta,
-        g1_gen, g2_gen, rng,
+        circuit, alpha, beta, gamma, delta, g1_gen, g2_gen, rng,
     )?;
     let vk = pk.vk.clone();
     Ok((pk, vk))
 }
 
-pub fn setup_all(rng: &mut impl rand::Rng) -> Result<[(ProvingKey<Bn254>, VerifyingKey<Bn254>); 4], SynthesisError> {
+pub fn setup_all(
+    rng: &mut impl rand::Rng,
+) -> Result<[(ProvingKey<Bn254>, VerifyingKey<Bn254>); 4], SynthesisError> {
     let alpha = Fr::rand(rng);
     let beta = Fr::rand(rng);
     let gamma = Fr::ONE;
@@ -120,37 +125,90 @@ pub fn setup_all(rng: &mut impl rand::Rng) -> Result<[(ProvingKey<Bn254>, Verify
 
     let commit = gen_with_crs(
         OrderCommitment {
-            side: Fr::ZERO, price: Fr::ZERO, size: Fr::ZERO,
-            leverage: Fr::ZERO, asset: Fr::ZERO, is_market: Fr::ZERO,
-            nonce: Fr::ZERO, secret: Fr::ZERO, commitment: Fr::ZERO,
+            side: Fr::ZERO,
+            price: Fr::ZERO,
+            size: Fr::ZERO,
+            leverage: Fr::ZERO,
+            asset: Fr::ZERO,
+            is_market: Fr::ZERO,
+            nonce: Fr::ZERO,
+            secret: Fr::ZERO,
+            commitment: Fr::ZERO,
         },
-        alpha, beta, gamma, delta, g1_gen, g2_gen, rng,
+        alpha,
+        beta,
+        gamma,
+        delta,
+        g1_gen,
+        g2_gen,
+        rng,
     )?;
 
     let cancel = gen_with_crs(
-        OrderCancel { commitment: Fr::ZERO, secret: Fr::ZERO, nullifier: Fr::ZERO },
-        alpha, beta, gamma, delta, g1_gen, g2_gen, rng,
+        OrderCancel {
+            commitment: Fr::ZERO,
+            secret: Fr::ZERO,
+            nullifier: Fr::ZERO,
+        },
+        alpha,
+        beta,
+        gamma,
+        delta,
+        g1_gen,
+        g2_gen,
+        rng,
     )?;
 
     let r#match = gen_with_crs(
         OrderMatch {
-            side_a: Fr::ZERO, price_a: Fr::ZERO, size_a: Fr::ZERO,
-            leverage_a: Fr::ZERO, asset_a: Fr::ZERO, is_market_a: Fr::ZERO,
-            nonce_a: Fr::ZERO, secret_a: Fr::ZERO,
-            side_b: Fr::ONE, price_b: Fr::ZERO, size_b: Fr::ZERO,
-            leverage_b: Fr::ZERO, asset_b: Fr::ZERO, is_market_b: Fr::ZERO,
-            nonce_b: Fr::ZERO, secret_b: Fr::ZERO,
-            mp: Fr::ZERO, ms: Fr::ZERO,
-            cmt_a: Fr::ZERO, cmt_b: Fr::ZERO,
-            match_price: Fr::ZERO, match_size: Fr::ZERO,
-            nullifier_a: Fr::ZERO, nullifier_b: Fr::ZERO,
+            side_a: Fr::ZERO,
+            price_a: Fr::ZERO,
+            size_a: Fr::ZERO,
+            leverage_a: Fr::ZERO,
+            asset_a: Fr::ZERO,
+            is_market_a: Fr::ZERO,
+            nonce_a: Fr::ZERO,
+            secret_a: Fr::ZERO,
+            side_b: Fr::ONE,
+            price_b: Fr::ZERO,
+            size_b: Fr::ZERO,
+            leverage_b: Fr::ZERO,
+            asset_b: Fr::ZERO,
+            is_market_b: Fr::ZERO,
+            nonce_b: Fr::ZERO,
+            secret_b: Fr::ZERO,
+            mp: Fr::ZERO,
+            ms: Fr::ZERO,
+            cmt_a: Fr::ZERO,
+            cmt_b: Fr::ZERO,
+            match_price: Fr::ZERO,
+            match_size: Fr::ZERO,
+            nullifier_a: Fr::ZERO,
+            nullifier_b: Fr::ZERO,
         },
-        alpha, beta, gamma, delta, g1_gen, g2_gen, rng,
+        alpha,
+        beta,
+        gamma,
+        delta,
+        g1_gen,
+        g2_gen,
+        rng,
     )?;
 
     let note_spend = gen_with_crs(
-        NoteSpend { amount: Fr::ZERO, secret: Fr::ZERO, note_commitment: Fr::ZERO, nullifier: Fr::ZERO },
-        alpha, beta, gamma, delta, g1_gen, g2_gen, rng,
+        NoteSpend {
+            amount: Fr::ZERO,
+            secret: Fr::ZERO,
+            note_commitment: Fr::ZERO,
+            nullifier: Fr::ZERO,
+        },
+        alpha,
+        beta,
+        gamma,
+        delta,
+        g1_gen,
+        g2_gen,
+        rng,
     )?;
 
     Ok([commit, cancel, r#match, note_spend])
@@ -205,8 +263,14 @@ fn prove_with_pk(
 }
 
 pub fn compute_commitment(
-    side: Fr, price: Fr, size: Fr, leverage: Fr,
-    asset: Fr, is_market: Fr, nonce: Fr, secret: Fr,
+    side: Fr,
+    price: Fr,
+    size: Fr,
+    leverage: Fr,
+    asset: Fr,
+    is_market: Fr,
+    nonce: Fr,
+    secret: Fr,
 ) -> Fr {
     let ps = FpVar::Constant(side);
     let pp = FpVar::Constant(price);
@@ -237,77 +301,173 @@ pub fn compute_match_nullifier(cmt: Fr, mp: Fr, ms: Fr) -> Fr {
     let pc = FpVar::Constant(cmt);
     let pm = FpVar::Constant(mp);
     let ps = FpVar::Constant(ms);
-    poseidon2_hash_t4(&[pc, pm, ps], 10).unwrap().value().unwrap()
+    poseidon2_hash_t4(&[pc, pm, ps], 10)
+        .unwrap()
+        .value()
+        .unwrap()
 }
 
 pub fn prove_commitment(
-    side: Fr, price: Fr, size: Fr, leverage: Fr,
-    asset: Fr, is_market: Fr, nonce: Fr, secret: Fr,
+    side: Fr,
+    price: Fr,
+    size: Fr,
+    leverage: Fr,
+    asset: Fr,
+    is_market: Fr,
+    nonce: Fr,
+    secret: Fr,
 ) -> Result<ProofOutput, SynthesisError> {
     let cmt = compute_commitment(side, price, size, leverage, asset, is_market, nonce, secret);
     let mut rng = rand::thread_rng();
     let setup = OrderCommitment {
-        side: Fr::ZERO, price: Fr::ZERO, size: Fr::ZERO,
-        leverage: Fr::ZERO, asset: Fr::ZERO, is_market: Fr::ZERO,
-        nonce: Fr::ZERO, secret: Fr::ZERO, commitment: Fr::ZERO,
+        side: Fr::ZERO,
+        price: Fr::ZERO,
+        size: Fr::ZERO,
+        leverage: Fr::ZERO,
+        asset: Fr::ZERO,
+        is_market: Fr::ZERO,
+        nonce: Fr::ZERO,
+        secret: Fr::ZERO,
+        commitment: Fr::ZERO,
     };
-    let circuit = OrderCommitment { side, price, size, leverage, asset, is_market, nonce, secret, commitment: cmt };
+    let circuit = OrderCommitment {
+        side,
+        price,
+        size,
+        leverage,
+        asset,
+        is_market,
+        nonce,
+        secret,
+        commitment: cmt,
+    };
     prove_raw(setup, circuit, vec![cmt], &mut rng)
 }
 
-pub fn prove_cancel(
-    commitment: Fr, secret: Fr,
-) -> Result<ProofOutput, SynthesisError> {
+pub fn prove_cancel(commitment: Fr, secret: Fr) -> Result<ProofOutput, SynthesisError> {
     let nullifier = compute_nullifier(commitment, secret);
     let mut rng = rand::thread_rng();
-    let setup = OrderCancel { commitment: Fr::ZERO, secret: Fr::ZERO, nullifier: Fr::ZERO };
-    let circuit = OrderCancel { commitment, secret, nullifier };
+    let setup = OrderCancel {
+        commitment: Fr::ZERO,
+        secret: Fr::ZERO,
+        nullifier: Fr::ZERO,
+    };
+    let circuit = OrderCancel {
+        commitment,
+        secret,
+        nullifier,
+    };
     prove_raw(setup, circuit, vec![nullifier], &mut rng)
 }
 
 pub fn prove_commitment_with_pk(
     pk: &ProvingKey<Bn254>,
-    side: Fr, price: Fr, size: Fr, leverage: Fr,
-    asset: Fr, is_market: Fr, nonce: Fr, secret: Fr,
+    side: Fr,
+    price: Fr,
+    size: Fr,
+    leverage: Fr,
+    asset: Fr,
+    is_market: Fr,
+    nonce: Fr,
+    secret: Fr,
 ) -> Result<ProofOutput, SynthesisError> {
     let cmt = compute_commitment(side, price, size, leverage, asset, is_market, nonce, secret);
     let mut rng = rand::thread_rng();
-    let circuit = OrderCommitment { side, price, size, leverage, asset, is_market, nonce, secret, commitment: cmt };
+    let circuit = OrderCommitment {
+        side,
+        price,
+        size,
+        leverage,
+        asset,
+        is_market,
+        nonce,
+        secret,
+        commitment: cmt,
+    };
     prove_with_pk(pk, circuit, vec![cmt], &mut rng)
 }
 
 pub fn prove_match(
-    a_side: Fr, a_price: Fr, a_size: Fr, a_lev: Fr,
-    a_asset: Fr, a_market: Fr, a_nonce: Fr, a_secret: Fr,
-    b_side: Fr, b_price: Fr, b_size: Fr, b_lev: Fr,
-    b_asset: Fr, b_market: Fr, b_nonce: Fr, b_secret: Fr,
-    mp: Fr, ms: Fr,
+    a_side: Fr,
+    a_price: Fr,
+    a_size: Fr,
+    a_lev: Fr,
+    a_asset: Fr,
+    a_market: Fr,
+    a_nonce: Fr,
+    a_secret: Fr,
+    b_side: Fr,
+    b_price: Fr,
+    b_size: Fr,
+    b_lev: Fr,
+    b_asset: Fr,
+    b_market: Fr,
+    b_nonce: Fr,
+    b_secret: Fr,
+    mp: Fr,
+    ms: Fr,
 ) -> Result<ProofOutput, SynthesisError> {
-    let cmt_a = compute_commitment(a_side, a_price, a_size, a_lev, a_asset, a_market, a_nonce, a_secret);
-    let cmt_b = compute_commitment(b_side, b_price, b_size, b_lev, b_asset, b_market, b_nonce, b_secret);
+    let cmt_a = compute_commitment(
+        a_side, a_price, a_size, a_lev, a_asset, a_market, a_nonce, a_secret,
+    );
+    let cmt_b = compute_commitment(
+        b_side, b_price, b_size, b_lev, b_asset, b_market, b_nonce, b_secret,
+    );
     let null_a = compute_match_nullifier(cmt_a, mp, ms);
     let null_b = compute_match_nullifier(cmt_b, mp, ms);
 
     let mut rng = rand::thread_rng();
     let setup = OrderMatch {
-        side_a: Fr::ZERO, price_a: Fr::ZERO, size_a: Fr::ZERO,
-        leverage_a: Fr::ZERO, asset_a: Fr::ZERO, is_market_a: Fr::ZERO,
-        nonce_a: Fr::ZERO, secret_a: Fr::ZERO,
-        side_b: Fr::ONE, price_b: Fr::ZERO, size_b: Fr::ZERO,
-        leverage_b: Fr::ZERO, asset_b: Fr::ZERO, is_market_b: Fr::ZERO,
-        nonce_b: Fr::ZERO, secret_b: Fr::ZERO,
-        mp: Fr::ZERO, ms: Fr::ZERO,
-        cmt_a: Fr::ZERO, cmt_b: Fr::ZERO,
-        match_price: Fr::ZERO, match_size: Fr::ZERO,
-        nullifier_a: Fr::ZERO, nullifier_b: Fr::ZERO,
+        side_a: Fr::ZERO,
+        price_a: Fr::ZERO,
+        size_a: Fr::ZERO,
+        leverage_a: Fr::ZERO,
+        asset_a: Fr::ZERO,
+        is_market_a: Fr::ZERO,
+        nonce_a: Fr::ZERO,
+        secret_a: Fr::ZERO,
+        side_b: Fr::ONE,
+        price_b: Fr::ZERO,
+        size_b: Fr::ZERO,
+        leverage_b: Fr::ZERO,
+        asset_b: Fr::ZERO,
+        is_market_b: Fr::ZERO,
+        nonce_b: Fr::ZERO,
+        secret_b: Fr::ZERO,
+        mp: Fr::ZERO,
+        ms: Fr::ZERO,
+        cmt_a: Fr::ZERO,
+        cmt_b: Fr::ZERO,
+        match_price: Fr::ZERO,
+        match_size: Fr::ZERO,
+        nullifier_a: Fr::ZERO,
+        nullifier_b: Fr::ZERO,
     };
     let circuit = OrderMatch {
-        side_a: a_side, price_a: a_price, size_a: a_size, leverage_a: a_lev,
-        asset_a: a_asset, is_market_a: a_market, nonce_a: a_nonce, secret_a: a_secret,
-        side_b: b_side, price_b: b_price, size_b: b_size, leverage_b: b_lev,
-        asset_b: b_asset, is_market_b: b_market, nonce_b: b_nonce, secret_b: b_secret,
-        mp, ms, cmt_a, cmt_b, match_price: mp, match_size: ms,
-        nullifier_a: null_a, nullifier_b: null_b,
+        side_a: a_side,
+        price_a: a_price,
+        size_a: a_size,
+        leverage_a: a_lev,
+        asset_a: a_asset,
+        is_market_a: a_market,
+        nonce_a: a_nonce,
+        secret_a: a_secret,
+        side_b: b_side,
+        price_b: b_price,
+        size_b: b_size,
+        leverage_b: b_lev,
+        asset_b: b_asset,
+        is_market_b: b_market,
+        nonce_b: b_nonce,
+        secret_b: b_secret,
+        mp,
+        ms,
+        cmt_a,
+        cmt_b,
+        match_price: mp,
+        match_size: ms,
+        nullifier_a: null_a,
+        nullifier_b: null_b,
     };
     let public = vec![cmt_a, cmt_b, mp, ms, null_a, null_b];
     prove_raw(setup, circuit, public, &mut rng)
@@ -329,8 +489,18 @@ pub fn prove_note_spend(amount: Fr, secret: Fr) -> Result<ProofOutput, Synthesis
     let note_cmt = compute_note_commitment(amount, secret);
     let nullifier = compute_note_nullifier(note_cmt, secret);
     let mut rng = rand::thread_rng();
-    let setup = NoteSpend { amount: Fr::ZERO, secret: Fr::ZERO, note_commitment: Fr::ZERO, nullifier: Fr::ZERO };
-    let circuit = NoteSpend { amount, secret, note_commitment: note_cmt, nullifier };
+    let setup = NoteSpend {
+        amount: Fr::ZERO,
+        secret: Fr::ZERO,
+        note_commitment: Fr::ZERO,
+        nullifier: Fr::ZERO,
+    };
+    let circuit = NoteSpend {
+        amount,
+        secret,
+        note_commitment: note_cmt,
+        nullifier,
+    };
     prove_raw(setup, circuit, vec![note_cmt, nullifier], &mut rng)
 }
 
@@ -342,41 +512,86 @@ pub fn prove_note_spend_with_pk(
     let note_cmt = compute_note_commitment(amount, secret);
     let nullifier = compute_note_nullifier(note_cmt, secret);
     let mut rng = rand::thread_rng();
-    let circuit = NoteSpend { amount, secret, note_commitment: note_cmt, nullifier };
+    let circuit = NoteSpend {
+        amount,
+        secret,
+        note_commitment: note_cmt,
+        nullifier,
+    };
     prove_with_pk(pk, circuit, vec![note_cmt, nullifier], &mut rng)
 }
 
 pub fn prove_cancel_with_pk(
     pk: &ProvingKey<Bn254>,
-    commitment: Fr, secret: Fr,
+    commitment: Fr,
+    secret: Fr,
 ) -> Result<ProofOutput, SynthesisError> {
     let nullifier = compute_nullifier(commitment, secret);
     let mut rng = rand::thread_rng();
-    let circuit = OrderCancel { commitment, secret, nullifier };
+    let circuit = OrderCancel {
+        commitment,
+        secret,
+        nullifier,
+    };
     prove_with_pk(pk, circuit, vec![nullifier], &mut rng)
 }
 
 pub fn prove_match_with_pk(
     pk: &ProvingKey<Bn254>,
-    a_side: Fr, a_price: Fr, a_size: Fr, a_lev: Fr,
-    a_asset: Fr, a_market: Fr, a_nonce: Fr, a_secret: Fr,
-    b_side: Fr, b_price: Fr, b_size: Fr, b_lev: Fr,
-    b_asset: Fr, b_market: Fr, b_nonce: Fr, b_secret: Fr,
-    mp: Fr, ms: Fr,
+    a_side: Fr,
+    a_price: Fr,
+    a_size: Fr,
+    a_lev: Fr,
+    a_asset: Fr,
+    a_market: Fr,
+    a_nonce: Fr,
+    a_secret: Fr,
+    b_side: Fr,
+    b_price: Fr,
+    b_size: Fr,
+    b_lev: Fr,
+    b_asset: Fr,
+    b_market: Fr,
+    b_nonce: Fr,
+    b_secret: Fr,
+    mp: Fr,
+    ms: Fr,
 ) -> Result<ProofOutput, SynthesisError> {
-    let cmt_a = compute_commitment(a_side, a_price, a_size, a_lev, a_asset, a_market, a_nonce, a_secret);
-    let cmt_b = compute_commitment(b_side, b_price, b_size, b_lev, b_asset, b_market, b_nonce, b_secret);
+    let cmt_a = compute_commitment(
+        a_side, a_price, a_size, a_lev, a_asset, a_market, a_nonce, a_secret,
+    );
+    let cmt_b = compute_commitment(
+        b_side, b_price, b_size, b_lev, b_asset, b_market, b_nonce, b_secret,
+    );
     let null_a = compute_match_nullifier(cmt_a, mp, ms);
     let null_b = compute_match_nullifier(cmt_b, mp, ms);
 
     let mut rng = rand::thread_rng();
     let circuit = OrderMatch {
-        side_a: a_side, price_a: a_price, size_a: a_size, leverage_a: a_lev,
-        asset_a: a_asset, is_market_a: a_market, nonce_a: a_nonce, secret_a: a_secret,
-        side_b: b_side, price_b: b_price, size_b: b_size, leverage_b: b_lev,
-        asset_b: b_asset, is_market_b: b_market, nonce_b: b_nonce, secret_b: b_secret,
-        mp, ms, cmt_a, cmt_b, match_price: mp, match_size: ms,
-        nullifier_a: null_a, nullifier_b: null_b,
+        side_a: a_side,
+        price_a: a_price,
+        size_a: a_size,
+        leverage_a: a_lev,
+        asset_a: a_asset,
+        is_market_a: a_market,
+        nonce_a: a_nonce,
+        secret_a: a_secret,
+        side_b: b_side,
+        price_b: b_price,
+        size_b: b_size,
+        leverage_b: b_lev,
+        asset_b: b_asset,
+        is_market_b: b_market,
+        nonce_b: b_nonce,
+        secret_b: b_secret,
+        mp,
+        ms,
+        cmt_a,
+        cmt_b,
+        match_price: mp,
+        match_size: ms,
+        nullifier_a: null_a,
+        nullifier_b: null_b,
     };
     let public = vec![cmt_a, cmt_b, mp, ms, null_a, null_b];
     prove_with_pk(pk, circuit, public, &mut rng)
@@ -389,22 +604,46 @@ mod tests {
     use ark_groth16::prepare_verifying_key;
 
     fn make_order_fields(
-        side: u64, price: u64, size: u64, leverage: u64, asset: u64,
-        is_market: u64, nonce: u64, secret: u64,
+        side: u64,
+        price: u64,
+        size: u64,
+        leverage: u64,
+        asset: u64,
+        is_market: u64,
+        nonce: u64,
+        secret: u64,
     ) -> [Fr; 8] {
         [
-            Fr::from(side), Fr::from(price), Fr::from(size), Fr::from(leverage),
-            Fr::from(asset), Fr::from(is_market), Fr::from(nonce), Fr::from(secret),
+            Fr::from(side),
+            Fr::from(price),
+            Fr::from(size),
+            Fr::from(leverage),
+            Fr::from(asset),
+            Fr::from(is_market),
+            Fr::from(nonce),
+            Fr::from(secret),
         ]
     }
 
     #[test]
     fn test_commitment_cs_satisfied() {
         let fields = make_order_fields(0, 100, 10, 1, 5, 0, 42, 123456);
-        let cmt = compute_commitment(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7]);
+        let cmt = compute_commitment(
+            fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7],
+        );
         use ark_relations::gr1cs::ConstraintSystem;
         let cs = ConstraintSystem::new_ref();
-        let circuit = OrderCommitment { side: fields[0], price: fields[1], size: fields[2], leverage: fields[3], asset: fields[4], is_market: fields[5], nonce: fields[6], secret: fields[7], commitment: cmt };
+        let circuit = OrderCommitment {
+            side: fields[0],
+            price: fields[1],
+            size: fields[2],
+            leverage: fields[3],
+            asset: fields[4],
+            is_market: fields[5],
+            nonce: fields[6],
+            secret: fields[7],
+            commitment: cmt,
+        };
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(cs.is_satisfied().unwrap());
     }
@@ -413,11 +652,33 @@ mod tests {
     fn test_commitment_groth16() -> Result<(), SynthesisError> {
         let rng = &mut ark_std::test_rng();
         let fields = make_order_fields(0, 100, 10, 1, 5, 0, 42, 123456);
-        let cmt = compute_commitment(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7]);
-        let setup_circuit = OrderCommitment { side: Fr::ZERO, price: Fr::ZERO, size: Fr::ZERO, leverage: Fr::ZERO, asset: Fr::ZERO, is_market: Fr::ZERO, nonce: Fr::ZERO, secret: Fr::ZERO, commitment: Fr::ZERO };
+        let cmt = compute_commitment(
+            fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7],
+        );
+        let setup_circuit = OrderCommitment {
+            side: Fr::ZERO,
+            price: Fr::ZERO,
+            size: Fr::ZERO,
+            leverage: Fr::ZERO,
+            asset: Fr::ZERO,
+            is_market: Fr::ZERO,
+            nonce: Fr::ZERO,
+            secret: Fr::ZERO,
+            commitment: Fr::ZERO,
+        };
         let pk = Groth16::<Bn254>::generate_random_parameters_with_reduction(setup_circuit, rng)?;
         let vk = pk.vk.clone();
-        let prove_circuit = OrderCommitment { side: fields[0], price: fields[1], size: fields[2], leverage: fields[3], asset: fields[4], is_market: fields[5], nonce: fields[6], secret: fields[7], commitment: cmt };
+        let prove_circuit = OrderCommitment {
+            side: fields[0],
+            price: fields[1],
+            size: fields[2],
+            leverage: fields[3],
+            asset: fields[4],
+            is_market: fields[5],
+            nonce: fields[6],
+            secret: fields[7],
+            commitment: cmt,
+        };
         let proof = Groth16::<Bn254>::create_random_proof_with_reduction(prove_circuit, &pk, rng)?;
         let pvk = prepare_verifying_key(&vk);
         assert!(Groth16::<Bn254>::verify_proof(&pvk, &proof, &[cmt])?);
@@ -427,10 +688,23 @@ mod tests {
     #[test]
     fn test_cancel_cs_satisfied() {
         use ark_relations::gr1cs::ConstraintSystem;
-        let cmt = compute_commitment(Fr::from(0), Fr::from(100), Fr::from(10), Fr::from(1), Fr::from(5), Fr::from(0), Fr::from(42), Fr::from(123456));
+        let cmt = compute_commitment(
+            Fr::from(0),
+            Fr::from(100),
+            Fr::from(10),
+            Fr::from(1),
+            Fr::from(5),
+            Fr::from(0),
+            Fr::from(42),
+            Fr::from(123456),
+        );
         let null = compute_nullifier(cmt, Fr::from(123456));
         let cs = ConstraintSystem::new_ref();
-        let circuit = OrderCancel { commitment: cmt, secret: Fr::from(123456), nullifier: null };
+        let circuit = OrderCancel {
+            commitment: cmt,
+            secret: Fr::from(123456),
+            nullifier: null,
+        };
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(cs.is_satisfied().unwrap());
     }
@@ -438,12 +712,29 @@ mod tests {
     #[test]
     fn test_cancel_groth16() -> Result<(), SynthesisError> {
         let rng = &mut ark_std::test_rng();
-        let cmt = compute_commitment(Fr::from(0), Fr::from(100), Fr::from(10), Fr::from(1), Fr::from(5), Fr::from(0), Fr::from(42), Fr::from(123456));
+        let cmt = compute_commitment(
+            Fr::from(0),
+            Fr::from(100),
+            Fr::from(10),
+            Fr::from(1),
+            Fr::from(5),
+            Fr::from(0),
+            Fr::from(42),
+            Fr::from(123456),
+        );
         let null = compute_nullifier(cmt, Fr::from(123456));
-        let setup_circuit = OrderCancel { commitment: Fr::ZERO, secret: Fr::ZERO, nullifier: Fr::ZERO };
+        let setup_circuit = OrderCancel {
+            commitment: Fr::ZERO,
+            secret: Fr::ZERO,
+            nullifier: Fr::ZERO,
+        };
         let pk = Groth16::<Bn254>::generate_random_parameters_with_reduction(setup_circuit, rng)?;
         let vk = pk.vk.clone();
-        let prove_circuit = OrderCancel { commitment: cmt, secret: Fr::from(123456), nullifier: null };
+        let prove_circuit = OrderCancel {
+            commitment: cmt,
+            secret: Fr::from(123456),
+            nullifier: null,
+        };
         let proof = Groth16::<Bn254>::create_random_proof_with_reduction(prove_circuit, &pk, rng)?;
         let pvk = prepare_verifying_key(&vk);
         assert!(Groth16::<Bn254>::verify_proof(&pvk, &proof, &[null])?);
@@ -460,12 +751,30 @@ mod tests {
         let null_a = compute_match_nullifier(cmt_a, mp, ms);
         let null_b = compute_match_nullifier(cmt_b, mp, ms);
         let circuit = OrderMatch {
-            side_a: a[0], price_a: a[1], size_a: a[2], leverage_a: a[3],
-            asset_a: a[4], is_market_a: a[5], nonce_a: a[6], secret_a: a[7],
-            side_b: b[0], price_b: b[1], size_b: b[2], leverage_b: b[3],
-            asset_b: b[4], is_market_b: b[5], nonce_b: b[6], secret_b: b[7],
-            mp, ms, cmt_a, cmt_b, match_price: mp, match_size: ms,
-            nullifier_a: null_a, nullifier_b: null_b,
+            side_a: a[0],
+            price_a: a[1],
+            size_a: a[2],
+            leverage_a: a[3],
+            asset_a: a[4],
+            is_market_a: a[5],
+            nonce_a: a[6],
+            secret_a: a[7],
+            side_b: b[0],
+            price_b: b[1],
+            size_b: b[2],
+            leverage_b: b[3],
+            asset_b: b[4],
+            is_market_b: b[5],
+            nonce_b: b[6],
+            secret_b: b[7],
+            mp,
+            ms,
+            cmt_a,
+            cmt_b,
+            match_price: mp,
+            match_size: ms,
+            nullifier_a: null_a,
+            nullifier_b: null_b,
         };
         let public = [cmt_a, cmt_b, mp, ms, null_a, null_b];
         (circuit, public)
@@ -485,16 +794,30 @@ mod tests {
         let rng = &mut ark_std::test_rng();
         let (prove_circuit, public) = make_valid_match_circuit();
         let dummy = OrderMatch {
-            side_a: Fr::ZERO, price_a: Fr::ZERO, size_a: Fr::ZERO,
-            leverage_a: Fr::ZERO, asset_a: Fr::ZERO, is_market_a: Fr::ZERO,
-            nonce_a: Fr::ZERO, secret_a: Fr::ZERO,
-            side_b: Fr::ONE, price_b: Fr::ZERO, size_b: Fr::ZERO,
-            leverage_b: Fr::ZERO, asset_b: Fr::ZERO, is_market_b: Fr::ZERO,
-            nonce_b: Fr::ZERO, secret_b: Fr::ZERO,
-            mp: Fr::ZERO, ms: Fr::ZERO,
-            cmt_a: Fr::ZERO, cmt_b: Fr::ZERO,
-            match_price: Fr::ZERO, match_size: Fr::ZERO,
-            nullifier_a: Fr::ZERO, nullifier_b: Fr::ZERO,
+            side_a: Fr::ZERO,
+            price_a: Fr::ZERO,
+            size_a: Fr::ZERO,
+            leverage_a: Fr::ZERO,
+            asset_a: Fr::ZERO,
+            is_market_a: Fr::ZERO,
+            nonce_a: Fr::ZERO,
+            secret_a: Fr::ZERO,
+            side_b: Fr::ONE,
+            price_b: Fr::ZERO,
+            size_b: Fr::ZERO,
+            leverage_b: Fr::ZERO,
+            asset_b: Fr::ZERO,
+            is_market_b: Fr::ZERO,
+            nonce_b: Fr::ZERO,
+            secret_b: Fr::ZERO,
+            mp: Fr::ZERO,
+            ms: Fr::ZERO,
+            cmt_a: Fr::ZERO,
+            cmt_b: Fr::ZERO,
+            match_price: Fr::ZERO,
+            match_size: Fr::ZERO,
+            nullifier_a: Fr::ZERO,
+            nullifier_b: Fr::ZERO,
         };
         let pk = Groth16::<Bn254>::generate_random_parameters_with_reduction(dummy, rng)?;
         let vk = pk.vk.clone();
@@ -515,7 +838,32 @@ mod tests {
         let cmt_b = compute_commitment(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
         let null_a = compute_match_nullifier(cmt_a, mp, ms);
         let null_b = compute_match_nullifier(cmt_b, mp, ms);
-        let circuit = OrderMatch { side_a: a[0], price_a: a[1], size_a: a[2], leverage_a: a[3], asset_a: a[4], is_market_a: a[5], nonce_a: a[6], secret_a: a[7], side_b: b[0], price_b: b[1], size_b: b[2], leverage_b: b[3], asset_b: b[4], is_market_b: b[5], nonce_b: b[6], secret_b: b[7], mp, ms, cmt_a, cmt_b, match_price: mp, match_size: ms, nullifier_a: null_a, nullifier_b: null_b };
+        let circuit = OrderMatch {
+            side_a: a[0],
+            price_a: a[1],
+            size_a: a[2],
+            leverage_a: a[3],
+            asset_a: a[4],
+            is_market_a: a[5],
+            nonce_a: a[6],
+            secret_a: a[7],
+            side_b: b[0],
+            price_b: b[1],
+            size_b: b[2],
+            leverage_b: b[3],
+            asset_b: b[4],
+            is_market_b: b[5],
+            nonce_b: b[6],
+            secret_b: b[7],
+            mp,
+            ms,
+            cmt_a,
+            cmt_b,
+            match_price: mp,
+            match_size: ms,
+            nullifier_a: null_a,
+            nullifier_b: null_b,
+        };
         let cs = ConstraintSystem::new_ref();
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
@@ -532,7 +880,32 @@ mod tests {
         let cmt_b = compute_commitment(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
         let null_a = compute_match_nullifier(cmt_a, mp, ms);
         let null_b = compute_match_nullifier(cmt_b, mp, ms);
-        let circuit = OrderMatch { side_a: a[0], price_a: a[1], size_a: a[2], leverage_a: a[3], asset_a: a[4], is_market_a: a[5], nonce_a: a[6], secret_a: a[7], side_b: b[0], price_b: b[1], size_b: b[2], leverage_b: b[3], asset_b: b[4], is_market_b: b[5], nonce_b: b[6], secret_b: b[7], mp, ms, cmt_a, cmt_b, match_price: mp, match_size: ms, nullifier_a: null_a, nullifier_b: null_b };
+        let circuit = OrderMatch {
+            side_a: a[0],
+            price_a: a[1],
+            size_a: a[2],
+            leverage_a: a[3],
+            asset_a: a[4],
+            is_market_a: a[5],
+            nonce_a: a[6],
+            secret_a: a[7],
+            side_b: b[0],
+            price_b: b[1],
+            size_b: b[2],
+            leverage_b: b[3],
+            asset_b: b[4],
+            is_market_b: b[5],
+            nonce_b: b[6],
+            secret_b: b[7],
+            mp,
+            ms,
+            cmt_a,
+            cmt_b,
+            match_price: mp,
+            match_size: ms,
+            nullifier_a: null_a,
+            nullifier_b: null_b,
+        };
         let cs = ConstraintSystem::new_ref();
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
@@ -549,11 +922,62 @@ mod tests {
         let cmt_b = compute_commitment(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
         let null_a = compute_match_nullifier(cmt_a, mp, ms);
         let null_b = compute_match_nullifier(cmt_b, mp, ms);
-        let circuit = OrderMatch { side_a: a[0], price_a: a[1], size_a: a[2], leverage_a: a[3], asset_a: a[4], is_market_a: a[5], nonce_a: a[6], secret_a: a[7], side_b: b[0], price_b: b[1], size_b: b[2], leverage_b: b[3], asset_b: b[4], is_market_b: b[5], nonce_b: b[6], secret_b: b[7], mp, ms, cmt_a, cmt_b, match_price: mp, match_size: ms, nullifier_a: null_a, nullifier_b: null_b };
-        let dummy = OrderMatch { side_a: Fr::ZERO, price_a: Fr::ZERO, size_a: Fr::ZERO, leverage_a: Fr::ZERO, asset_a: Fr::ZERO, is_market_a: Fr::ZERO, nonce_a: Fr::ZERO, secret_a: Fr::ZERO, side_b: Fr::ONE, price_b: Fr::ZERO, size_b: Fr::ZERO, leverage_b: Fr::ZERO, asset_b: Fr::ZERO, is_market_b: Fr::ZERO, nonce_b: Fr::ZERO, secret_b: Fr::ZERO, mp: Fr::ZERO, ms: Fr::ZERO, cmt_a: Fr::ZERO, cmt_b: Fr::ZERO, match_price: Fr::ZERO, match_size: Fr::ZERO, nullifier_a: Fr::ZERO, nullifier_b: Fr::ZERO };
+        let circuit = OrderMatch {
+            side_a: a[0],
+            price_a: a[1],
+            size_a: a[2],
+            leverage_a: a[3],
+            asset_a: a[4],
+            is_market_a: a[5],
+            nonce_a: a[6],
+            secret_a: a[7],
+            side_b: b[0],
+            price_b: b[1],
+            size_b: b[2],
+            leverage_b: b[3],
+            asset_b: b[4],
+            is_market_b: b[5],
+            nonce_b: b[6],
+            secret_b: b[7],
+            mp,
+            ms,
+            cmt_a,
+            cmt_b,
+            match_price: mp,
+            match_size: ms,
+            nullifier_a: null_a,
+            nullifier_b: null_b,
+        };
+        let dummy = OrderMatch {
+            side_a: Fr::ZERO,
+            price_a: Fr::ZERO,
+            size_a: Fr::ZERO,
+            leverage_a: Fr::ZERO,
+            asset_a: Fr::ZERO,
+            is_market_a: Fr::ZERO,
+            nonce_a: Fr::ZERO,
+            secret_a: Fr::ZERO,
+            side_b: Fr::ONE,
+            price_b: Fr::ZERO,
+            size_b: Fr::ZERO,
+            leverage_b: Fr::ZERO,
+            asset_b: Fr::ZERO,
+            is_market_b: Fr::ZERO,
+            nonce_b: Fr::ZERO,
+            secret_b: Fr::ZERO,
+            mp: Fr::ZERO,
+            ms: Fr::ZERO,
+            cmt_a: Fr::ZERO,
+            cmt_b: Fr::ZERO,
+            match_price: Fr::ZERO,
+            match_size: Fr::ZERO,
+            nullifier_a: Fr::ZERO,
+            nullifier_b: Fr::ZERO,
+        };
         let pk = Groth16::<Bn254>::generate_random_parameters_with_reduction(dummy, rng).unwrap();
         let vk = pk.vk.clone();
-        let proof = Groth16::<Bn254>::create_random_proof_with_reduction(circuit, &pk, rng).unwrap();
+        let proof =
+            Groth16::<Bn254>::create_random_proof_with_reduction(circuit, &pk, rng).unwrap();
         let pvk = prepare_verifying_key(&vk);
         let public = [cmt_a, cmt_b, mp, ms, null_a, null_b];
         assert!(Groth16::<Bn254>::verify_proof(&pvk, &proof, &public).unwrap());
@@ -570,7 +994,32 @@ mod tests {
         let cmt_b = compute_commitment(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
         let null_a = compute_match_nullifier(cmt_a, mp, ms);
         let null_b = compute_match_nullifier(cmt_b, mp, ms);
-        let circuit = OrderMatch { side_a: a[0], price_a: a[1], size_a: a[2], leverage_a: a[3], asset_a: a[4], is_market_a: a[5], nonce_a: a[6], secret_a: a[7], side_b: b[0], price_b: b[1], size_b: b[2], leverage_b: b[3], asset_b: b[4], is_market_b: b[5], nonce_b: b[6], secret_b: b[7], mp, ms, cmt_a, cmt_b, match_price: mp, match_size: ms, nullifier_a: null_a, nullifier_b: null_b };
+        let circuit = OrderMatch {
+            side_a: a[0],
+            price_a: a[1],
+            size_a: a[2],
+            leverage_a: a[3],
+            asset_a: a[4],
+            is_market_a: a[5],
+            nonce_a: a[6],
+            secret_a: a[7],
+            side_b: b[0],
+            price_b: b[1],
+            size_b: b[2],
+            leverage_b: b[3],
+            asset_b: b[4],
+            is_market_b: b[5],
+            nonce_b: b[6],
+            secret_b: b[7],
+            mp,
+            ms,
+            cmt_a,
+            cmt_b,
+            match_price: mp,
+            match_size: ms,
+            nullifier_a: null_a,
+            nullifier_b: null_b,
+        };
         let cs = ConstraintSystem::new_ref();
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
@@ -584,7 +1033,12 @@ mod tests {
         let note_cmt = compute_note_commitment(amount, secret);
         let nullifier = compute_note_nullifier(note_cmt, secret);
         let cs = ConstraintSystem::new_ref();
-        let circuit = circuits::note_spend::NoteSpend { amount, secret, note_commitment: note_cmt, nullifier };
+        let circuit = circuits::note_spend::NoteSpend {
+            amount,
+            secret,
+            note_commitment: note_cmt,
+            nullifier,
+        };
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(cs.is_satisfied().unwrap());
     }
@@ -597,14 +1051,26 @@ mod tests {
         let note_cmt = compute_note_commitment(amount, secret);
         let nullifier = compute_note_nullifier(note_cmt, secret);
         let setup_circuit = circuits::note_spend::NoteSpend {
-            amount: Fr::ZERO, secret: Fr::ZERO, note_commitment: Fr::ZERO, nullifier: Fr::ZERO,
+            amount: Fr::ZERO,
+            secret: Fr::ZERO,
+            note_commitment: Fr::ZERO,
+            nullifier: Fr::ZERO,
         };
         let pk = Groth16::<Bn254>::generate_random_parameters_with_reduction(setup_circuit, rng)?;
         let vk = pk.vk.clone();
-        let prove_circuit = circuits::note_spend::NoteSpend { amount, secret, note_commitment: note_cmt, nullifier };
+        let prove_circuit = circuits::note_spend::NoteSpend {
+            amount,
+            secret,
+            note_commitment: note_cmt,
+            nullifier,
+        };
         let proof = Groth16::<Bn254>::create_random_proof_with_reduction(prove_circuit, &pk, rng)?;
         let pvk = prepare_verifying_key(&vk);
-        assert!(Groth16::<Bn254>::verify_proof(&pvk, &proof, &[note_cmt, nullifier])?);
+        assert!(Groth16::<Bn254>::verify_proof(
+            &pvk,
+            &proof,
+            &[note_cmt, nullifier]
+        )?);
         Ok(())
     }
 
@@ -617,7 +1083,10 @@ mod tests {
         let wrong_null = Fr::from(999u64);
         let cs = ConstraintSystem::new_ref();
         let circuit = circuits::note_spend::NoteSpend {
-            amount, secret, note_commitment: note_cmt, nullifier: wrong_null,
+            amount,
+            secret,
+            note_commitment: note_cmt,
+            nullifier: wrong_null,
         };
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
@@ -634,7 +1103,32 @@ mod tests {
         let cmt_b = compute_commitment(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
         let null_a = compute_match_nullifier(cmt_a, mp, ms);
         let null_b = compute_match_nullifier(cmt_b, mp, ms);
-        let circuit = OrderMatch { side_a: a[0], price_a: a[1], size_a: a[2], leverage_a: a[3], asset_a: a[4], is_market_a: a[5], nonce_a: a[6], secret_a: a[7], side_b: b[0], price_b: b[1], size_b: b[2], leverage_b: b[3], asset_b: b[4], is_market_b: b[5], nonce_b: b[6], secret_b: b[7], mp, ms, cmt_a, cmt_b, match_price: mp, match_size: ms, nullifier_a: null_a, nullifier_b: null_b };
+        let circuit = OrderMatch {
+            side_a: a[0],
+            price_a: a[1],
+            size_a: a[2],
+            leverage_a: a[3],
+            asset_a: a[4],
+            is_market_a: a[5],
+            nonce_a: a[6],
+            secret_a: a[7],
+            side_b: b[0],
+            price_b: b[1],
+            size_b: b[2],
+            leverage_b: b[3],
+            asset_b: b[4],
+            is_market_b: b[5],
+            nonce_b: b[6],
+            secret_b: b[7],
+            mp,
+            ms,
+            cmt_a,
+            cmt_b,
+            match_price: mp,
+            match_size: ms,
+            nullifier_a: null_a,
+            nullifier_b: null_b,
+        };
         let cs = ConstraintSystem::new_ref();
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
