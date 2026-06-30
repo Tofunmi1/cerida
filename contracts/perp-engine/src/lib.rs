@@ -669,6 +669,219 @@ impl PerpEngine {
             .get::<_, i128>(&DataKey::Note(note_commitment))
     }
 
+    /// Open a position by spending a shielded note as collateral.
+    /// Requires a NoteSpend proof [note_commitment, note_nullifier] and
+    /// an OrderCommitment proof [position_commitment]. No address auth — the
+    /// ZK proofs are the sole authorization. `liquidation_recipient` receives
+    /// any remaining collateral only if the position is liquidated.
+    pub fn open_position_from_note(
+        env: Env,
+        note_commitment: BytesN<32>,
+        note_nullifier: BytesN<32>,
+        position_commitment: BytesN<32>,
+        hint_price: u64,
+        hint_side: u64,
+        hint_leverage: u64,
+        liquidation_recipient: Address,
+        note_proof: Groth16Proof,
+        commit_proof: Groth16Proof,
+    ) {
+        if hint_side > 1 {
+            panic!("PerpEngine: side must be 0 (long) or 1 (short), got {}", hint_side);
+        }
+        if hint_leverage == 0 {
+            panic!("PerpEngine: leverage must be >= 1");
+        }
+
+        let note_null_key = DataKey::Nullifier(note_nullifier.clone());
+        if env.storage().persistent().has(&note_null_key) {
+            panic!("PerpEngine: note nullifier already spent");
+        }
+
+        let note_key = DataKey::Note(note_commitment.clone());
+        let collateral: i128 = env
+            .storage()
+            .persistent()
+            .get(&note_key)
+            .unwrap_or_else(|| panic!("PerpEngine: note not found"));
+
+        let pos_key = DataKey::Position(position_commitment.clone());
+        if env.storage().persistent().has(&pos_key) {
+            panic!("PerpEngine: commitment already exists");
+        }
+
+        let mut note_pi: Vec<Bn254Fr> = Vec::new(&env);
+        note_pi.push_back(Bn254Fr::from_bytes(note_commitment.clone()));
+        note_pi.push_back(Bn254Fr::from_bytes(note_nullifier.clone()));
+        let note_vk = load_vk(&env, &VK_NOTE_SPEND_IC);
+        match verify_groth16(&env, &note_vk, &note_proof, &note_pi) {
+            Ok(true) => {}
+            _ => panic!("PerpEngine: invalid note spend proof"),
+        }
+
+        let mut commit_pi: Vec<Bn254Fr> = Vec::new(&env);
+        commit_pi.push_back(Bn254Fr::from_bytes(position_commitment.clone()));
+        let commit_vk = load_vk(&env, &VK_COMMIT_IC);
+        match verify_groth16(&env, &commit_vk, &commit_proof, &commit_pi) {
+            Ok(true) => {}
+            _ => panic!("PerpEngine: invalid commitment proof"),
+        }
+
+        env.storage().persistent().set(&note_null_key, &true);
+        env.storage().persistent().extend_ttl(&note_null_key, 17280, 17280);
+
+        let created_at = env.ledger().sequence() as u64;
+        let meta = PositionMeta {
+            owner: liquidation_recipient.clone(),
+            collateral,
+            entry_price: hint_price,
+            matched_price: 0,
+            side: hint_side,
+            leverage: hint_leverage,
+            status: PositionStatus::Open,
+            created_at,
+            match_id: 0,
+            funding_at_open: Self::read_funding_cumulative(&env),
+        };
+        env.storage().persistent().set(&pos_key, &meta);
+        env.storage().persistent().extend_ttl(&pos_key, 17280, 17280);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("open_n"),),
+            (note_commitment, note_nullifier, position_commitment, collateral, hint_side, hint_leverage, hint_price, created_at),
+        );
+    }
+
+    /// Cancel an open position and refund collateral to a shielded note.
+    /// No `require_auth` — the cancel ZK proof [cancel_nullifier] is the
+    /// sole authorization. recipient_note = Poseidon2(0, note_secret, 8);
+    /// withdraw later via `withdraw_note` with `prove_note_spend(0, note_secret)`.
+    pub fn cancel_position_to_note(
+        env: Env,
+        position_commitment: BytesN<32>,
+        cancel_nullifier: BytesN<32>,
+        recipient_note: BytesN<32>,
+        cancel_proof: Groth16Proof,
+    ) {
+        let null_key = DataKey::Nullifier(cancel_nullifier.clone());
+        if env.storage().persistent().has(&null_key) {
+            panic!("PerpEngine: nullifier already spent");
+        }
+
+        let pos_key = DataKey::Position(position_commitment.clone());
+        let mut meta: PositionMeta = env
+            .storage()
+            .persistent()
+            .get(&pos_key)
+            .unwrap_or_else(|| panic!("PerpEngine: position not found"));
+        if meta.status != PositionStatus::Open {
+            panic!("PerpEngine: can only cancel an open position (status={:?})", meta.status as u32);
+        }
+
+        let mut pi: Vec<Bn254Fr> = Vec::new(&env);
+        pi.push_back(Bn254Fr::from_bytes(cancel_nullifier.clone()));
+        let vk = load_vk(&env, &VK_CANCEL_IC);
+        match verify_groth16(&env, &vk, &cancel_proof, &pi) {
+            Ok(true) => {}
+            _ => panic!("PerpEngine: invalid cancel proof"),
+        }
+
+        meta.status = PositionStatus::Cancelled;
+        env.storage().persistent().set(&pos_key, &meta);
+        env.storage().persistent().set(&null_key, &true);
+        env.storage().persistent().extend_ttl(&pos_key, 17280, 17280);
+        env.storage().persistent().extend_ttl(&null_key, 17280, 17280);
+
+        let note_key = DataKey::Note(recipient_note.clone());
+        if env.storage().persistent().has(&note_key) {
+            panic!("PerpEngine: recipient note already exists");
+        }
+        let refund = meta.collateral;
+        env.storage().persistent().set(&note_key, &refund);
+        env.storage().persistent().extend_ttl(&note_key, 17280, 17280);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("cxl_n"),),
+            (position_commitment, cancel_nullifier, recipient_note, refund),
+        );
+    }
+
+    /// Close a matched position and credit settlement to a shielded note.
+    /// No `require_auth` — the close ZK proof [close_nullifier] is the
+    /// sole authorization. recipient_note = Poseidon2(0, note_secret, 8);
+    /// withdraw later via `withdraw_note` with `prove_note_spend(0, note_secret)`.
+    pub fn close_position_to_note(
+        env: Env,
+        position_commitment: BytesN<32>,
+        close_nullifier: BytesN<32>,
+        recipient_note: BytesN<32>,
+        close_proof: Groth16Proof,
+    ) -> i128 {
+        let null_key = DataKey::Nullifier(close_nullifier.clone());
+        if env.storage().persistent().has(&null_key) {
+            panic!("PerpEngine: nullifier already spent");
+        }
+
+        let pos_key = DataKey::Position(position_commitment.clone());
+        let mut meta: PositionMeta = env
+            .storage()
+            .persistent()
+            .get(&pos_key)
+            .unwrap_or_else(|| panic!("PerpEngine: position not found"));
+        if meta.status != PositionStatus::Matched {
+            panic!("PerpEngine: can only close a matched position (status={:?})", meta.status as u32);
+        }
+
+        let mut pi: Vec<Bn254Fr> = Vec::new(&env);
+        pi.push_back(Bn254Fr::from_bytes(close_nullifier.clone()));
+        let vk = load_vk(&env, &VK_CANCEL_IC);
+        match verify_groth16(&env, &vk, &close_proof, &pi) {
+            Ok(true) => {}
+            _ => panic!("PerpEngine: invalid close proof"),
+        }
+
+        let oracle_price = Self::require_oracle_price(&env);
+        let (settlement, _funding) = Self::compute_settlement_with_funding(
+            &env,
+            meta.collateral,
+            meta.leverage,
+            meta.side,
+            meta.matched_price,
+            oracle_price,
+            meta.funding_at_open,
+        );
+
+        meta.status = PositionStatus::Closed;
+        meta.matched_price = oracle_price;
+        env.storage().persistent().set(&pos_key, &meta);
+        env.storage().persistent().set(&null_key, &true);
+        env.storage().persistent().extend_ttl(&pos_key, 17280, 17280);
+        env.storage().persistent().extend_ttl(&null_key, 17280, 17280);
+
+        if settlement > 0 {
+            let note_key = DataKey::Note(recipient_note.clone());
+            if env.storage().persistent().has(&note_key) {
+                panic!("PerpEngine: recipient note already exists");
+            }
+            env.storage().persistent().set(&note_key, &settlement);
+            env.storage().persistent().extend_ttl(&note_key, 17280, 17280);
+        }
+
+        if meta.match_id != 0 {
+            Self::try_close_match(&env, meta.match_id, &position_commitment);
+        }
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("close_n"),),
+            (position_commitment, close_nullifier, recipient_note, settlement, oracle_price),
+        );
+
+        settlement
+    }
+
     pub fn liquidate(
         env: Env,
         commitment: BytesN<32>,
@@ -1098,6 +1311,66 @@ mod test {
         let proof_json = serde_json::json!({"a": out.proof.a, "b": out.proof.b, "c": out.proof.c}).to_string();
 
         (cmt_hex, null_hex, proof_json)
+    }
+
+    /// Generate an OrderCommitment proof (asset=0, is_market=false).
+    /// Returns (commitment_hex, proof_json).
+    fn gen_commit_proof(
+        side: u64, price: u64, size: u64, leverage: u64, nonce: u64, secret: u64,
+    ) -> (std::string::String, std::string::String) {
+        use std::string::ToString;
+        use ark_bn254::Fr;
+        use ark_ff::AdditiveGroup;
+        use rust_circuits::{compute_commitment, fr_to_biguint, load_pk, prove_commitment_with_pk};
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let pk_path = std::path::Path::new(manifest_dir)
+            .join("../../circuits/keys/order_commitment.pk.bin");
+        let pk = load_pk(&pk_path).expect("Failed to load order_commitment.pk.bin");
+
+        let asset = Fr::from(0u64);
+        let is_market = Fr::ZERO;
+        let cmt = compute_commitment(
+            Fr::from(side), Fr::from(price), Fr::from(size), Fr::from(leverage),
+            asset, is_market, Fr::from(nonce), Fr::from(secret),
+        );
+        let out = prove_commitment_with_pk(
+            &pk,
+            Fr::from(side), Fr::from(price), Fr::from(size), Fr::from(leverage),
+            asset, is_market, Fr::from(nonce), Fr::from(secret),
+        ).expect("prove_commitment_with_pk failed");
+
+        let cmt_hex = std::format!("{:0>64x}", fr_to_biguint(&cmt));
+        let proof_json = serde_json::json!({"a": out.proof.a, "b": out.proof.b, "c": out.proof.c}).to_string();
+        (cmt_hex, proof_json)
+    }
+
+    /// Generate an OrderCancel proof for a position commitment.
+    /// Returns (nullifier_hex, proof_json).
+    fn gen_cancel_proof(
+        commitment_hex: &str, secret: u64,
+    ) -> (std::string::String, std::string::String) {
+        use std::string::ToString;
+        use std::convert::TryInto;
+        use ark_bn254::Fr;
+        use ark_ff::PrimeField;
+        use rust_circuits::{compute_nullifier, fr_to_biguint, load_pk, prove_cancel_with_pk};
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let pk_path = std::path::Path::new(manifest_dir)
+            .join("../../circuits/keys/order_cancel.pk.bin");
+        let pk = load_pk(&pk_path).expect("Failed to load order_cancel.pk.bin");
+
+        let cmt_bytes: [u8; 32] = hex::decode(commitment_hex).unwrap().try_into().unwrap();
+        let cmt_fr = Fr::from_be_bytes_mod_order(&cmt_bytes);
+        let secret_fr = Fr::from(secret);
+        let nullifier = compute_nullifier(cmt_fr, secret_fr);
+
+        let out = prove_cancel_with_pk(&pk, cmt_fr, secret_fr).expect("prove_cancel_with_pk failed");
+
+        let null_hex = std::format!("{:0>64x}", fr_to_biguint(&nullifier));
+        let proof_json = serde_json::json!({"a": out.proof.a, "b": out.proof.b, "c": out.proof.c}).to_string();
+        (null_hex, proof_json)
     }
 
     fn make_groth16_proof(env: &Env, proof_json: &str) -> Groth16Proof {
@@ -1716,6 +1989,222 @@ mod test {
         let client = PerpEngineClient::new(&env, &cid);
         let note_cmt = BytesN::from_array(&env, &[99u8; 32]);
         assert_eq!(client.get_note(&note_cmt), None);
+    }
+
+    #[test]
+    fn test_open_position_from_note_full_proof() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let depositor = Address::generate(&env);
+        let liq_recipient = Address::generate(&env);
+        let cfg = client.get_config();
+        let asset = StellarAssetClient::new(&env, &cfg.token);
+
+        let amount: u64 = 5_000_000;
+        let note_secret: u64 = 444_777;
+        let (note_cmt_hex, note_null_hex, note_proof_json) = gen_note_proof(amount, note_secret);
+        let note_cmt = hex_to_bytes32(&env, &note_cmt_hex);
+        let note_null = hex_to_bytes32(&env, &note_null_hex);
+
+        let order_secret: u64 = 12_345_678;
+        let (pos_cmt_hex, commit_proof_json) = gen_commit_proof(0, 100_000_000, 1, 10, 42, order_secret);
+        let pos_cmt = hex_to_bytes32(&env, &pos_cmt_hex);
+
+        asset.mint(&depositor, &(amount as i128));
+        client.deposit_note(&depositor, &note_cmt, &(amount as i128));
+
+        let note_proof = make_groth16_proof(&env, &note_proof_json);
+        let commit_proof = make_groth16_proof(&env, &commit_proof_json);
+        client.open_position_from_note(
+            &note_cmt, &note_null, &pos_cmt,
+            &100_000_000, &0, &10,
+            &liq_recipient, &note_proof, &commit_proof,
+        );
+
+        assert!(client.is_spent(&note_null));
+        let pos = client.get_position(&pos_cmt).unwrap();
+        assert_eq!(pos.collateral, amount as i128);
+        assert_eq!(pos.status, PositionStatus::Open);
+        assert_eq!(pos.side, 0);
+        assert_eq!(pos.leverage, 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "note not found")]
+    fn test_open_position_from_note_no_deposit_reverts() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let liq_recipient = Address::generate(&env);
+
+        let (note_cmt_hex, note_null_hex, note_proof_json) = gen_note_proof(1_000_000, 111);
+        let note_cmt = hex_to_bytes32(&env, &note_cmt_hex);
+        let note_null = hex_to_bytes32(&env, &note_null_hex);
+        let (pos_cmt_hex, commit_proof_json) = gen_commit_proof(0, 100_000_000, 1, 5, 1, 999);
+        let pos_cmt = hex_to_bytes32(&env, &pos_cmt_hex);
+
+        // No deposit_note — must panic with "note not found"
+        let note_proof = make_groth16_proof(&env, &note_proof_json);
+        let commit_proof = make_groth16_proof(&env, &commit_proof_json);
+        client.open_position_from_note(
+            &note_cmt, &note_null, &pos_cmt,
+            &100_000_000, &0, &5,
+            &liq_recipient, &note_proof, &commit_proof,
+        );
+    }
+
+    #[test]
+    fn test_cancel_position_to_note_full_proof() {
+        // Full cycle: deposit_note → open_position_from_note → cancel_position_to_note → withdraw_note
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let liq_recipient = Address::generate(&env);
+        let cfg = client.get_config();
+        let asset = StellarAssetClient::new(&env, &cfg.token);
+
+        let amount: u64 = 3_000_000;
+        let note_secret: u64 = 55_500;
+        let (note_cmt_hex, note_null_hex, note_proof_json) = gen_note_proof(amount, note_secret);
+        let note_cmt = hex_to_bytes32(&env, &note_cmt_hex);
+        let note_null = hex_to_bytes32(&env, &note_null_hex);
+
+        let order_secret: u64 = 99_887_766;
+        let (pos_cmt_hex, commit_proof_json) = gen_commit_proof(0, 50_000_000, 1, 5, 7, order_secret);
+        let pos_cmt = hex_to_bytes32(&env, &pos_cmt_hex);
+
+        let (cancel_null_hex, cancel_proof_json) = gen_cancel_proof(&pos_cmt_hex, order_secret);
+        let cancel_null = hex_to_bytes32(&env, &cancel_null_hex);
+
+        // Settlement note: amount=0 sentinel. The actual refund amount comes from storage.
+        let settle_secret: u64 = 123_456_789;
+        let (settle_cmt_hex, settle_null_hex, settle_proof_json) = gen_note_proof(0, settle_secret);
+        let settle_cmt = hex_to_bytes32(&env, &settle_cmt_hex);
+        let settle_null = hex_to_bytes32(&env, &settle_null_hex);
+
+        asset.mint(&depositor, &(amount as i128));
+        client.deposit_note(&depositor, &note_cmt, &(amount as i128));
+
+        let note_proof = make_groth16_proof(&env, &note_proof_json);
+        let commit_proof = make_groth16_proof(&env, &commit_proof_json);
+        client.open_position_from_note(
+            &note_cmt, &note_null, &pos_cmt,
+            &50_000_000, &0, &5,
+            &liq_recipient, &note_proof, &commit_proof,
+        );
+
+        let cancel_proof = make_groth16_proof(&env, &cancel_proof_json);
+        client.cancel_position_to_note(&pos_cmt, &cancel_null, &settle_cmt, &cancel_proof);
+
+        // Settlement note holds the full collateral refund
+        assert_eq!(client.get_note(&settle_cmt), Some(amount as i128));
+        assert!(client.is_spent(&cancel_null));
+        assert_eq!(client.get_position(&pos_cmt).unwrap().status, PositionStatus::Cancelled);
+
+        // Withdraw the settlement note using the amount=0 sentinel proof
+        let settle_proof = make_groth16_proof(&env, &settle_proof_json);
+        client.withdraw_note(&settle_cmt, &settle_null, &recipient, &settle_proof);
+        assert!(client.is_spent(&settle_null));
+    }
+
+    #[test]
+    fn test_close_position_to_note_full_proof() {
+        // Full cycle: deposit_note → open_position_from_note → (match) → close_position_to_note → withdraw_note
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let liq_recipient = Address::generate(&env);
+        let cfg = client.get_config();
+        let asset = StellarAssetClient::new(&env, &cfg.token);
+
+        let amount: u64 = 10_000_000;
+        let note_secret: u64 = 777_001;
+        let (note_cmt_hex, note_null_hex, note_proof_json) = gen_note_proof(amount, note_secret);
+        let note_cmt = hex_to_bytes32(&env, &note_cmt_hex);
+        let note_null = hex_to_bytes32(&env, &note_null_hex);
+
+        let order_secret: u64 = 55_000_001;
+        let (pos_cmt_hex, commit_proof_json) = gen_commit_proof(0, 100_000_000, 1, 5, 100, order_secret);
+        let pos_cmt = hex_to_bytes32(&env, &pos_cmt_hex);
+
+        let (close_null_hex, close_proof_json) = gen_cancel_proof(&pos_cmt_hex, order_secret);
+        let close_null = hex_to_bytes32(&env, &close_null_hex);
+
+        let settle_secret: u64 = 999_001;
+        let (settle_cmt_hex, settle_null_hex, settle_proof_json) = gen_note_proof(0, settle_secret);
+        let settle_cmt = hex_to_bytes32(&env, &settle_cmt_hex);
+        let settle_null = hex_to_bytes32(&env, &settle_null_hex);
+
+        client.set_price(&admin, &100_000_000);
+
+        asset.mint(&depositor, &(amount as i128));
+        client.deposit_note(&depositor, &note_cmt, &(amount as i128));
+
+        let note_proof = make_groth16_proof(&env, &note_proof_json);
+        let commit_proof = make_groth16_proof(&env, &commit_proof_json);
+        client.open_position_from_note(
+            &note_cmt, &note_null, &pos_cmt,
+            &100_000_000, &0, &5,
+            &liq_recipient, &note_proof, &commit_proof,
+        );
+
+        // Simulate match (skip match proof in unit test)
+        env.as_contract(&cid, || {
+            let key = DataKey::Position(pos_cmt.clone());
+            let mut meta: PositionMeta = env.storage().persistent().get(&key).unwrap();
+            meta.status = PositionStatus::Matched;
+            meta.matched_price = 100_000_000;
+            env.storage().persistent().set(&key, &meta);
+        });
+
+        // Close to note — oracle price = entry price → settlement = collateral
+        let close_proof = make_groth16_proof(&env, &close_proof_json);
+        let settlement = client.close_position_to_note(&pos_cmt, &close_null, &settle_cmt, &close_proof);
+
+        assert_eq!(settlement, amount as i128);
+        assert_eq!(client.get_note(&settle_cmt), Some(settlement));
+        assert!(client.is_spent(&close_null));
+        assert_eq!(client.get_position(&pos_cmt).unwrap().status, PositionStatus::Closed);
+
+        // Withdraw settlement note with amount=0 sentinel proof — pays out stored settlement
+        let settle_proof = make_groth16_proof(&env, &settle_proof_json);
+        client.withdraw_note(&settle_cmt, &settle_null, &recipient, &settle_proof);
+        assert!(client.is_spent(&settle_null));
+    }
+
+    #[test]
+    #[should_panic(expected = "can only cancel an open position")]
+    fn test_cancel_position_to_note_wrong_status_reverts() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let pos_cmt = BytesN::from_array(&env, &[77u8; 32]);
+        let recipient_note = BytesN::from_array(&env, &[88u8; 32]);
+        create_position(&env, &cid, &owner, &pos_cmt, 1_000, 5, 0, 100, PositionStatus::Matched, 1);
+
+        let order_secret: u64 = 54321;
+        let (_, cancel_proof_json) = gen_commit_proof(0, 100, 1, 5, 1, order_secret);
+        let fake_null = BytesN::from_array(&env, &[0u8; 32]);
+        let proof = make_groth16_proof(&env, &cancel_proof_json);
+        client.cancel_position_to_note(&pos_cmt, &fake_null, &recipient_note, &proof);
+    }
+
+    #[test]
+    #[should_panic(expected = "can only close a matched position")]
+    fn test_close_position_to_note_wrong_status_reverts() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let pos_cmt = BytesN::from_array(&env, &[78u8; 32]);
+        let recipient_note = BytesN::from_array(&env, &[89u8; 32]);
+        create_position(&env, &cid, &owner, &pos_cmt, 1_000, 5, 0, 100, PositionStatus::Open, 0);
+        client.set_price(&admin, &100);
+
+        let (_, proof_json) = gen_commit_proof(0, 100, 1, 5, 1, 54321);
+        let fake_null = BytesN::from_array(&env, &[0u8; 32]);
+        let proof = make_groth16_proof(&env, &proof_json);
+        client.close_position_to_note(&pos_cmt, &fake_null, &recipient_note, &proof);
     }
 
     #[test]

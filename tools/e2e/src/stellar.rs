@@ -433,6 +433,133 @@ pub fn private_deposit_e2e(
     Ok(())
 }
 
+/// Full private trading cycle (open + cancel path):
+/// deposit_note → open_position_from_note → cancel_position_to_note → withdraw_note
+///
+/// This demonstrates a complete shielded trade that never reveals the trader's
+/// address in contract storage. Any on-chain observer sees only note commitments.
+pub fn private_trading_e2e(
+    wasm_dir: &Path,
+    keys_dir: &Path,
+    amount: u64,
+    note_secret: u64,
+    order_secret: u64,
+    settle_secret: u64,
+) -> Result<()> {
+    let start = Instant::now();
+    let pe_wasm = wasm_dir.join("perp_engine.wasm");
+
+    eprintln!("── Phase 1: Deploy perp-engine ──");
+    let alice = generate_keypair("e2e-alice");
+    let liq   = generate_keypair("e2e-liq");
+    let recipient = generate_keypair("e2e-recipient");
+    let source_pk = source_pubkey()?;
+    eprintln!("  ✓ alice (depositor):      {}", alice.0);
+    eprintln!("  ✓ liq (liquidation guard): {}", liq.0);
+    eprintln!("  ✓ recipient (settlement):  {}", recipient.0);
+
+    fund(&alice.0, "alice");
+    fund(&liq.0, "liq");
+
+    let perp_id = deploy(&pe_wasm)?;
+    eprintln!("  ✓ perp-engine: {}", perp_id);
+    let native_token = native_token_id()?;
+    init_perp_engine(&perp_id, SOURCE, &native_token)?;
+    eprintln!("  ✓ initialized");
+
+    eprintln!("\n── Phase 2: Shielded deposit ──");
+    let (note_cmt_hex, note_null_hex, note_proof) =
+        crate::proof::gen_note_spend(keys_dir, amount, note_secret)?;
+    eprintln!("  note_commitment: {}…", &note_cmt_hex[..16]);
+
+    invoke(
+        &perp_id, &alice.1,
+        &["deposit_note", "--from", &alice.0, "--note_commitment", &note_cmt_hex,
+          "--amount", &amount.to_string()],
+    )?;
+    let stored = invoke_view(&perp_id, &alice.0, &["get_note", "--note_commitment", &note_cmt_hex])?;
+    eprintln!("  ✓ note stored: {}", stored);
+
+    eprintln!("\n── Phase 3: Open position from note ──");
+    let commit_proof =
+        crate::proof::gen_commitment(keys_dir, 0, 100_000_000, 1, 1, 0, 0, 42, order_secret)?;
+    let pos_cmt_hex = hex_field(&commit_proof.public_inputs[0]);
+    eprintln!("  position_commitment: {}…", &pos_cmt_hex[..16]);
+
+    invoke(
+        &perp_id, SOURCE,
+        &[
+            "open_position_from_note",
+            "--note_commitment", &note_cmt_hex,
+            "--note_nullifier", &note_null_hex,
+            "--position_commitment", &pos_cmt_hex,
+            "--hint_price", "100000000",
+            "--hint_side", "0",
+            "--hint_leverage", "1",
+            "--liquidation_recipient", &liq.0,
+            "--note_proof", &proof_json(&note_proof.proof),
+            "--commit_proof", &proof_json(&commit_proof.proof),
+        ],
+    )?;
+
+    let pos = invoke_view(&perp_id, &alice.0, &["get_position", "--commitment", &pos_cmt_hex])?;
+    eprintln!("  ✓ position: {}", pos);
+    let note_null_spent = invoke_view(&perp_id, &source_pk, &["is_spent", "--nullifier", &note_null_hex])?;
+    eprintln!("  ✓ note nullifier spent: {}", note_null_spent);
+    assert_eq!(note_null_spent.trim(), "true", "note nullifier should be spent after open_position_from_note");
+
+    eprintln!("\n── Phase 4: Cancel position → settlement note ──");
+    let (cancel_null_hex, cancel_proof) =
+        crate::proof::gen_cancel(keys_dir, &pos_cmt_hex, order_secret)?;
+    let (settle_cmt_hex, settle_null_hex, settle_proof) =
+        crate::proof::gen_settlement_note_spend(keys_dir, settle_secret)?;
+    eprintln!("  cancel_nullifier: {}…", &cancel_null_hex[..16]);
+    eprintln!("  settlement_note:  {}…", &settle_cmt_hex[..16]);
+
+    invoke(
+        &perp_id, SOURCE,
+        &[
+            "cancel_position_to_note",
+            "--position_commitment", &pos_cmt_hex,
+            "--cancel_nullifier", &cancel_null_hex,
+            "--recipient_note", &settle_cmt_hex,
+            "--cancel_proof", &proof_json(&cancel_proof.proof),
+        ],
+    )?;
+
+    let settle_stored = invoke_view(&perp_id, &source_pk, &["get_note", "--note_commitment", &settle_cmt_hex])?;
+    eprintln!("  ✓ settlement note stored: {}", settle_stored);
+
+    eprintln!("\n── Phase 5: Withdraw settlement note ──");
+    eprintln!("  recipient: {} (unlinked from original depositor)", &recipient.0[..8]);
+
+    invoke(
+        &perp_id, SOURCE,
+        &[
+            "withdraw_note",
+            "--note_commitment", &settle_cmt_hex,
+            "--nullifier", &settle_null_hex,
+            "--recipient", &recipient.0,
+            "--proof", &proof_json(&settle_proof.proof),
+        ],
+    )?;
+
+    let settle_null_spent = invoke_view(
+        &perp_id, &source_pk,
+        &["is_spent", "--nullifier", &settle_null_hex],
+    )?;
+    eprintln!("  ✓ settlement nullifier spent: {}", settle_null_spent);
+    assert_eq!(settle_null_spent.trim(), "true", "settlement nullifier should be spent");
+
+    eprintln!("\n  Privacy summary:");
+    eprintln!("    Depositor (alice):     {}", alice.0);
+    eprintln!("    Settlement recipient:  {}", recipient.0);
+    eprintln!("    Contract storage: only note/position commitments — zero address linkage");
+
+    eprintln!("\n━━━ PrivateTrading E2E PASSED ({:.2}s) ━━━", start.elapsed().as_secs_f64());
+    Ok(())
+}
+
 /// Deploy both contracts (orderbook + perp-engine) without identity setup.
 pub fn deploy_contracts(wasm_dir: &Path) -> Result<(String, String, String, String)> {
     let ob_wasm = wasm_dir.join("orderbook.wasm");

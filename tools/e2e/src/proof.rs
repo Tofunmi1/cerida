@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use ark_bn254::{Bn254, Fr, Fq, Fq2, G1Affine, G2Affine};
 use ark_ff::{AdditiveGroup, Field, PrimeField};
 use ark_groth16::{Groth16, ProvingKey, prepare_verifying_key};
-use rust_circuits::{ProofOutput, load_pk, compute_note_commitment, compute_note_nullifier, fr_to_biguint};
+use rust_circuits::{ProofOutput, load_pk, compute_note_commitment, compute_note_nullifier, compute_nullifier, fr_to_biguint, prove_cancel_with_pk};
 
 pub type RawProof = ProofOutput;
 
@@ -87,6 +87,36 @@ fn parse_g2(hex: &str) -> G2Affine {
     let y_c1 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[128..192]).unwrap());
     let y_c0 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[192..]).unwrap());
     G2Affine::new(Fq2::new(x_c0, x_c1), Fq2::new(y_c0, y_c1))
+}
+
+/// Generate a NoteSpend proof using amount=0 as sentinel for a settlement note.
+/// The note_commitment = Poseidon2(0, secret, 8) is used as the key in storage.
+/// Returns (note_commitment_hex, nullifier_hex, RawProof).
+pub fn gen_settlement_note_spend(keys_dir: &Path, secret: u64) -> Result<(String, String, RawProof)> {
+    gen_note_spend(keys_dir, 0, secret)
+}
+
+/// Generate an OrderCancel proof for a position commitment.
+/// Returns (nullifier_hex, RawProof).
+pub fn gen_cancel(keys_dir: &Path, commitment_hex: &str, secret: u64) -> Result<(String, RawProof)> {
+    use std::str::FromStr;
+    let pk = load_pk(&pk_path(keys_dir, "order_cancel"))
+        .with_context(|| format!("Failed to load order_cancel.pk.bin from {}", keys_dir.display()))?;
+    let cmt_bytes = hex::decode(commitment_hex).context("invalid commitment hex")?;
+    let cmt_fr = Fr::from_be_bytes_mod_order(&cmt_bytes);
+    let secret_fr = Fr::from(secret);
+    let nullifier = rust_circuits::compute_nullifier(cmt_fr, secret_fr);
+    let out = rust_circuits::prove_cancel_with_pk(&pk, cmt_fr, secret_fr)?;
+    let pvk = prepare_verifying_key(&pk.vk);
+    let proof_ark = ark_groth16::Proof {
+        a: parse_g1(&out.proof.a).into(),
+        b: parse_g2(&out.proof.b).into(),
+        c: parse_g1(&out.proof.c).into(),
+    };
+    let verified = Groth16::<Bn254>::verify_proof(&pvk, &proof_ark, &[nullifier]).unwrap();
+    assert!(verified, "cancel proof failed local verification");
+    let null_hex = format!("{:0>64x}", fr_to_biguint(&nullifier));
+    Ok((null_hex, out))
 }
 
 pub fn gen_match(

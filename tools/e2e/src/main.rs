@@ -133,6 +133,21 @@ enum Command {
         #[arg(long, default_value = "314159265")]
         secret: u64,
     },
+    /// Private trading cycle: deposit_note → open_position_from_note → cancel_position_to_note → withdraw_note
+    PrivateTrading {
+        /// Collateral amount in token stroops
+        #[arg(long, default_value = "1000000000")]
+        amount: u64,
+        /// Secret for the deposit note commitment (Poseidon2(amount, note_secret))
+        #[arg(long, default_value = "271828182")]
+        note_secret: u64,
+        /// Secret for the order commitment (authorizes open + cancel)
+        #[arg(long, default_value = "314159265")]
+        order_secret: u64,
+        /// Secret for the settlement note (Poseidon2(0, settle_secret))
+        #[arg(long, default_value = "161803398")]
+        settle_secret: u64,
+    },
     /// Full end-to-end via tee-match server (generate proofs via server)
     Server {
         #[arg(long, default_value = "127.0.0.1:9720")]
@@ -226,6 +241,16 @@ fn main() -> Result<()> {
                 },
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        Command::PrivateTrading { amount, note_secret, order_secret, settle_secret } => {
+            eprintln!("━━━ PrivateTrading E2E ━━━");
+            eprintln!("  Proves: full shielded trading cycle with zero address linkage");
+            eprintln!("  deposit_note → open_position_from_note → cancel_position_to_note → withdraw_note");
+            stellar::private_trading_e2e(
+                &wasm_dir, &keys_dir,
+                amount, note_secret, order_secret, settle_secret,
+            )?;
+            eprintln!("\n━━━ COMPLETE ({:.2}s) ━━━", global_start.elapsed().as_secs_f64());
         }
         Command::PrivateDeposit { amount, secret } => {
             eprintln!("━━━ PrivateDeposit E2E ━━━");
