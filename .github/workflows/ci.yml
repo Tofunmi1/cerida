@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CIRCUIT_KEYS: ${{ github.workspace }}/circuits/keys
+
+jobs:
+  # ── Detect changed paths so expensive jobs only run when needed ──────────
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      contracts: ${{ steps.filter.outputs.contracts }}
+      circuits:  ${{ steps.filter.outputs.circuits }}
+      app:       ${{ steps.filter.outputs.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            contracts:
+              - 'contracts/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+            circuits:
+              - 'tools/rust-circuits/**'
+              - 'circuits/keys/**'
+            app:
+              - 'app/**'
+
+  # ── Lint: fmt + clippy (fast, fails early) ───────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            tools/rust-circuits -> tools/rust-circuits/target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: fmt (workspace)
+        run: cargo fmt --all -- --check
+
+      - name: fmt (rust-circuits)
+        run: cargo fmt --all --manifest-path tools/rust-circuits/Cargo.toml -- --check
+
+      - name: clippy (workspace)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: clippy (rust-circuits)
+        run: cargo clippy --all-targets --manifest-path tools/rust-circuits/Cargo.toml -- -D warnings
+
+  # ── Test: contracts + circuits ────────────────────────────────────────────
+  test-contracts:
+    needs: changes
+    if: ${{ needs.changes.outputs.contracts == 'true' || github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: contracts
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@nextest
+
+      - name: Test contracts
+        env:
+          VK_COMMIT_JSON:     ${{ env.CIRCUIT_KEYS }}/order_commitment_vk.json
+          VK_CANCEL_JSON:     ${{ env.CIRCUIT_KEYS }}/order_cancel_vk.json
+          VK_MATCH_JSON:      ${{ env.CIRCUIT_KEYS }}/order_match_vk.json
+          VK_NOTE_SPEND_JSON: ${{ env.CIRCUIT_KEYS }}/note_spend_vk.json
+        run: cargo nextest run -p perp-engine -p orderbook -p types -p verifier-groth16
+
+  test-circuits:
+    needs: changes
+    if: ${{ needs.changes.outputs.circuits == 'true' || github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/rust-circuits -> tools/rust-circuits/target
+          shared-key: circuits
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@nextest
+
+      - name: Test rust-circuits
+        run: cargo nextest run --manifest-path tools/rust-circuits/Cargo.toml
+
+  # ── Build: WASM compilation (slow, gated on contract/circuit changes) ─────
+  build-wasm:
+    needs: [changes, test-contracts]
+    if: ${{ needs.changes.outputs.contracts == 'true' || needs.changes.outputs.circuits == 'true' || github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build orderbook WASM
+        env:
+          VK_COMMIT_JSON: ${{ env.CIRCUIT_KEYS }}/order_commitment_vk.json
+          VK_CANCEL_JSON: ${{ env.CIRCUIT_KEYS }}/order_cancel_vk.json
+        run: cargo build --target wasm32v1-none --release -p orderbook -p verifier-groth16 -p types
+
+      - name: Build perp-engine WASM
+        env:
+          VK_COMMIT_JSON:     ${{ env.CIRCUIT_KEYS }}/order_commitment_vk.json
+          VK_CANCEL_JSON:     ${{ env.CIRCUIT_KEYS }}/order_cancel_vk.json
+          VK_MATCH_JSON:      ${{ env.CIRCUIT_KEYS }}/order_match_vk.json
+          VK_NOTE_SPEND_JSON: ${{ env.CIRCUIT_KEYS }}/note_spend_vk.json
+        run: cargo build --target wasm32v1-none --release -p perp-engine
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-${{ github.sha }}
+          path: target/wasm32v1-none/release/*.wasm
+          retention-days: 7
+
+  # ── Security audit ────────────────────────────────────────────────────────
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
