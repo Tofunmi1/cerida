@@ -7,7 +7,7 @@ use soroban_sdk::{
     Address, BytesN, Env, Vec,
 };
 use types::{
-    Groth16Error, Groth16Proof, FundingState, MatchRecord, OracleConfig,
+    Groth16Error, Groth16Proof, FundingState, MatchRecord, OracleConfig, TimeInForce,
 };
 
 include!(concat!(env!("OUT_DIR"), "/vk.rs"));
@@ -125,6 +125,11 @@ pub struct PositionMeta {
     pub created_at: u64,
     pub match_id: u64,
     pub funding_at_open: i128,
+    pub hint_size: u64,       // order size in contracts; enforced for FOK/IOC at match
+    pub tif: TimeInForce,
+    pub expiry_ledger: u64,   // 0 = no expiry; checked at match time for GTD
+    pub tp_price: u64,        // 0 = not set; take-profit trigger
+    pub sl_price: u64,        // 0 = not set; stop-loss trigger
 }
 
 #[contract]
@@ -209,6 +214,11 @@ impl PerpEngine {
         hint_price: u64,
         hint_side: u64,
         hint_leverage: u64,
+        hint_size: u64,
+        tif: TimeInForce,
+        expiry_ledger: u64,
+        tp_price: u64,
+        sl_price: u64,
         proof: Groth16Proof,
     ) {
         owner.require_auth();
@@ -220,6 +230,20 @@ impl PerpEngine {
         }
         if hint_leverage == 0 {
             panic!("PerpEngine: leverage must be >= 1");
+        }
+        if tif == TimeInForce::GTD && expiry_ledger == 0 {
+            panic!("PerpEngine: GTD requires expiry_ledger > 0");
+        }
+        if tif != TimeInForce::GTD && expiry_ledger != 0 {
+            panic!("PerpEngine: expiry_ledger only valid for GTD");
+        }
+        if tp_price > 0 && sl_price > 0 {
+            if hint_side == 0 && tp_price <= sl_price {
+                panic!("PerpEngine: long TP must be above SL");
+            }
+            if hint_side == 1 && tp_price >= sl_price {
+                panic!("PerpEngine: short TP must be below SL");
+            }
         }
 
         let pos_key = DataKey::Position(commitment.clone());
@@ -256,6 +280,11 @@ impl PerpEngine {
             created_at,
             match_id: 0,
             funding_at_open: Self::read_funding_cumulative(&env),
+            hint_size,
+            tif,
+            expiry_ledger,
+            tp_price,
+            sl_price,
         };
         env.storage().persistent().set(&pos_key, &meta);
         env.storage()
@@ -364,6 +393,28 @@ impl PerpEngine {
             panic!("PerpEngine: both positions must be open (A={:?}, B={:?})", meta_a.status as u32, meta_b.status as u32);
         }
 
+        let exec_size = field_to_u64(&match_size);
+        let now = env.ledger().sequence() as u64;
+
+        // FOK/IOC: match size must equal the position's requested size
+        if (meta_a.tif == TimeInForce::FOK || meta_a.tif == TimeInForce::IOC)
+            && exec_size != meta_a.hint_size
+        {
+            panic!("PerpEngine: FOK/IOC order A requires full fill (wanted={}, got={})", meta_a.hint_size, exec_size);
+        }
+        if (meta_b.tif == TimeInForce::FOK || meta_b.tif == TimeInForce::IOC)
+            && exec_size != meta_b.hint_size
+        {
+            panic!("PerpEngine: FOK/IOC order B requires full fill (wanted={}, got={})", meta_b.hint_size, exec_size);
+        }
+        // GTD: reject if past expiry
+        if meta_a.tif == TimeInForce::GTD && meta_a.expiry_ledger > 0 && now > meta_a.expiry_ledger {
+            panic!("PerpEngine: order A has expired (expiry={}, now={})", meta_a.expiry_ledger, now);
+        }
+        if meta_b.tif == TimeInForce::GTD && meta_b.expiry_ledger > 0 && now > meta_b.expiry_ledger {
+            panic!("PerpEngine: order B has expired (expiry={}, now={})", meta_b.expiry_ledger, now);
+        }
+
         let mut pi: Vec<Bn254Fr> = Vec::new(&env);
         pi.push_back(Bn254Fr::from_bytes(cmt_a.clone()));
         pi.push_back(Bn254Fr::from_bytes(cmt_b.clone()));
@@ -378,7 +429,6 @@ impl PerpEngine {
         }
 
         let exec_price = field_to_u64(&match_price);
-        let exec_size = field_to_u64(&match_size);
 
         let match_id = Self::next_match_id(&env);
         let now = env.ledger().sequence() as u64;
@@ -669,6 +719,143 @@ impl PerpEngine {
             .get::<_, i128>(&DataKey::Note(note_commitment))
     }
 
+    /// Set or update TP/SL prices on an open or matched position.
+    pub fn set_tp_sl(
+        env: Env,
+        owner: Address,
+        commitment: BytesN<32>,
+        tp_price: u64,
+        sl_price: u64,
+    ) {
+        owner.require_auth();
+        let pos_key = DataKey::Position(commitment.clone());
+        let mut meta: PositionMeta = env
+            .storage()
+            .persistent()
+            .get(&pos_key)
+            .unwrap_or_else(|| panic!("PerpEngine: position not found"));
+        if meta.owner != owner {
+            panic!("PerpEngine: unauthorized");
+        }
+        if meta.status != PositionStatus::Open && meta.status != PositionStatus::Matched {
+            panic!("PerpEngine: can only set TP/SL on an open or matched position");
+        }
+        if tp_price > 0 && sl_price > 0 {
+            if meta.side == 0 && tp_price <= sl_price {
+                panic!("PerpEngine: long TP must be above SL");
+            }
+            if meta.side == 1 && tp_price >= sl_price {
+                panic!("PerpEngine: short TP must be below SL");
+            }
+        }
+        meta.tp_price = tp_price;
+        meta.sl_price = sl_price;
+        env.storage().persistent().set(&pos_key, &meta);
+        env.storage().persistent().extend_ttl(&pos_key, 17280, 17280);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("set_tpsl"),),
+            (commitment, tp_price, sl_price),
+        );
+    }
+
+    /// Trigger a take-profit close. Callable by anyone — keeper pattern.
+    /// Long (side=0): triggers when oracle >= tp_price.
+    /// Short (side=1): triggers when oracle <= tp_price.
+    pub fn trigger_tp(env: Env, commitment: BytesN<32>) -> i128 {
+        let pos_key = DataKey::Position(commitment.clone());
+        let mut meta: PositionMeta = env
+            .storage()
+            .persistent()
+            .get(&pos_key)
+            .unwrap_or_else(|| panic!("PerpEngine: position not found"));
+        if meta.status != PositionStatus::Matched {
+            panic!("PerpEngine: can only trigger TP on a matched position");
+        }
+        if meta.tp_price == 0 {
+            panic!("PerpEngine: no TP price set");
+        }
+        let oracle_price = Self::require_oracle_price(&env);
+        let triggered = if meta.side == 0 {
+            oracle_price >= meta.tp_price
+        } else {
+            oracle_price <= meta.tp_price
+        };
+        if !triggered {
+            panic!("PerpEngine: TP not triggered (side={} oracle={} tp={})", meta.side, oracle_price, meta.tp_price);
+        }
+        let (settlement, _) = Self::compute_settlement_with_funding(
+            &env, meta.collateral, meta.leverage, meta.side,
+            meta.matched_price, oracle_price, meta.funding_at_open,
+        );
+        meta.status = PositionStatus::Closed;
+        meta.matched_price = oracle_price;
+        env.storage().persistent().set(&pos_key, &meta);
+        env.storage().persistent().extend_ttl(&pos_key, 17280, 17280);
+        let bal = Self::read_balance(&env, &meta.owner);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(meta.owner.clone()), &(bal + settlement));
+        if meta.match_id != 0 {
+            Self::try_close_match(&env, meta.match_id, &commitment);
+        }
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("trig_tp"),),
+            (commitment, oracle_price, meta.tp_price, settlement),
+        );
+        settlement
+    }
+
+    /// Trigger a stop-loss close. Callable by anyone — keeper pattern.
+    /// Long (side=0): triggers when oracle <= sl_price.
+    /// Short (side=1): triggers when oracle >= sl_price.
+    pub fn trigger_sl(env: Env, commitment: BytesN<32>) -> i128 {
+        let pos_key = DataKey::Position(commitment.clone());
+        let mut meta: PositionMeta = env
+            .storage()
+            .persistent()
+            .get(&pos_key)
+            .unwrap_or_else(|| panic!("PerpEngine: position not found"));
+        if meta.status != PositionStatus::Matched {
+            panic!("PerpEngine: can only trigger SL on a matched position");
+        }
+        if meta.sl_price == 0 {
+            panic!("PerpEngine: no SL price set");
+        }
+        let oracle_price = Self::require_oracle_price(&env);
+        let triggered = if meta.side == 0 {
+            oracle_price <= meta.sl_price
+        } else {
+            oracle_price >= meta.sl_price
+        };
+        if !triggered {
+            panic!("PerpEngine: SL not triggered (side={} oracle={} sl={})", meta.side, oracle_price, meta.sl_price);
+        }
+        let (settlement, _) = Self::compute_settlement_with_funding(
+            &env, meta.collateral, meta.leverage, meta.side,
+            meta.matched_price, oracle_price, meta.funding_at_open,
+        );
+        meta.status = PositionStatus::Closed;
+        meta.matched_price = oracle_price;
+        env.storage().persistent().set(&pos_key, &meta);
+        env.storage().persistent().extend_ttl(&pos_key, 17280, 17280);
+        let bal = Self::read_balance(&env, &meta.owner);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(meta.owner.clone()), &(bal + settlement));
+        if meta.match_id != 0 {
+            Self::try_close_match(&env, meta.match_id, &commitment);
+        }
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("trig_sl"),),
+            (commitment, oracle_price, meta.sl_price, settlement),
+        );
+        settlement
+    }
+
     /// Open a position by spending a shielded note as collateral.
     /// Requires a NoteSpend proof [note_commitment, note_nullifier] and
     /// an OrderCommitment proof [position_commitment]. No address auth — the
@@ -682,6 +869,11 @@ impl PerpEngine {
         hint_price: u64,
         hint_side: u64,
         hint_leverage: u64,
+        hint_size: u64,
+        tif: TimeInForce,
+        expiry_ledger: u64,
+        tp_price: u64,
+        sl_price: u64,
         liquidation_recipient: Address,
         note_proof: Groth16Proof,
         commit_proof: Groth16Proof,
@@ -691,6 +883,20 @@ impl PerpEngine {
         }
         if hint_leverage == 0 {
             panic!("PerpEngine: leverage must be >= 1");
+        }
+        if tif == TimeInForce::GTD && expiry_ledger == 0 {
+            panic!("PerpEngine: GTD requires expiry_ledger > 0");
+        }
+        if tif != TimeInForce::GTD && expiry_ledger != 0 {
+            panic!("PerpEngine: expiry_ledger only valid for GTD");
+        }
+        if tp_price > 0 && sl_price > 0 {
+            if hint_side == 0 && tp_price <= sl_price {
+                panic!("PerpEngine: long TP must be above SL");
+            }
+            if hint_side == 1 && tp_price >= sl_price {
+                panic!("PerpEngine: short TP must be below SL");
+            }
         }
 
         let note_null_key = DataKey::Nullifier(note_nullifier.clone());
@@ -742,6 +948,11 @@ impl PerpEngine {
             created_at,
             match_id: 0,
             funding_at_open: Self::read_funding_cumulative(&env),
+            hint_size,
+            tif,
+            expiry_ledger,
+            tp_price,
+            sl_price,
         };
         env.storage().persistent().set(&pos_key, &meta);
         env.storage().persistent().extend_ttl(&pos_key, 17280, 17280);
@@ -1433,6 +1644,11 @@ mod test {
                 created_at: env.ledger().sequence() as u64,
                 match_id,
                 funding_at_open: 0,
+                hint_size: 1_000_000_000,
+                tif: TimeInForce::GTC,
+                expiry_ledger: 0,
+                tp_price: 0,
+                sl_price: 0,
             };
             let key = DataKey::Position(commitment.clone());
             env.storage().persistent().set(&key, &meta);
@@ -2018,6 +2234,7 @@ mod test {
         client.open_position_from_note(
             &note_cmt, &note_null, &pos_cmt,
             &100_000_000, &0, &10,
+            &1_000_000_000u64, &TimeInForce::GTC, &0u64, &0u64, &0u64,
             &liq_recipient, &note_proof, &commit_proof,
         );
 
@@ -2048,6 +2265,7 @@ mod test {
         client.open_position_from_note(
             &note_cmt, &note_null, &pos_cmt,
             &100_000_000, &0, &5,
+            &1_000_000_000u64, &TimeInForce::GTC, &0u64, &0u64, &0u64,
             &liq_recipient, &note_proof, &commit_proof,
         );
     }
@@ -2090,6 +2308,7 @@ mod test {
         client.open_position_from_note(
             &note_cmt, &note_null, &pos_cmt,
             &50_000_000, &0, &5,
+            &1_000_000_000u64, &TimeInForce::GTC, &0u64, &0u64, &0u64,
             &liq_recipient, &note_proof, &commit_proof,
         );
 
@@ -2146,6 +2365,7 @@ mod test {
         client.open_position_from_note(
             &note_cmt, &note_null, &pos_cmt,
             &100_000_000, &0, &5,
+            &1_000_000_000u64, &TimeInForce::GTC, &0u64, &0u64, &0u64,
             &liq_recipient, &note_proof, &commit_proof,
         );
 
@@ -2225,5 +2445,322 @@ mod test {
         });
 
         client.add_margin(&owner, &cmt, &100);
+    }
+
+    // ── FOK / IOC / GTD tests ──────────────────────────────────────────────
+
+    fn create_position_tif(
+        env: &Env,
+        cid: &Address,
+        owner: &Address,
+        commitment: &BytesN<32>,
+        collateral: i128,
+        leverage: u64,
+        side: u64,
+        price: u64,
+        hint_size: u64,
+        tif: TimeInForce,
+        expiry_ledger: u64,
+    ) {
+        env.as_contract(cid, || {
+            let meta = PositionMeta {
+                owner: owner.clone(),
+                collateral,
+                entry_price: price,
+                matched_price: 0,
+                side,
+                leverage,
+                status: PositionStatus::Open,
+                created_at: env.ledger().sequence() as u64,
+                match_id: 0,
+                funding_at_open: 0,
+                hint_size,
+                tif,
+                expiry_ledger,
+                tp_price: 0,
+                sl_price: 0,
+            };
+            let key = DataKey::Position(commitment.clone());
+            env.storage().persistent().set(&key, &meta);
+            env.storage().persistent().extend_ttl(&key, 17280, 17280);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "FOK/IOC order A requires full fill")]
+    fn test_fok_wrong_size_reverts() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        // FOK position A with hint_size=1000, match_size will be 500
+        let cmt_a = BytesN::from_array(&env, &[20u8; 32]);
+        let cmt_b = BytesN::from_array(&env, &[21u8; 32]);
+        create_position_tif(&env, &cid, &owner_a, &cmt_a, 1_000_000, 5, 0, 100, 1000, TimeInForce::FOK, 0);
+        create_position_tif(&env, &cid, &owner_b, &cmt_b, 1_000_000, 5, 1, 100, 500,  TimeInForce::GTC, 0);
+
+        // Dummy proof bytes — TIF check fires before proof verification
+        use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254G2Affine};
+        let dummy = Groth16Proof {
+            a: Bn254G1Affine::from_bytes(BytesN::from_array(&env, &[0u8; 64])),
+            b: Bn254G2Affine::from_bytes(BytesN::from_array(&env, &[0u8; 128])),
+            c: Bn254G1Affine::from_bytes(BytesN::from_array(&env, &[0u8; 64])),
+        };
+        let mp = BytesN::from_array(&env, &{let mut b = [0u8;32]; b[31]=100; b});
+        // match_size = 500 (field element with last byte = 500>>8=1, 500&255=244)
+        let ms = BytesN::from_array(&env, &{let mut b = [0u8;32]; b[30]=1; b[31]=244; b});
+        let nf_a = BytesN::from_array(&env, &[30u8; 32]);
+        let nf_b = BytesN::from_array(&env, &[31u8; 32]);
+        client.set_price(&admin, &100);
+        client.match_positions(&cmt_a, &cmt_b, &nf_a, &nf_b, &mp, &ms, &dummy);
+    }
+
+    #[test]
+    #[should_panic(expected = "FOK/IOC order A requires full fill")]
+    fn test_ioc_wrong_size_reverts() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let cmt_a = BytesN::from_array(&env, &[22u8; 32]);
+        let cmt_b = BytesN::from_array(&env, &[23u8; 32]);
+        // IOC position with hint_size=2000, match only 1000
+        create_position_tif(&env, &cid, &owner_a, &cmt_a, 1_000_000, 5, 0, 100, 2000, TimeInForce::IOC, 0);
+        create_position_tif(&env, &cid, &owner_b, &cmt_b, 1_000_000, 5, 1, 100, 1000, TimeInForce::GTC, 0);
+
+        use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254G2Affine};
+        let dummy = Groth16Proof {
+            a: Bn254G1Affine::from_bytes(BytesN::from_array(&env, &[0u8; 64])),
+            b: Bn254G2Affine::from_bytes(BytesN::from_array(&env, &[0u8; 128])),
+            c: Bn254G1Affine::from_bytes(BytesN::from_array(&env, &[0u8; 64])),
+        };
+        let mp = BytesN::from_array(&env, &{let mut b = [0u8;32]; b[31]=100; b});
+        let ms = BytesN::from_array(&env, &{let mut b = [0u8;32]; b[30]=3; b[31]=232; b}); // 1000
+        let nf_a = BytesN::from_array(&env, &[32u8; 32]);
+        let nf_b = BytesN::from_array(&env, &[33u8; 32]);
+        client.set_price(&admin, &100);
+        client.match_positions(&cmt_a, &cmt_b, &nf_a, &nf_b, &mp, &ms, &dummy);
+    }
+
+    #[test]
+    #[should_panic(expected = "order A has expired")]
+    fn test_gtd_expired_match_reverts() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        env.ledger().set(LedgerInfo {
+            sequence_number: 200,
+            timestamp: 0, network_id: [0;32], protocol_version: 27,
+            base_reserve: 0, min_persistent_entry_ttl: 4096,
+            min_temp_entry_ttl: 16, max_entry_ttl: 6_312_000,
+        });
+        let owner_a = Address::generate(&env);
+        let owner_b = Address::generate(&env);
+        let cmt_a = BytesN::from_array(&env, &[24u8; 32]);
+        let cmt_b = BytesN::from_array(&env, &[25u8; 32]);
+        // GTD expiry_ledger=100, current ledger=200 → expired
+        create_position_tif(&env, &cid, &owner_a, &cmt_a, 1_000_000, 5, 0, 100, 1000, TimeInForce::GTD, 100);
+        create_position_tif(&env, &cid, &owner_b, &cmt_b, 1_000_000, 5, 1, 100, 1000, TimeInForce::GTC, 0);
+
+        use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254G2Affine};
+        let dummy = Groth16Proof {
+            a: Bn254G1Affine::from_bytes(BytesN::from_array(&env, &[0u8; 64])),
+            b: Bn254G2Affine::from_bytes(BytesN::from_array(&env, &[0u8; 128])),
+            c: Bn254G1Affine::from_bytes(BytesN::from_array(&env, &[0u8; 64])),
+        };
+        let mp = BytesN::from_array(&env, &{let mut b = [0u8;32]; b[31]=100; b});
+        let ms = BytesN::from_array(&env, &{let mut b = [0u8;32]; b[30]=3; b[31]=232; b});
+        let nf_a = BytesN::from_array(&env, &[34u8; 32]);
+        let nf_b = BytesN::from_array(&env, &[35u8; 32]);
+        client.set_price(&admin, &100);
+        client.match_positions(&cmt_a, &cmt_b, &nf_a, &nf_b, &mp, &ms, &dummy);
+    }
+
+    // ── TP / SL tests ─────────────────────────────────────────────────────
+
+    fn matched_position_with_tpsl(
+        env: &Env,
+        cid: &Address,
+        owner: &Address,
+        commitment: &BytesN<32>,
+        collateral: i128,
+        leverage: u64,
+        side: u64,
+        entry_price: u64,
+        tp_price: u64,
+        sl_price: u64,
+    ) {
+        env.as_contract(cid, || {
+            let meta = PositionMeta {
+                owner: owner.clone(),
+                collateral,
+                entry_price,
+                matched_price: entry_price,
+                side,
+                leverage,
+                status: PositionStatus::Matched,
+                created_at: env.ledger().sequence() as u64,
+                match_id: 0,
+                funding_at_open: 0,
+                hint_size: 1_000_000_000,
+                tif: TimeInForce::GTC,
+                expiry_ledger: 0,
+                tp_price,
+                sl_price,
+            };
+            let key = DataKey::Position(commitment.clone());
+            env.storage().persistent().set(&key, &meta);
+            env.storage().persistent().extend_ttl(&key, 17280, 17280);
+        });
+    }
+
+    #[test]
+    fn test_set_tp_sl() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[40u8; 32]);
+        create_position(&env, &cid, &owner, &cmt, 1_000_000, 10, 0, 100, PositionStatus::Open, 0);
+
+        client.set_tp_sl(&owner, &cmt, &150, &80);
+        let pos = client.get_position(&cmt).unwrap();
+        assert_eq!(pos.tp_price, 150);
+        assert_eq!(pos.sl_price, 80);
+    }
+
+    #[test]
+    #[should_panic(expected = "long TP must be above SL")]
+    fn test_set_tp_sl_invalid_long_reverts() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[41u8; 32]);
+        create_position(&env, &cid, &owner, &cmt, 1_000_000, 10, 0, 100, PositionStatus::Open, 0);
+        // TP=80 <= SL=90 for a long — invalid
+        client.set_tp_sl(&owner, &cmt, &80, &90);
+    }
+
+    #[test]
+    #[should_panic(expected = "short TP must be below SL")]
+    fn test_set_tp_sl_invalid_short_reverts() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[42u8; 32]);
+        create_position(&env, &cid, &owner, &cmt, 1_000_000, 10, 1, 100, PositionStatus::Open, 0);
+        // Short: TP=120 >= SL=90 — invalid (TP must be below SL for shorts)
+        client.set_tp_sl(&owner, &cmt, &120, &90);
+    }
+
+    #[test]
+    fn test_trigger_tp_long() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[50u8; 32]);
+        // Long position: entry=100, tp=120. Oracle moves to 130 → TP triggers.
+        matched_position_with_tpsl(&env, &cid, &owner, &cmt, 1_000_000, 1, 0, 100, 120, 80);
+        client.set_price(&admin, &130);
+
+        let settlement = client.trigger_tp(&cmt);
+        // PnL: collateral * lev * (130-100)/100 = 1M*1*(30/100) = 300k; settlement = 1.3M
+        assert_eq!(settlement, 1_300_000);
+        assert_eq!(client.get_position(&cmt).unwrap().status, PositionStatus::Closed);
+        assert_eq!(client.get_balance(&owner), 1_300_000);
+    }
+
+    #[test]
+    fn test_trigger_tp_short() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[51u8; 32]);
+        // Short position: entry=100, tp=80. Oracle drops to 70 → TP triggers.
+        matched_position_with_tpsl(&env, &cid, &owner, &cmt, 1_000_000, 1, 1, 100, 80, 120);
+        client.set_price(&admin, &70);
+
+        let settlement = client.trigger_tp(&cmt);
+        // Short PnL: -(close-entry)/entry * collateral * lev = -(70-100)/100 * 1M = +300k
+        assert_eq!(settlement, 1_300_000);
+        assert_eq!(client.get_position(&cmt).unwrap().status, PositionStatus::Closed);
+    }
+
+    #[test]
+    #[should_panic(expected = "TP not triggered")]
+    fn test_trigger_tp_long_not_reached_reverts() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[52u8; 32]);
+        matched_position_with_tpsl(&env, &cid, &owner, &cmt, 1_000_000, 1, 0, 100, 120, 80);
+        client.set_price(&admin, &110); // below tp=120
+        client.trigger_tp(&cmt);
+    }
+
+    #[test]
+    fn test_trigger_sl_long() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[53u8; 32]);
+        // Long position: entry=100, sl=80. Oracle drops to 70 → SL triggers.
+        matched_position_with_tpsl(&env, &cid, &owner, &cmt, 1_000_000, 1, 0, 100, 130, 80);
+        client.set_price(&admin, &70);
+
+        let settlement = client.trigger_sl(&cmt);
+        // Long PnL: (70-100)/100 * 1M = -300k; settlement = max(0, 700k)
+        assert_eq!(settlement, 700_000);
+        assert_eq!(client.get_position(&cmt).unwrap().status, PositionStatus::Closed);
+    }
+
+    #[test]
+    fn test_trigger_sl_short() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[54u8; 32]);
+        // Short position: entry=100, sl=120. Oracle rises to 130 → SL triggers.
+        matched_position_with_tpsl(&env, &cid, &owner, &cmt, 1_000_000, 1, 1, 100, 80, 120);
+        client.set_price(&admin, &130);
+
+        let settlement = client.trigger_sl(&cmt);
+        // Short PnL: -(130-100)/100 * 1M = -300k; settlement = 700k
+        assert_eq!(settlement, 700_000);
+        assert_eq!(client.get_position(&cmt).unwrap().status, PositionStatus::Closed);
+    }
+
+    #[test]
+    #[should_panic(expected = "SL not triggered")]
+    fn test_trigger_sl_long_not_reached_reverts() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[55u8; 32]);
+        matched_position_with_tpsl(&env, &cid, &owner, &cmt, 1_000_000, 1, 0, 100, 130, 80);
+        client.set_price(&admin, &90); // above sl=80
+        client.trigger_sl(&cmt);
+    }
+
+    #[test]
+    #[should_panic(expected = "no TP price set")]
+    fn test_trigger_tp_no_price_set_reverts() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[56u8; 32]);
+        create_position(&env, &cid, &owner, &cmt, 1_000_000, 1, 0, 100, PositionStatus::Matched, 0);
+        client.set_price(&admin, &200);
+        client.trigger_tp(&cmt);
+    }
+
+    #[test]
+    #[should_panic(expected = "no SL price set")]
+    fn test_trigger_sl_no_price_set_reverts() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[57u8; 32]);
+        create_position(&env, &cid, &owner, &cmt, 1_000_000, 1, 0, 100, PositionStatus::Matched, 0);
+        client.set_price(&admin, &50);
+        client.trigger_sl(&cmt);
     }
 }

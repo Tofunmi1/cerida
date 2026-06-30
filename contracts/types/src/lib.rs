@@ -78,10 +78,16 @@ impl TryFrom<Bytes> for Groth16Proof {
 #[derive(Clone)]
 pub struct OrderMeta {
     pub owner: Address,
-    pub hint: u64,
+    pub hint_price: u64,
+    pub hint_side: u64,
+    pub hint_size: u64,
+    pub hint_leverage: u64,
+    pub revealed: u64,
     pub asset_id: BytesN<32>,
     pub status: OrderStatus,
     pub created_at: u64,
+    pub tif: TimeInForce,
+    pub expiry_ledger: u64, // 0 = no expiry; only meaningful for GTD
 }
 
 use soroban_sdk::Address;
@@ -89,9 +95,20 @@ use soroban_sdk::Address;
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
+pub enum TimeInForce {
+    GTC = 0, // Good Till Cancelled
+    IOC = 1, // Immediate or Cancel — full fill now or cancel
+    FOK = 2, // Fill or Kill — full fill now or reject
+    GTD = 3, // Good Till Date — expires at expiry_ledger
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
 pub enum OrderStatus {
     Open = 0,
     Cancelled = 1,
+    Expired = 2,
 }
 
 // ── Oracle ──────────────────────────────────────────────────────────────
