@@ -102,3 +102,92 @@ pub fn submit_match(perp_id: &str, _source: &str, cmt_a: &str, cmt_b: &str, proo
     );
     Ok(())
 }
+
+pub fn submit_cancel(
+    orderbook_id: &str,
+    perp_id: &str,
+    owner: &str,
+    commitment: &str,
+    nullifier: &str,
+    proof: &MatchProof,
+) -> Result<()> {
+    let proof_json = serde_json::json!({
+        "a": proof.proof.a,
+        "b": proof.proof.b,
+        "c": proof.proof.c,
+    })
+    .to_string();
+
+    let tmp = std::env::temp_dir().join(format!("tee_cancel_proof_{}.json", std::process::id()));
+    std::fs::write(&tmp, &proof_json)?;
+
+    // cancel_order on orderbook contract
+    let cancel_order = || -> Result<()> {
+        let mut cmd = std::process::Command::new("stellar");
+        cmd.args([
+            "contract", "invoke",
+            "--id", orderbook_id,
+            "--source", SOURCE_IDENTITY,
+            "--network-passphrase", NETWORK_PASSPHRASE,
+            "--rpc-url", &rpc_url(),
+            "--",
+            "cancel_order",
+            "--owner", owner,
+            "--commitment", commitment,
+            "--nullifier", nullifier,
+            "--proof-file-path", &tmp.to_string_lossy(),
+        ]);
+        let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar cancel_order: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("cancel_order failed:\n{stderr}");
+        }
+        Ok(())
+    };
+
+    // cancel_position on perp-engine contract
+    let cancel_position = || -> Result<()> {
+        let mut cmd = std::process::Command::new("stellar");
+        cmd.args([
+            "contract", "invoke",
+            "--id", perp_id,
+            "--source", SOURCE_IDENTITY,
+            "--network-passphrase", NETWORK_PASSPHRASE,
+            "--rpc-url", &rpc_url(),
+            "--",
+            "cancel_position",
+            "--owner", owner,
+            "--commitment", commitment,
+            "--nullifier", nullifier,
+            "--proof-file-path", &tmp.to_string_lossy(),
+        ]);
+        let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar cancel_position: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("cancel_position failed:\n{stderr}");
+        }
+        Ok(())
+    };
+
+    let start = Instant::now();
+    log::debug!("Executing stellar CLI cancel",
+        "orderbook", &orderbook_id[..8],
+        "perp", &perp_id[..8],
+        "owner", owner,
+        "commitment", &commitment[..16]
+    );
+
+    cancel_order()?;
+    cancel_position()?;
+
+    let _ = std::fs::remove_file(&tmp);
+
+    log::info!("Cancel submitted on-chain",
+        "orderbook", &orderbook_id[..8],
+        "perp", &perp_id[..8],
+        "commitment", &commitment[..16],
+        "nullifier", &nullifier[..16],
+        "took", log::duration_secs(&start.elapsed())
+    );
+    Ok(())
+}

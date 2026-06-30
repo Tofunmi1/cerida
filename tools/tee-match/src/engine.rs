@@ -177,6 +177,27 @@ impl OrderBook {
         Ok(new_fills)
     }
 
+    /// Restore a consumed maker order back into the book (undo a fill).
+    /// Called when on-chain match submission fails.
+    pub fn restore_order(&mut self, id: &str, side: Side, price: u64, size: u64) {
+        let order = Order {
+            id: id.to_string(),
+            side,
+            price,
+            size,
+            remaining: size,
+            timestamp_ns: 0,
+            order_type: OrderType::Limit,
+        };
+        let book = match side {
+            Side::Bid => &mut self.bids,
+            Side::Ask => &mut self.asks,
+        };
+        let queue = book.entry(price).or_default();
+        queue.push_front(id.to_string());
+        self.orders.insert(id.to_string(), order);
+    }
+
     /// Cancel an active order by ID
     pub fn cancel(&mut self, id: &str) -> Result<bool> {
         if let Some(order) = self.orders.remove(id) {

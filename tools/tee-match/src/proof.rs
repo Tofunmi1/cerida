@@ -3,7 +3,7 @@ use crate::log;
 use anyhow::{Context, Result};
 use ark_bn254::Fr;
 use ark_ff::{AdditiveGroup, Field};
-use rust_circuits::{load_pk, prove_commitment_with_pk, prove_match_with_pk, ProofOutput};
+use rust_circuits::{load_pk, prove_cancel_with_pk, prove_commitment_with_pk, prove_match_with_pk, ProofOutput};
 use std::path::{Path, PathBuf};
 
 pub type MatchProof = ProofOutput;
@@ -26,6 +26,22 @@ pub fn gen_commitment_proof(keys_dir: &Path, secrets: &OrderSecrets) -> Result<M
         "side", secrets.side,
         "price", secrets.price,
         "size", secrets.size);
+    Ok(out)
+}
+
+pub fn gen_cancel_proof(keys_dir: &Path, secrets: &OrderSecrets) -> Result<MatchProof> {
+    let pk = load_pk(&pk_path(keys_dir, "order_cancel"))
+        .with_context(|| format!("Failed to load cancel pk from {}", keys_dir.display()))?;
+    let cmt = rust_circuits::compute_commitment(
+        Fr::from(secrets.side), Fr::from(secrets.price), Fr::from(secrets.size),
+        Fr::from(secrets.leverage), Fr::from(secrets.asset),
+        if secrets.is_market { Fr::ONE } else { Fr::ZERO },
+        Fr::from(secrets.nonce), Fr::from(secrets.secret),
+    );
+    let out = prove_cancel_with_pk(&pk, cmt, Fr::from(secrets.secret))?;
+    log::debug!("Cancel proof generated via native Rust circuits (pk)",
+        "side", secrets.side,
+        "price", secrets.price);
     Ok(out)
 }
 

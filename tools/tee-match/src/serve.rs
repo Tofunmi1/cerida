@@ -22,9 +22,11 @@ struct Request {
     cmt: Option<String>,
     out: Option<PathBuf>,
     perp: Option<String>,
+    orderbook: Option<String>,
     cmt_a: Option<String>,
     cmt_b: Option<String>,
     source: Option<String>,
+    owner: Option<String>,
     order_type: Option<String>,
     stop_price: Option<u64>,
 }
@@ -179,7 +181,7 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
                 "commit-proof" => handle_commit_proof(&store, &keys, &req),
                 "match" => handle_match(&store, &keys, &req),
                 "place" => handle_place(&store, &book, &keys, &req),
-                "cancel" => handle_cancel(&book, &req),
+                "cancel" => handle_cancel(&store, &book, &keys, &req),
                 "market" => handle_market(&store, &book, &keys, &req),
                 "get_market" => handle_get_market(&book),
                 other => {
@@ -375,7 +377,8 @@ fn handle_match(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respo
         "source", source
     );
 
-    match do_match(store, keys, cmt_a, cmt_b, perp, source) {
+    // Direct /match is explicit, not from CLOB — no book rollback needed
+    match do_match(store, keys, cmt_a, cmt_b, perp, source, engine::Side::Bid, 0, 0, None) {
         Some(r) => {
             log::info!("Match confirmed on-chain",
                 "elapsed", log::duration_secs(&start.elapsed())
@@ -493,7 +496,8 @@ fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: 
             nullifier_b: None,
         };
         if let (Some(perp), Some(source)) = (perp, source) {
-            if let Some(result) = do_match(store, keys, cmt, &f.maker_id, perp, source) {
+            let maker_side = f.taker_side.opposite();
+            if let Some(result) = do_match(store, keys, cmt, &f.maker_id, perp, source, maker_side, f.price, f.size, Some(book)) {
                 fj.match_price = Some(result.match_price);
                 fj.match_size = Some(result.match_size);
                 fj.nullifier_a = Some(result.nullifier_a);
@@ -522,22 +526,61 @@ fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: 
     }
 }
 
-fn handle_cancel(book: &Mutex<engine::OrderBook>, req: &Request) -> Response {
+fn handle_cancel(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: &PathBuf, req: &Request) -> Response {
     let cmt = match req.cmt.as_ref() {
         Some(c) => c,
         None => return err("missing cmt"),
     };
+    let perp = match req.perp.as_ref() {
+        Some(p) => p,
+        None => return err("missing perp"),
+    };
+    let orderbook = match req.orderbook.as_ref() {
+        Some(o) => o,
+        None => return err("missing orderbook"),
+    };
+    let owner = match req.owner.as_ref() {
+        Some(o) => o,
+        None => return err("missing owner"),
+    };
+    let source = req.source.as_deref().unwrap_or("e2e");
+
+    let secrets = match store.get(cmt) {
+        Ok(Some(s)) => s,
+        Ok(None) => return err(format!("secrets not found for {cmt}")),
+        Err(e) => return err(format!("db error: {e}")),
+    };
+
+    let out = match proof::gen_cancel_proof(keys, &secrets) {
+        Ok(o) => o,
+        Err(e) => return err(format!("cancel proof generation failed: {e}")),
+    };
+
+    let nullifier = format!("{:0>64x}", out.public_inputs[0].parse::<num_bigint::BigUint>().unwrap());
+
+    if let Err(e) = stellar::submit_cancel(orderbook, perp, owner, cmt, &nullifier, &out) {
+        log::error!("Cancel on-chain submission failed",
+            "cmt", &cmt[..16],
+            "err", e.to_string()
+        );
+        return err(format!("cancel on-chain submission failed: {e}"));
+    }
+
+    // Remove from CLOB book (best-effort; might already be filled/matched)
     let mut book = book.lock().unwrap();
     match book.cancel(cmt) {
-        Ok(true) => Response { ok: true, ..Default::default() },
-        Ok(false) => {
-            // maybe a stop order
-            match book.cancel_stop(cmt) {
-                Ok(true) => Response { ok: true, ..Default::default() },
-                _ => err("order not found"),
-            }
-        }
-        Err(_) => err("cancel failed"),
+        Ok(_) => {}
+        Err(_) => log::warning!("Cancel: order not in CLOB book", "cmt", &cmt[..16]),
+    }
+
+    log::info!("Order cancelled on-chain and CLOB",
+        "cmt", &cmt[..16],
+        "nullifier", &nullifier[..16]
+    );
+
+    Response {
+        ok: true,
+        ..Default::default()
     }
 }
 
@@ -592,7 +635,8 @@ fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys:
             nullifier_b: None,
         };
         if let (Some(perp), Some(source)) = (perp, source) {
-            if let Some(result) = do_match(store, keys, cmt, &f.maker_id, perp, source) {
+            let maker_side = f.taker_side.opposite();
+            if let Some(result) = do_match(store, keys, cmt, &f.maker_id, perp, source, maker_side, f.price, f.size, Some(book)) {
                 fj.match_price = Some(result.match_price);
                 fj.match_size = Some(result.match_size);
                 fj.nullifier_a = Some(result.nullifier_a);
@@ -643,6 +687,10 @@ fn do_match(
     cmt_b: &str,
     perp: &str,
     source: &str,
+    maker_side: engine::Side,
+    maker_price: u64,
+    maker_size: u64,
+    book: Option<&Mutex<engine::OrderBook>>,
 ) -> Option<MatchResultData> {
     let a = store.get(cmt_a).ok()??;
     let b = store.get(cmt_b).ok()??;
@@ -653,12 +701,20 @@ fn do_match(
         Ok(o) => o,
         Err(e) => {
             log::error!("Auto-match: proof generation failed", "cmt_a", &cmt_a[..16], "err", e.to_string());
+            // Restore maker order to CLOB book (if applicable)
+            if let Some(b) = book {
+                b.lock().unwrap().restore_order(cmt_b, maker_side, maker_price, maker_size);
+            }
             return None;
         }
     };
 
     if let Err(e) = stellar::submit_match(perp, source, cmt_a, cmt_b, &out) {
         log::error!("Auto-match: on-chain submission failed", "cmt_a", &cmt_a[..16], "err", e.to_string());
+        // Restore maker order to CLOB book (if applicable)
+        if let Some(b) = book {
+            b.lock().unwrap().restore_order(cmt_b, maker_side, maker_price, maker_size);
+        }
         return None;
     }
 
