@@ -1,9 +1,10 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, crypto::bn254::{
-        Bn254Fr, Bn254G1Affine as G1Affine, Bn254G2Affine as G2Affine,
-    }, Address, BytesN, Env, Vec,
+    contract, contractimpl, contracttype,
+    crypto::bn254::{Bn254Fr, Bn254G1Affine as G1Affine, Bn254G2Affine as G2Affine},
+    Address, BytesN, Env, Vec,
 };
 use types::{Groth16Error, Groth16Proof, OrderMeta, OrderStatus, TimeInForce};
 
@@ -140,12 +141,23 @@ impl Orderbook {
         };
 
         env.storage().persistent().set(&order_key, &meta);
-        env.storage().persistent().extend_ttl(&order_key, 17280, 17280);
+        env.storage()
+            .persistent()
+            .extend_ttl(&order_key, 17280, 17280);
 
         #[allow(deprecated)]
         env.events().publish(
             (soroban_sdk::symbol_short!("place"),),
-            (owner, commitment, hint_price, hint_side, hint_size, hint_leverage, revealed, meta.created_at),
+            (
+                owner,
+                commitment,
+                hint_price,
+                hint_side,
+                hint_size,
+                hint_leverage,
+                revealed,
+                meta.created_at,
+            ),
         );
     }
 
@@ -174,7 +186,10 @@ impl Orderbook {
             panic!("Orderbook: unauthorized caller for cancel_order");
         }
         if meta.status != OrderStatus::Open {
-            panic!("Orderbook: order is not open (status={:?})", meta.status as u32);
+            panic!(
+                "Orderbook: order is not open (status={:?})",
+                meta.status as u32
+            );
         }
         if meta.status == OrderStatus::Expired {
             panic!("Orderbook: order has expired");
@@ -192,8 +207,12 @@ impl Orderbook {
         meta.status = OrderStatus::Cancelled;
         env.storage().persistent().set(&order_key, &meta);
         env.storage().persistent().set(&null_key, &true);
-        env.storage().persistent().extend_ttl(&order_key, 17280, 17280);
-        env.storage().persistent().extend_ttl(&null_key, 17280, 17280);
+        env.storage()
+            .persistent()
+            .extend_ttl(&order_key, 17280, 17280);
+        env.storage()
+            .persistent()
+            .extend_ttl(&null_key, 17280, 17280);
 
         #[allow(deprecated)]
         env.events().publish(
@@ -237,18 +256,26 @@ impl Orderbook {
             .get(&order_key)
             .unwrap_or_else(|| panic!("Orderbook: commitment not found"));
         if meta.status != OrderStatus::Open {
-            panic!("Orderbook: order is not open (status={:?})", meta.status as u32);
+            panic!(
+                "Orderbook: order is not open (status={:?})",
+                meta.status as u32
+            );
         }
         if meta.tif != TimeInForce::GTD {
             panic!("Orderbook: only GTD orders can expire");
         }
         let now = env.ledger().sequence() as u64;
         if meta.expiry_ledger == 0 || now <= meta.expiry_ledger {
-            panic!("Orderbook: order not yet expired (expiry={}, now={})", meta.expiry_ledger, now);
+            panic!(
+                "Orderbook: order not yet expired (expiry={}, now={})",
+                meta.expiry_ledger, now
+            );
         }
         meta.status = OrderStatus::Expired;
         env.storage().persistent().set(&order_key, &meta);
-        env.storage().persistent().extend_ttl(&order_key, 17280, 17280);
+        env.storage()
+            .persistent()
+            .extend_ttl(&order_key, 17280, 17280);
 
         #[allow(deprecated)]
         env.events().publish(
@@ -268,9 +295,14 @@ mod test {
 
     fn default_ledger() -> LedgerInfo {
         LedgerInfo {
-            protocol_version: 27, sequence_number: 0, timestamp: 0,
-            network_id: [0; 32], base_reserve: 0,
-            min_persistent_entry_ttl: 4096, min_temp_entry_ttl: 16, max_entry_ttl: 6_312_000,
+            protocol_version: 27,
+            sequence_number: 0,
+            timestamp: 0,
+            network_id: [0; 32],
+            base_reserve: 0,
+            min_persistent_entry_ttl: 4096,
+            min_temp_entry_ttl: 16,
+            max_entry_ttl: 6_312_000,
         }
     }
 
@@ -281,7 +313,14 @@ mod test {
         (env, cid)
     }
 
-    fn insert_order(env: &Env, cid: &Address, commitment: &BytesN<32>, owner: &Address, tif: TimeInForce, expiry: u64) {
+    fn insert_order(
+        env: &Env,
+        cid: &Address,
+        commitment: &BytesN<32>,
+        owner: &Address,
+        tif: TimeInForce,
+        expiry: u64,
+    ) {
         env.as_contract(cid, || {
             let meta = OrderMeta {
                 owner: owner.clone(),
@@ -296,7 +335,9 @@ mod test {
                 tif,
                 expiry_ledger: expiry,
             };
-            env.storage().persistent().set(&DataKey::Order(commitment.clone()), &meta);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Order(commitment.clone()), &meta);
         });
     }
 
@@ -308,7 +349,10 @@ mod test {
         let cmt = BytesN::from_array(&env, &[1u8; 32]);
         insert_order(&env, &cid, &cmt, &owner, TimeInForce::GTD, 10);
 
-        env.ledger().set(LedgerInfo { sequence_number: 11, ..default_ledger() });
+        env.ledger().set(LedgerInfo {
+            sequence_number: 11,
+            ..default_ledger()
+        });
         client.expire_order(&cmt);
         assert_eq!(client.status(&cmt), Some(OrderStatus::Expired));
     }
@@ -322,7 +366,10 @@ mod test {
         let cmt = BytesN::from_array(&env, &[2u8; 32]);
         insert_order(&env, &cid, &cmt, &owner, TimeInForce::GTD, 100);
 
-        env.ledger().set(LedgerInfo { sequence_number: 50, ..default_ledger() });
+        env.ledger().set(LedgerInfo {
+            sequence_number: 50,
+            ..default_ledger()
+        });
         client.expire_order(&cmt);
     }
 
@@ -335,7 +382,10 @@ mod test {
         let cmt = BytesN::from_array(&env, &[3u8; 32]);
         insert_order(&env, &cid, &cmt, &owner, TimeInForce::GTC, 0);
 
-        env.ledger().set(LedgerInfo { sequence_number: 999, ..default_ledger() });
+        env.ledger().set(LedgerInfo {
+            sequence_number: 999,
+            ..default_ledger()
+        });
         client.expire_order(&cmt);
     }
 
@@ -348,7 +398,10 @@ mod test {
         let cmt = BytesN::from_array(&env, &[4u8; 32]);
         insert_order(&env, &cid, &cmt, &owner, TimeInForce::GTD, 5);
 
-        env.ledger().set(LedgerInfo { sequence_number: 10, ..default_ledger() });
+        env.ledger().set(LedgerInfo {
+            sequence_number: 10,
+            ..default_ledger()
+        });
         client.expire_order(&cmt);
         client.expire_order(&cmt); // second call should panic
     }

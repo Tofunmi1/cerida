@@ -1,4 +1,9 @@
-use std::{env, fmt::Write as _, fs, path::PathBuf};
+use std::{
+    env,
+    fmt::Write as _,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use ark_bn254::{g1::G1Affine, g2::G2Affine};
 use ark_ff::{BigInteger, PrimeField};
@@ -23,7 +28,7 @@ fn main() {
     fs::write(out_dir.join("vk.rs"), content).expect("failed to write vk.rs");
 }
 
-fn write_placeholder_vk(out_dir: &PathBuf) {
+fn write_placeholder_vk(out_dir: &Path) {
     let content = "\
 pub const VK_ALPHA_G1: [u8; 64] = [0u8; 64];
 pub const VK_BETA_G2: [u8; 128] = [0u8; 128];
