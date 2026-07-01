@@ -8,12 +8,18 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
 
-    let commit_path = env::var("VK_COMMIT_JSON").unwrap_or_default();
-    let cancel_path = env::var("VK_CANCEL_JSON").unwrap_or_default();
+    let keys_fallback = || -> PathBuf {
+        let m = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        fs::canonicalize(m.join("../../circuits/keys")).unwrap_or(m)
+    };
 
-    if commit_path.is_empty() || cancel_path.is_empty() {
-        panic!("VK_COMMIT_JSON and VK_CANCEL_JSON env vars must be set. Run with:\n  VK_COMMIT_JSON=circuits/keys/order_commitment_vk.json VK_CANCEL_JSON=circuits/keys/order_cancel_vk.json");
-    }
+    let resolve = |env_var: &str, filename: &str| -> String {
+        env::var(env_var)
+            .unwrap_or_else(|_| keys_fallback().join(filename).to_string_lossy().to_string())
+    };
+
+    let commit_path = resolve("VK_COMMIT_JSON", "order_commitment_vk.json");
+    let cancel_path = resolve("VK_CANCEL_JSON", "order_cancel_vk.json");
 
     // Re-run build script if the VK JSON files change on disk
     println!("cargo:rerun-if-changed={}", commit_path);

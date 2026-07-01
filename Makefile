@@ -7,7 +7,7 @@ CONTRACT_TARGET := $(ROOT)/contracts/target/wasm32v1-none/release
 	build-contracts build-orderbook build-perp-engine \
 	build-tools \
 	deploy deploy-orderbook deploy-perp-engine \
-	e2e
+	e2e ci-check hooks
 
 all: circuit-setup build-contracts build-tools
 
@@ -52,6 +52,27 @@ deploy: deploy-orderbook deploy-perp-engine
 # ======== E2E ========
 e2e: build-contracts build-tools
 	cargo run --release --manifest-path tools/e2e/Cargo.toml -- --keys-dir circuits/keys --wasm-dir target/wasm32v1-none/release full
+
+# ======== CI ========
+ci-check:
+	cargo fmt --all -- --check
+	VK_COMMIT_JSON=$(CIRCUIT_KEYS)/order_commitment_vk.json \
+	VK_CANCEL_JSON=$(CIRCUIT_KEYS)/order_cancel_vk.json \
+	VK_MATCH_JSON=$(CIRCUIT_KEYS)/order_match_vk.json \
+	VK_NOTE_SPEND_JSON=$(CIRCUIT_KEYS)/note_spend_vk.json \
+	  cargo clippy --all-targets -- -D warnings
+	VK_COMMIT_JSON=$(CIRCUIT_KEYS)/order_commitment_vk.json \
+	VK_CANCEL_JSON=$(CIRCUIT_KEYS)/order_cancel_vk.json \
+	VK_MATCH_JSON=$(CIRCUIT_KEYS)/order_match_vk.json \
+	VK_NOTE_SPEND_JSON=$(CIRCUIT_KEYS)/note_spend_vk.json \
+	  cargo test -p perp-engine -p orderbook -p types -p collateral
+
+# ======== Git hooks ========
+hooks:
+	cp .githooks/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	git config core.hooksPath .githooks
+	@echo "Installed pre-commit hook (.githooks/pre-commit → .git/hooks/pre-commit)"
 
 # ======== Clean ========
 clean:
