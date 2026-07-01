@@ -7,7 +7,10 @@ use soroban_sdk::{
     token::TokenClient,
     Address, BytesN, Env, Vec,
 };
-use types::{FundingState, Groth16Error, Groth16Proof, MatchRecord, OracleConfig, TimeInForce};
+use types::{
+    CollateralVaultClient, FundingState, Groth16Error, Groth16Proof, MatchRecord, OracleConfig,
+    TimeInForce,
+};
 
 include!(concat!(env!("OUT_DIR"), "/vk.rs"));
 
@@ -108,6 +111,8 @@ pub enum DataKey {
 pub struct Config {
     pub admin: Address,
     pub token: Address,
+    /// When set, collateral is held in a CollateralVault instead of this contract.
+    pub vault: Option<Address>,
 }
 
 #[contracttype]
@@ -149,7 +154,7 @@ pub struct PerpEngine;
 
 #[contractimpl]
 impl PerpEngine {
-    pub fn initialize(env: Env, admin: Address, token: Address) {
+    pub fn initialize(env: Env, admin: Address, token: Address, vault: Option<Address>) {
         if env.storage().instance().has(&DataKey::Config) {
             panic!("PerpEngine: already initialized");
         }
@@ -158,12 +163,13 @@ impl PerpEngine {
             &Config {
                 admin: admin.clone(),
                 token: token.clone(),
+                vault: vault.clone(),
             },
         );
 
         #[allow(deprecated)]
         env.events()
-            .publish((soroban_sdk::symbol_short!("init"),), (admin, token));
+            .publish((soroban_sdk::symbol_short!("init"),), (admin, token, vault));
     }
 
     pub fn deposit(env: Env, who: Address, amount: i128) {
@@ -172,17 +178,22 @@ impl PerpEngine {
             panic!("PerpEngine: deposit amount must be positive");
         }
         let cfg = Self::config(&env);
-        TokenClient::new(&env, &cfg.token).transfer(&who, env.current_contract_address(), &amount);
-        let key = DataKey::Balance(who.clone());
-        let bal = Self::read_balance(&env, &who);
-        let new_bal = bal + amount;
-        env.storage().persistent().set(&key, &new_bal);
+        if let Some(vault) = &cfg.vault {
+            CollateralVaultClient::new(&env, vault).deposit(&who, &amount);
+        } else {
+            TokenClient::new(&env, &cfg.token).transfer(
+                &who,
+                &env.current_contract_address(),
+                &amount,
+            );
+            let key = DataKey::Balance(who.clone());
+            let new_bal = Self::read_balance(&env, &who) + amount;
+            env.storage().persistent().set(&key, &new_bal);
+        }
 
         #[allow(deprecated)]
-        env.events().publish(
-            (soroban_sdk::symbol_short!("deposit"),),
-            (who, amount, new_bal),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("deposit"),), (who, amount));
     }
 
     pub fn withdraw(env: Env, who: Address, amount: i128) {
@@ -190,28 +201,38 @@ impl PerpEngine {
         if amount <= 0 {
             panic!("PerpEngine: withdraw amount must be positive");
         }
-        let key = DataKey::Balance(who.clone());
-        let bal = Self::read_balance(&env, &who);
-        if bal < amount {
-            panic!(
-                "PerpEngine: insufficient balance (have {}, need {})",
-                bal, amount
+        let cfg = Self::config(&env);
+        if let Some(vault) = &cfg.vault {
+            CollateralVaultClient::new(&env, vault).withdraw(&who, &amount);
+        } else {
+            let bal = Self::read_balance(&env, &who);
+            if bal < amount {
+                panic!(
+                    "PerpEngine: insufficient balance (have {}, need {})",
+                    bal, amount
+                );
+            }
+            let key = DataKey::Balance(who.clone());
+            env.storage().persistent().set(&key, &(bal - amount));
+            TokenClient::new(&env, &cfg.token).transfer(
+                &env.current_contract_address(),
+                &who,
+                &amount,
             );
         }
-        let new_bal = bal - amount;
-        env.storage().persistent().set(&key, &new_bal);
-        let cfg = Self::config(&env);
-        TokenClient::new(&env, &cfg.token).transfer(&env.current_contract_address(), &who, &amount);
 
         #[allow(deprecated)]
-        env.events().publish(
-            (soroban_sdk::symbol_short!("withdraw"),),
-            (who, amount, new_bal),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("withdraw"),), (who, amount));
     }
 
     pub fn get_balance(env: Env, who: Address) -> i128 {
-        Self::read_balance(&env, &who)
+        let cfg = Self::config(&env);
+        if let Some(vault) = &cfg.vault {
+            CollateralVaultClient::new(&env, &vault).free_balance(&who)
+        } else {
+            Self::read_balance(&env, &who)
+        }
     }
 
     fn read_balance(env: &Env, who: &Address) -> i128 {
@@ -219,6 +240,99 @@ impl PerpEngine {
             .persistent()
             .get::<_, i128>(&DataKey::Balance(who.clone()))
             .unwrap_or(0)
+    }
+
+    /// Deduct `amount` from `user` — locks in vault or deducts internal balance.
+    fn debit_user_collateral(env: &Env, user: &Address, amount: i128) {
+        let cfg = Self::config(env);
+        if let Some(vault) = &cfg.vault {
+            CollateralVaultClient::new(env, vault).lock(
+                &env.current_contract_address(),
+                user,
+                &amount,
+            );
+        } else {
+            let bal = Self::read_balance(env, user);
+            if bal < amount {
+                panic!(
+                    "PerpEngine: insufficient balance (have {}, need {})",
+                    bal, amount
+                );
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::Balance(user.clone()), &(bal - amount));
+        }
+    }
+
+    /// Return `amount` to `user` — unlocks in vault or credits internal balance.
+    fn credit_user_collateral(env: &Env, user: &Address, amount: i128) {
+        if amount <= 0 {
+            return;
+        }
+        let cfg = Self::config(env);
+        if let Some(vault) = &cfg.vault {
+            CollateralVaultClient::new(env, vault).unlock(
+                &env.current_contract_address(),
+                user,
+                &amount,
+            );
+        } else {
+            let bal = Self::read_balance(env, user);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Balance(user.clone()), &(bal + amount));
+        }
+    }
+
+    /// Redistribute `amount` of locked collateral from `from` to `to` (both vault users).
+    /// In non-vault mode, just credit to `to`'s internal balance.
+    fn redistribute_collateral(env: &Env, from: &Address, to: &Address, amount: i128) {
+        if amount <= 0 {
+            return;
+        }
+        let cfg = Self::config(env);
+        if let Some(vault) = &cfg.vault {
+            CollateralVaultClient::new(env, vault).move_locked_to_free(
+                &env.current_contract_address(),
+                from,
+                to,
+                &amount,
+            );
+        } else {
+            let bal = Self::read_balance(env, to);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Balance(to.clone()), &(bal + amount));
+        }
+    }
+
+    /// Distribute matched position settlements back to both owners.
+    /// Handles PnL redistribution: the winner receives their collateral plus profit
+    /// taken from the loser's locked balance.
+    #[allow(clippy::too_many_arguments)]
+    fn settle_pair(
+        env: &Env,
+        owner_a: &Address,
+        col_a: i128,
+        settlement_a: i128,
+        owner_b: &Address,
+        col_b: i128,
+        settlement_b: i128,
+    ) {
+        let pnl_a = settlement_a - col_a; // positive if a won
+        if pnl_a >= 0 {
+            // A is the winner: unlock A's collateral, move pnl from B's locked to A's free, unlock B's remainder
+            Self::credit_user_collateral(env, owner_a, col_a);
+            Self::redistribute_collateral(env, owner_b, owner_a, pnl_a);
+            Self::credit_user_collateral(env, owner_b, settlement_b);
+        } else {
+            // B is the winner
+            let pnl_b = settlement_b - col_b;
+            Self::credit_user_collateral(env, owner_b, col_b);
+            Self::redistribute_collateral(env, owner_a, owner_b, pnl_b);
+            Self::credit_user_collateral(env, owner_a, settlement_a);
+        }
     }
 
     pub fn open_position(
@@ -278,17 +392,7 @@ impl PerpEngine {
             _ => panic!("PerpEngine: invalid commitment proof"),
         }
 
-        let bal = Self::read_balance(&env, &owner);
-        if bal < collateral {
-            panic!(
-                "PerpEngine: insufficient balance (have {}, need {})",
-                bal, collateral
-            );
-        }
-        let new_bal = bal - collateral;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(owner.clone()), &new_bal);
+        Self::debit_user_collateral(&env, &owner, collateral);
 
         let created_at = env.ledger().sequence() as u64;
         let meta = PositionMeta {
@@ -373,12 +477,8 @@ impl PerpEngine {
         env.storage().persistent().set(&pos_key, &meta);
         env.storage().persistent().set(&null_key, &true);
 
-        let bal = Self::read_balance(&env, &meta.owner);
         let returned = meta.collateral;
-        let new_bal = bal + returned;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(meta.owner.clone()), &new_bal);
+        Self::credit_user_collateral(&env, &meta.owner, returned);
         env.storage()
             .persistent()
             .extend_ttl(&pos_key, 17280, 17280);
@@ -389,7 +489,7 @@ impl PerpEngine {
         #[allow(deprecated)]
         env.events().publish(
             (soroban_sdk::symbol_short!("cxl_pos"),),
-            (owner, commitment, nullifier, returned, new_bal),
+            (owner, commitment, nullifier, returned),
         );
     }
 
@@ -586,10 +686,7 @@ impl PerpEngine {
             .persistent()
             .extend_ttl(&null_key, 17280, 17280);
 
-        let bal = Self::read_balance(&env, &owner);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(owner.clone()), &(bal + settlement));
+        Self::credit_user_collateral(&env, &owner, settlement);
 
         if meta.match_id != 0 {
             Self::try_close_match(&env, meta.match_id, &commitment);
@@ -624,17 +721,7 @@ impl PerpEngine {
             panic!("PerpEngine: can only add margin to an open or matched position");
         }
 
-        let bal = Self::read_balance(&env, &owner);
-        if bal < amount {
-            panic!(
-                "PerpEngine: insufficient balance (have {}, need {})",
-                bal, amount
-            );
-        }
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(owner.clone()), &(bal - amount));
+        Self::debit_user_collateral(&env, &owner, amount);
 
         meta.collateral += amount;
         env.storage().persistent().set(&pos_key, &meta);
@@ -877,10 +964,8 @@ impl PerpEngine {
         env.storage()
             .persistent()
             .extend_ttl(&pos_key, 17280, 17280);
-        let bal = Self::read_balance(&env, &meta.owner);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(meta.owner.clone()), &(bal + settlement));
+        let owner = meta.owner.clone();
+        Self::credit_user_collateral(&env, &owner, settlement);
         if meta.match_id != 0 {
             Self::try_close_match(&env, meta.match_id, &commitment);
         }
@@ -935,10 +1020,8 @@ impl PerpEngine {
         env.storage()
             .persistent()
             .extend_ttl(&pos_key, 17280, 17280);
-        let bal = Self::read_balance(&env, &meta.owner);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(meta.owner.clone()), &(bal + settlement));
+        let owner = meta.owner.clone();
+        Self::credit_user_collateral(&env, &owner, settlement);
         if meta.match_id != 0 {
             Self::try_close_match(&env, meta.match_id, &commitment);
         }
@@ -1304,13 +1387,7 @@ impl PerpEngine {
                 .extend_ttl(&pos_key, 17280, 17280);
 
             // Pay liquidator
-            if penalty > 0 {
-                TokenClient::new(&env, &cfg.token).transfer(
-                    &env.current_contract_address(),
-                    &liquidator,
-                    &penalty,
-                );
-            }
+            Self::pay_liquidator_reward(&env, &meta.owner, &liquidator, penalty);
 
             // Pay owner proceeds (private or public)
             Self::pay_liquidation_proceeds(&env, &meta.owner, &liq_note, to_owner);
@@ -1359,13 +1436,7 @@ impl PerpEngine {
             Self::update_insurance_fund(&env, ins_delta);
 
             // Pay liquidator
-            if actual_reward > 0 {
-                TokenClient::new(&env, &cfg.token).transfer(
-                    &env.current_contract_address(),
-                    &liquidator,
-                    &actual_reward,
-                );
-            }
+            Self::pay_liquidator_reward(&env, &meta.owner, &liquidator, actual_reward);
 
             // Pay owner proceeds (private or public)
             Self::pay_liquidation_proceeds(&env, &meta.owner, &liq_note, to_owner);
@@ -1562,15 +1633,14 @@ impl PerpEngine {
             .persistent()
             .extend_ttl(&pos_key_b, 17280, 17280);
 
-        let bal_a = Self::read_balance(&env, &meta_a.owner);
-        env.storage().persistent().set(
-            &DataKey::Balance(meta_a.owner.clone()),
-            &(bal_a + settlement_a),
-        );
-        let bal_b = Self::read_balance(&env, &meta_b.owner);
-        env.storage().persistent().set(
-            &DataKey::Balance(meta_b.owner.clone()),
-            &(bal_b + settlement_b),
+        Self::settle_pair(
+            &env,
+            &meta_a.owner,
+            meta_a.effective_collateral,
+            settlement_a,
+            &meta_b.owner,
+            meta_b.effective_collateral,
+            settlement_b,
         );
 
         record.closed = true;
@@ -1813,12 +1883,36 @@ impl PerpEngine {
     }
 
     /// Credit liquidation proceeds to the owner's shielded note (if set) or balance.
+    /// Send a liquidation reward to `liquidator`. In vault mode deducts from `owner`'s
+    /// locked vault balance; in non-vault mode sends from the contract's own token wallet.
+    fn pay_liquidator_reward(env: &Env, owner: &Address, liquidator: &Address, amount: i128) {
+        if amount <= 0 {
+            return;
+        }
+        let cfg = Self::config(env);
+        if let Some(vault) = &cfg.vault {
+            CollateralVaultClient::new(env, vault).transfer_out(
+                &env.current_contract_address(),
+                owner,
+                liquidator,
+                &amount,
+            );
+        } else {
+            TokenClient::new(env, &cfg.token).transfer(
+                &env.current_contract_address(),
+                liquidator,
+                &amount,
+            );
+        }
+    }
+
     fn pay_liquidation_proceeds(env: &Env, owner: &Address, note: &BytesN<32>, amount: i128) {
         if amount <= 0 {
             return;
         }
         let zero = BytesN::from_array(env, &[0u8; 32]);
         if *note != zero {
+            // Privacy path: credit the pre-committed note commitment
             let note_key = DataKey::Note(note.clone());
             let existing: i128 = env.storage().persistent().get(&note_key).unwrap_or(0);
             env.storage()
@@ -1828,10 +1922,8 @@ impl PerpEngine {
                 .persistent()
                 .extend_ttl(&note_key, 17280, 17280);
         } else {
-            let bal = Self::read_balance(env, owner);
-            env.storage()
-                .persistent()
-                .set(&DataKey::Balance(owner.clone()), &(bal + amount));
+            // Public path: return to owner's vault free balance or internal balance
+            Self::credit_user_collateral(env, owner, amount);
         }
     }
 }
@@ -2000,7 +2092,7 @@ mod test {
         let token = env.register_stellar_asset_contract_v2(admin.clone());
         env.mock_all_auths();
         let client = PerpEngineClient::new(&env, &contract_id);
-        client.initialize(&admin, &token.address());
+        client.initialize(&admin, &token.address(), &None);
         (env, contract_id, admin)
     }
 
@@ -2098,7 +2190,7 @@ mod test {
         env.mock_all_auths();
         let contract_id = env.register(PerpEngine, ());
         let client = PerpEngineClient::new(&env, &contract_id);
-        client.initialize(&admin, &token.address());
+        client.initialize(&admin, &token.address(), &None);
         let cfg = client.get_config();
         assert_eq!(cfg.admin, admin);
         assert_eq!(cfg.token, token.address());

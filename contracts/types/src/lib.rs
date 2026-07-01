@@ -3,7 +3,7 @@
 use soroban_sdk::{
     contracterror, contracttype,
     crypto::bn254::{Bn254G1Affine, Bn254G2Affine},
-    Bytes, BytesN, Vec,
+    Address, Bytes, BytesN, Env, Vec,
 };
 
 #[contracterror]
@@ -91,8 +91,6 @@ pub struct OrderMeta {
     pub expiry_ledger: u64, // 0 = no expiry; only meaningful for GTD
 }
 
-use soroban_sdk::Address;
-
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -141,4 +139,22 @@ pub struct FundingState {
     pub last_update: u64,
     pub cumulative: i128,
     pub rate: i64,
+}
+
+// ── CollateralVault cross-contract client ──────────────────────────────
+#[soroban_sdk::contractclient(name = "CollateralVaultClient")]
+pub trait ICollateralVault {
+    fn deposit(env: Env, from: Address, amount: i128);
+    fn withdraw(env: Env, to: Address, amount: i128);
+    fn lock(env: Env, caller: Address, user: Address, amount: i128);
+    fn unlock(env: Env, caller: Address, user: Address, amount: i128);
+    fn transfer_out(env: Env, caller: Address, user: Address, to: Address, amount: i128);
+    fn move_locked_to_free(
+        env: Env,
+        caller: Address,
+        from_user: Address,
+        to_user: Address,
+        amount: i128,
+    );
+    fn free_balance(env: Env, who: Address) -> i128;
 }
