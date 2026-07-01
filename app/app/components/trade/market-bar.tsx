@@ -10,12 +10,14 @@ import {
 } from '@tabler/icons-react'
 import { MARKET_CATALOG, useMarket, type MarketDefinition } from '../../context/market-context'
 import { THEMES, useTheme } from '../../context/theme-context'
+import { formatContractBalance, useWallet } from '../../context/wallet-context'
 import { formatCompactUsd, formatUsd } from './format'
 import { toast } from '../toast/toast-context'
 
 export default function MarketBar() {
   const { symbol, setSymbol, mark, index, changePct, funding, openInterest, volume24h } = useMarket()
   const { theme, setTheme } = useTheme()
+  const { connected, publicKey, balance, connecting, connect, disconnect } = useWallet()
   const [marketOpen, setMarketOpen] = useState(false)
   const [themeOpen, setThemeOpen] = useState(false)
   const activeMarket = MARKET_CATALOG.find((market) => market.symbol === symbol) ?? MARKET_CATALOG[0]!
@@ -104,13 +106,28 @@ export default function MarketBar() {
           <IconButton label="Settings" onClick={() => toast.info('Settings', 'Trading preferences are coming next.')}>
             <IconSettings size={15} stroke={1.8} />
           </IconButton>
-          <button
-            onClick={() => toast.info('Wallet connection', 'Wallet integration is not connected in this build yet.')}
-            className="flex items-center gap-2 rounded-[8px] bg-brand-violet px-3 py-2 text-[12px] font-semibold text-white"
-          >
-            <IconWallet size={15} stroke={2} />
-            Connect
-          </button>
+          {connected && publicKey ? (
+            <button
+              onClick={disconnect}
+              title="Disconnect wallet"
+              className="flex items-center gap-2 rounded-[8px] border border-border-subtle bg-surface-card px-3 py-2 text-[12px] font-semibold text-text-primary hover:bg-surface-hover"
+            >
+              <IconWallet size={15} stroke={2} />
+              <span className="tabular-nums">${formatContractBalance(balance)}</span>
+              <span className="max-w-[80px] truncate font-mono text-[10px] text-text-tertiary">
+                {publicKey.slice(0, 4)}…{publicKey.slice(-4)}
+              </span>
+            </button>
+          ) : (
+            <button
+              onClick={connect}
+              disabled={connecting}
+              className="flex items-center gap-2 rounded-[8px] bg-brand-violet px-3 py-2 text-[12px] font-semibold text-white disabled:opacity-60"
+            >
+              <IconWallet size={15} stroke={2} />
+              {connecting ? 'Connecting…' : 'Connect'}
+            </button>
+          )}
         </div>
       </div>
 

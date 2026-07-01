@@ -8,6 +8,13 @@ import {
 import { IconChevronDown } from '@tabler/icons-react'
 import { useLevels } from '../../context/levels-context'
 import { type Side, useMarket } from '../../context/market-context'
+import { formatContractBalance, useWallet } from '../../context/wallet-context'
+import {
+  buildDepositTx,
+  buildOpenPositionTx,
+  randomCommitment,
+  submitAndWait,
+} from '../../lib/contracts'
 import { formatUsd } from './format'
 import { toast } from '../toast/toast-context'
 
@@ -146,7 +153,7 @@ function LeverageSlider({
                 width: 2,
                 height: h,
                 transform: 'translateX(-1px)',
-                backgroundColor: active ? '#807dfe' : 'rgba(17,24,39,0.12)',
+                backgroundColor: active ? '#807dfe' : 'var(--color-border-default)',
                 pointerEvents: 'none',
                 transition: 'background-color 0.1s',
               }}
@@ -163,7 +170,7 @@ function LeverageSlider({
                 width: 1.5,
                 height: h,
                 transform: 'translateX(-0.75px)',
-                backgroundColor: 'rgba(17,24,39,0.10)',
+                backgroundColor: 'var(--color-border-subtle)',
                 opacity: 0.5,
                 pointerEvents: 'none',
               }}
@@ -180,7 +187,7 @@ function LeverageSlider({
                 width: 1.5,
                 height: 5,
                 transform: 'translateX(-0.75px)',
-                backgroundColor: active ? '#807dfe' : 'rgba(17,24,39,0.35)',
+                backgroundColor: active ? '#807dfe' : 'var(--color-text-quaternary)',
                 opacity: active ? 0.7 : 0.8,
                 pointerEvents: 'none',
               }}
@@ -319,10 +326,10 @@ function LeverageSlider({
                 fontWeight: lev === value ? 600 : 500,
                 color:
                   lev > maxValue
-                    ? 'rgba(17,24,39,0.18)'
+                    ? 'var(--color-text-quaternary)'
                     : lev === value
                       ? '#807dfe'
-                      : 'rgba(17,24,39,0.48)',
+                      : 'var(--color-text-tertiary)',
                 padding: 0,
                 lineHeight: 1,
                 transition: 'color 0.15s',
@@ -365,9 +372,13 @@ function PriceInput({
   )
 }
 
+// Prices in the contract use 7 decimal places (stroop-scale)
+const PRICE_SCALE = 1e7
+
 export default function TradingPanel() {
   const { symbol, mark } = useMarket()
   const levels = useLevels()
+  const { connected, publicKey, balance, sign, refreshBalance } = useWallet()
   const [side, setSide] = useState<Side>('long')
   const [orderType, setOrderType] = useState<'market' | 'limit' | 'stop'>('market')
   const [pctSelected, setPctSelected] = useState<number | null>(null)
@@ -377,7 +388,10 @@ export default function TradingPanel() {
   const [limitPrice, setLimitPrice] = useState('')
   const [tpInput, setTpInput] = useState('')
   const [slInput, setSlInput] = useState('')
-  const [walletConnected] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+
+  // balance is in contract units (7 decimals) — convert to display dollars
+  const balanceDollars = Number(balance) / PRICE_SCALE
 
   const margin = Number(amount) || 0
   const notional = margin * leverage
@@ -411,8 +425,8 @@ export default function TradingPanel() {
   const actionLabel = side === 'long' ? 'Long' : 'Short'
   const pctOptions = [10, 25, 50, 75]
 
-  const handleSubmit = () => {
-    if (!walletConnected) {
+  const handleSubmit = async () => {
+    if (!connected || !publicKey) {
       toast.warning('Connect wallet', `Connect a wallet before placing a ${actionLabel.toLowerCase()} order.`)
       return
     }
@@ -433,25 +447,74 @@ export default function TradingPanel() {
       }
     }
 
-    levels.setEntry(mark)
-    const id = toast.progress(
+    setSubmitting(true)
+    const progressId = toast.progress(
       `${actionLabel} ${symbol}`,
-      35,
-      `${orderType.toUpperCase()} · ${formatUsd(notional)} notional · ${leverage}x`,
+      20,
+      'Building transaction…',
     )
 
-    window.setTimeout(() => {
-      toast.update(id, {
-        type: 'success',
-        title: `${actionLabel} order staged`,
-        description: `${symbol} ${side} order is ready for signing.`,
-        progress: undefined,
-        duration: 4500,
-      })
-    }, 650)
+    try {
+      // collateral in contract units (7 decimals)
+      const collateralUnits = BigInt(Math.round(margin * PRICE_SCALE))
 
-    if (takeProfitEnabled && (tpInput || slInput)) {
-      toast.info('TP/SL attached', 'Your chart levels were added to the order preview.', { duration: 3500 })
+      // If wallet balance is insufficient, deposit first
+      if (balance < collateralUnits) {
+        toast.update(progressId, { description: 'Depositing collateral…', progress: 30 })
+        const depositTx = await buildDepositTx(publicKey, collateralUnits - balance)
+        const signedDeposit = await sign(depositTx.toXDR())
+        await submitAndWait(signedDeposit)
+        await refreshBalance()
+      }
+
+      toast.update(progressId, { description: 'Opening position…', progress: 60 })
+
+      const commitment = randomCommitment()
+      const hintPrice = Math.round(mark * PRICE_SCALE)
+      const tpUnits = tpInput ? Math.round(parseFloat(tpInput) * PRICE_SCALE) : 0
+      const slUnits = slInput ? Math.round(parseFloat(slInput) * PRICE_SCALE) : 0
+
+      const openTx = await buildOpenPositionTx(publicKey, {
+        commitment,
+        hintPrice,
+        side: side === 'long' ? 0 : 1,
+        leverage,
+        size: 1_000_000_000,
+        collateral: collateralUnits,
+        tpPrice: tpUnits,
+        slPrice: slUnits,
+      })
+
+      toast.update(progressId, { description: 'Waiting for signature…', progress: 75 })
+      const signedOpen = await sign(openTx.toXDR())
+
+      toast.update(progressId, { description: 'Submitting…', progress: 90 })
+      await submitAndWait(signedOpen)
+
+      levels.setEntry(mark)
+      await refreshBalance()
+
+      toast.update(progressId, {
+        type: 'success',
+        title: `${actionLabel} ${symbol} opened`,
+        description: `${leverage}x · ${formatUsd(notional)} notional`,
+        progress: undefined,
+        duration: 5000,
+      })
+
+      setAmount('')
+      setPctSelected(null)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.update(progressId, {
+        type: 'error',
+        title: 'Order failed',
+        description: msg.slice(0, 120),
+        progress: undefined,
+        duration: 6000,
+      })
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -509,7 +572,10 @@ export default function TradingPanel() {
         <div className="flex items-center justify-between">
           <span className="text-[13px] text-text-secondary">Margin</span>
           <span className="text-[13px] text-text-tertiary">
-            Bal. <span className="text-text-secondary">$12,480.92</span>
+            Bal.{' '}
+            <span className="text-text-secondary">
+              {connected ? `$${formatContractBalance(balance)}` : '—'}
+            </span>
           </span>
         </div>
 
@@ -556,7 +622,7 @@ export default function TradingPanel() {
               key={pct}
               onClick={() => {
                 setPctSelected(pct === pctSelected ? null : pct)
-                setAmount(((12480.92 * pct) / 100).toFixed(2))
+                setAmount(((balanceDollars * pct) / 100).toFixed(2))
               }}
               className={`flex-1 rounded-[5px] py-1.5 text-[13px] font-medium transition-colors ${
                 pctSelected === pct
@@ -570,7 +636,7 @@ export default function TradingPanel() {
           <button
             onClick={() => {
               setPctSelected(100)
-              setAmount('12480.92')
+              setAmount(balanceDollars.toFixed(2))
             }}
             className={`flex-1 rounded-[5px] py-1.5 text-[13px] font-medium transition-colors ${
               pctSelected === 100
@@ -644,11 +710,25 @@ export default function TradingPanel() {
       <div className="flex shrink-0 flex-col gap-1.5 px-3 pb-3">
         <button
           onClick={handleSubmit}
-          className={`w-full rounded-[8px] py-2.5 text-[13px] font-semibold transition-opacity hover:opacity-90 ${
+          disabled={submitting}
+          className={`relative w-full overflow-hidden rounded-[8px] py-2.5 text-[13px] font-semibold transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-70 ${
             side === 'long' ? 'bg-bullish-green text-[#1a1a1a]' : 'bg-bearish-red text-white'
           }`}
         >
-          {actionLabel} {symbol}
+          {submitting && (
+            <motion.span
+              className="absolute inset-0 opacity-20"
+              animate={{ x: ['-100%', '100%'] }}
+              transition={{ duration: 1.2, repeat: Infinity, ease: 'linear' }}
+              style={{
+                background:
+                  'linear-gradient(90deg, transparent 0%, white 50%, transparent 100%)',
+              }}
+            />
+          )}
+          <span className="relative">
+            {submitting ? 'Signing…' : `${actionLabel} ${symbol}`}
+          </span>
         </button>
       </div>
     </div>
