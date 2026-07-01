@@ -1,18 +1,44 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 
-export type ThemeMode = 'light' | 'dark'
+export type ThemeMode =
+  | 'gruvbox'
+  | 'light'
+  | 'dark'
+  | 'nord'
+  | 'solarized'
+  | 'tokyo'
+  | 'dracula'
+  | 'matrix'
+  | 'sepia'
+  | 'slate'
+  | 'contrast'
+
+export const THEMES: { id: ThemeMode; label: string }[] = [
+  { id: 'gruvbox', label: 'Gruvbox' },
+  { id: 'light', label: 'Light' },
+  { id: 'dark', label: 'Dark' },
+  { id: 'nord', label: 'Nord' },
+  { id: 'solarized', label: 'Solarized' },
+  { id: 'tokyo', label: 'Tokyo' },
+  { id: 'dracula', label: 'Dracula' },
+  { id: 'matrix', label: 'Matrix' },
+  { id: 'sepia', label: 'Sepia' },
+  { id: 'slate', label: 'Slate' },
+  { id: 'contrast', label: 'Contrast' },
+]
 
 interface ThemeContextValue {
   theme: ThemeMode
-  toggleTheme: () => void
+  setTheme: (theme: ThemeMode) => void
 }
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined)
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<ThemeMode>(() => {
-    if (typeof window === 'undefined') return 'light'
-    return (localStorage.getItem('cerida-theme') as ThemeMode | null) ?? 'light'
+    if (typeof window === 'undefined') return 'gruvbox'
+    const stored = localStorage.getItem('cerida-theme') as ThemeMode | null
+    return stored && THEMES.some((item) => item.id === stored) ? stored : 'gruvbox'
   })
 
   useEffect(() => {
@@ -23,7 +49,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo(
     () => ({
       theme,
-      toggleTheme: () => setTheme((current) => (current === 'light' ? 'dark' : 'light')),
+      setTheme,
     }),
     [theme],
   )

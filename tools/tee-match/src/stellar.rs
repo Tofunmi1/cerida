@@ -110,7 +110,9 @@ pub fn submit_cancel(
     commitment: &str,
     nullifier: &str,
     proof: &MatchProof,
+    source: &str,
 ) -> Result<()> {
+    let start = Instant::now();
     let proof_json = serde_json::json!({
         "a": proof.proof.a,
         "b": proof.proof.b,
@@ -118,75 +120,102 @@ pub fn submit_cancel(
     })
     .to_string();
 
-    let tmp = std::env::temp_dir().join(format!("tee_cancel_proof_{}.json", std::process::id()));
-    std::fs::write(&tmp, &proof_json)?;
-
-    // cancel_order on orderbook contract
-    let cancel_order = || -> Result<()> {
+    let cancel_order = |contract_id: &str, method: &str| -> Result<()> {
+        let start = Instant::now();
         let mut cmd = std::process::Command::new("stellar");
         cmd.args([
             "contract", "invoke",
-            "--id", orderbook_id,
-            "--source", SOURCE_IDENTITY,
+            "--id", contract_id,
+            "--source", source,
             "--network-passphrase", NETWORK_PASSPHRASE,
             "--rpc-url", &rpc_url(),
             "--",
-            "cancel_order",
-            "--owner", owner,
+            method, "--owner", owner,
             "--commitment", commitment,
             "--nullifier", nullifier,
-            "--proof-file-path", &tmp.to_string_lossy(),
+            "--proof", &proof_json,
         ]);
-        let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar cancel_order: {e}"))?;
+        let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar {method}: {e}"))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("cancel_order failed:\n{stderr}");
+            if stderr.contains("xdr processing error") || stderr.contains("Transaction hash is") {
+                log::warning!("Cancel {method}: CLI reported error but tx likely submitted",
+                    "contract", &contract_id[..8],
+                    "stderr", &stderr[..stderr.len().min(300)]
+                );
+                return Ok(());
+            }
+            log::error!("Cancel {method} failed",
+                "contract", &contract_id[..8],
+                "stderr", &stderr[..stderr.len().min(500)]
+            );
+            anyhow::bail!("{method} on {contract_id} failed:\n{stderr}");
         }
+        log::info!("Cancel submitted on-chain",
+            "contract", &contract_id[..8],
+            "method", method,
+            "commitment", &commitment[..16],
+            "nullifier", &nullifier[..16],
+            "took", log::duration_secs(&start.elapsed())
+        );
         Ok(())
     };
 
-    // cancel_position on perp-engine contract
-    let cancel_position = || -> Result<()> {
-        let mut cmd = std::process::Command::new("stellar");
-        cmd.args([
-            "contract", "invoke",
-            "--id", perp_id,
-            "--source", SOURCE_IDENTITY,
-            "--network-passphrase", NETWORK_PASSPHRASE,
-            "--rpc-url", &rpc_url(),
-            "--",
-            "cancel_position",
-            "--owner", owner,
-            "--commitment", commitment,
-            "--nullifier", nullifier,
-            "--proof-file-path", &tmp.to_string_lossy(),
-        ]);
-        let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar cancel_position: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("cancel_position failed:\n{stderr}");
-        }
-        Ok(())
-    };
-
-    let start = Instant::now();
-    log::debug!("Executing stellar CLI cancel",
-        "orderbook", &orderbook_id[..8],
-        "perp", &perp_id[..8],
-        "owner", owner,
-        "commitment", &commitment[..16]
-    );
-
-    cancel_order()?;
-    cancel_position()?;
-
-    let _ = std::fs::remove_file(&tmp);
+    cancel_order(orderbook_id, "cancel_order")?;
+    cancel_order(perp_id, "cancel_position")?;
 
     log::info!("Cancel submitted on-chain",
         "orderbook", &orderbook_id[..8],
         "perp", &perp_id[..8],
         "commitment", &commitment[..16],
         "nullifier", &nullifier[..16],
+        "took", log::duration_secs(&start.elapsed())
+    );
+    Ok(())
+}
+
+pub fn submit_mark_price(perp_id: &str, source: &str, price: u64) -> Result<()> {
+    let start = Instant::now();
+    let mut cmd = std::process::Command::new("stellar");
+    cmd.args([
+        "contract", "invoke",
+        "--id", perp_id,
+        "--source", source,
+        "--network-passphrase", NETWORK_PASSPHRASE,
+        "--rpc-url", &rpc_url(),
+        "--",
+        "set_mark_price",
+        "--price", &price.to_string(),
+    ]);
+
+    log::debug!("Executing stellar CLI command",
+        "contract", &perp_id[..8],
+        "source", source,
+        "method", "set_mark_price",
+        "price", price
+    );
+
+    let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar invoke set_mark_price: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("xdr processing error") || stderr.contains("Transaction hash is") {
+            log::info!("Mark price submitted (false-positive XDR error)",
+                "contract", &perp_id[..8],
+                "price", price,
+                "took", log::duration_secs(&start.elapsed())
+            );
+            return Ok(());
+        }
+        log::error!("set_mark_price failed",
+            "contract", &perp_id[..8],
+            "stderr", &stderr[..stderr.len().min(500)]
+        );
+        anyhow::bail!("set_mark_price failed:\n{stderr}");
+    }
+
+    log::info!("Mark price submitted on-chain",
+        "contract", &perp_id[..8],
+        "price", price,
         "took", log::duration_secs(&start.elapsed())
     );
     Ok(())

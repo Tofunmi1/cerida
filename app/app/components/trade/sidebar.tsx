@@ -44,22 +44,26 @@ function NavButton({
   )
 }
 
-export default function Sidebar() {
+export default function Sidebar({
+  active,
+  onActive,
+}: {
+  active: string
+  onActive: (label: string) => void
+}) {
   const [collapsed, setCollapsed] = useState(false)
-  const [active, setActive] = useState('Perps')
 
   useEffect(() => {
     const stored = localStorage.getItem('perp-sidebar-collapsed')
     if (stored !== null) setCollapsed(stored === 'true')
   }, [])
 
-  const toggle = () => {
+  const toggle = () =>
     setCollapsed((prev) => {
       const next = !prev
       localStorage.setItem('perp-sidebar-collapsed', String(next))
       return next
     })
-  }
 
   return (
     <aside
@@ -73,13 +77,11 @@ export default function Sidebar() {
         }`}
       >
         <button
-          onClick={() => setActive('Perps')}
+          onClick={() => onActive('Perps')}
           className="flex min-w-0 items-center gap-2"
           title={collapsed ? 'Cerida' : undefined}
         >
-          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-[6px] border border-border-default bg-surface-card text-[13px] font-bold leading-none text-text-primary">
-            C
-          </span>
+          <img src="/apple-touch-icon.png" alt="Cerida" className="h-7 w-7 shrink-0 rounded-[6px] object-cover" />
           {!collapsed && <span className="truncate text-[14px] font-semibold text-text-primary">cerida</span>}
         </button>
       </div>
@@ -90,14 +92,14 @@ export default function Sidebar() {
           label="Perps"
           active={active === 'Perps'}
           collapsed={collapsed}
-          onClick={() => setActive('Perps')}
+          onClick={() => onActive('Perps')}
         />
         <NavButton
           icon={<IconActivity size={18} stroke={1.75} />}
           label="Markets"
           active={active === 'Markets'}
           collapsed={collapsed}
-          onClick={() => setActive('Markets')}
+          onClick={() => onActive('Markets')}
         />
 
         <Divider />
@@ -107,14 +109,14 @@ export default function Sidebar() {
           label="Portfolio"
           active={active === 'Portfolio'}
           collapsed={collapsed}
-          onClick={() => setActive('Portfolio')}
+          onClick={() => onActive('Portfolio')}
         />
         <NavButton
           icon={<IconShieldCheck size={18} stroke={1.75} />}
           label="Risk"
           active={active === 'Risk'}
           collapsed={collapsed}
-          onClick={() => setActive('Risk')}
+          onClick={() => onActive('Risk')}
         />
 
         <Divider />
@@ -124,14 +126,14 @@ export default function Sidebar() {
           label="Docs"
           active={active === 'Docs'}
           collapsed={collapsed}
-          onClick={() => setActive('Docs')}
+          onClick={() => onActive('Docs')}
         />
         <NavButton
           icon={<IconSettings size={18} stroke={1.75} />}
           label="Settings"
           active={active === 'Settings'}
           collapsed={collapsed}
-          onClick={() => setActive('Settings')}
+          onClick={() => onActive('Settings')}
         />
       </nav>
 

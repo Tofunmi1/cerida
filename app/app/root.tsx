@@ -17,9 +17,15 @@ export const Layout = ({ children }: { children: ReactNode }) => (
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <link
         rel="icon"
-        href="/android-chrome-512x512?v=2"
+        href="/favicon.png?v=3"
         type="image/png"
-        sizes="180x180"
+        sizes="512x512"
+      />
+      <link
+        rel="shortcut icon"
+        href="/favicon.png?v=3"
+        type="image/png"
+        sizes="512x512"
       />
       <link
         rel="apple-touch-icon"

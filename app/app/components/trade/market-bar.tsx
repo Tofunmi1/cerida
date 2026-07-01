@@ -2,23 +2,24 @@ import { useMemo, useState } from 'react'
 import {
   IconBell,
   IconChevronDown,
-  IconMoon,
   IconSearch,
   IconSettings,
-  IconSun,
+  IconPalette,
   IconWallet,
   IconX,
 } from '@tabler/icons-react'
 import { MARKET_CATALOG, useMarket, type MarketDefinition } from '../../context/market-context'
-import { useTheme } from '../../context/theme-context'
+import { THEMES, useTheme } from '../../context/theme-context'
 import { formatCompactUsd, formatUsd } from './format'
 import { toast } from '../toast/toast-context'
 
 export default function MarketBar() {
   const { symbol, setSymbol, mark, index, changePct, funding, openInterest, volume24h } = useMarket()
-  const { theme, toggleTheme } = useTheme()
+  const { theme, setTheme } = useTheme()
   const [marketOpen, setMarketOpen] = useState(false)
+  const [themeOpen, setThemeOpen] = useState(false)
   const activeMarket = MARKET_CATALOG.find((market) => market.symbol === symbol) ?? MARKET_CATALOG[0]!
+  const activeTheme = THEMES.find((item) => item.id === theme) ?? THEMES[0]!
   const positive = changePct >= 0
 
   return (
@@ -62,9 +63,41 @@ export default function MarketBar() {
         </div>
 
         <div className="ml-auto flex items-center gap-1">
-          <IconButton label={theme === 'light' ? 'Dark mode' : 'Light mode'} onClick={toggleTheme}>
-            {theme === 'light' ? <IconMoon size={15} stroke={1.8} /> : <IconSun size={15} stroke={1.8} />}
-          </IconButton>
+          <div className="relative">
+            <button
+              onClick={() => setThemeOpen((value) => !value)}
+              className="flex h-9 items-center gap-2 rounded-[8px] border border-border-subtle bg-surface-primary px-2.5 text-[12px] font-semibold text-text-secondary transition-colors hover:text-text-primary"
+              title="Theme"
+            >
+              <IconPalette size={15} stroke={1.8} />
+              <span className="hidden lg:inline">{activeTheme.label}</span>
+              <IconChevronDown size={12} stroke={2} />
+            </button>
+            {themeOpen && (
+              <>
+                <div className="fixed inset-0 z-[70]" onClick={() => setThemeOpen(false)} />
+                <div className="absolute right-0 top-11 z-[71] w-44 rounded-[10px] border border-border-subtle bg-surface-primary p-1 shadow-xl">
+                  {THEMES.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setTheme(item.id)
+                        setThemeOpen(false)
+                      }}
+                      className={`flex w-full items-center justify-between rounded-[7px] px-3 py-2 text-left text-[12px] font-semibold transition-colors ${
+                        theme === item.id
+                          ? 'bg-surface-hover text-text-primary'
+                          : 'text-text-tertiary hover:bg-surface-card hover:text-text-primary'
+                      }`}
+                    >
+                      {item.label}
+                      {theme === item.id && <span className="h-1.5 w-1.5 rounded-full bg-brand-violet" />}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <IconButton label="Alerts" onClick={() => toast.info('Alerts', 'Price alerts are not configured in this build yet.')}>
             <IconBell size={15} stroke={1.8} />
           </IconButton>

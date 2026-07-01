@@ -36,6 +36,10 @@ pub struct Request {
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub order_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orderbook: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -262,6 +266,34 @@ impl ServerClient {
             bids: resp.bids,
             asks: resp.asks,
         })
+    }
+
+    pub fn cancel(&self, cmt: &str, perp: &str, orderbook: &str, owner: &str, identity: &str) -> Result<()> {
+        eprintln!("  [client] cancel: cmt={}… perp={}… orderbook={}… owner={}… identity={}",
+            &cmt[..16], &perp[..8], &orderbook[..8], &owner[..8], identity);
+        let req = Request {
+            cmd: "cancel".to_string(),
+            cmt: Some(cmt.to_string()),
+            perp: Some(perp.to_string()),
+            orderbook: Some(orderbook.to_string()),
+            owner: Some(owner.to_string()),
+            source: Some(identity.to_string()),
+            ..Default::default()
+        };
+        self.send(&req)?;
+        Ok(())
+    }
+
+    pub fn set_mark_price(&self, perp: &str, mark_price: u64) -> Result<()> {
+        eprintln!("  [client] set_mark_price: perp={}… price={}", &perp[..8], mark_price);
+        let req = Request {
+            cmd: "set_mark_price".to_string(),
+            perp: Some(perp.to_string()),
+            price: Some(mark_price),
+            ..Default::default()
+        };
+        self.send(&req)?;
+        Ok(())
     }
 
     pub fn match_orders(&self, cmt_a: &str, cmt_b: &str, perp: &str, source: &str) -> Result<MatchResult> {

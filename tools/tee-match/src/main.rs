@@ -99,7 +99,8 @@ fn main() -> Result<()> {
                 "nonce", nonce
             );
 
-            let store = db::SecretStore::open(&db)?;
+            let sled_db = db::open_db(&db)?;
+            let store = db::SecretStore::open(&sled_db)?;
             let is_market = side >= 2;
             let side = match side { 0 | 3 => 0, _ => 1 };
             let secrets = db::OrderSecrets { side, price, size, leverage, asset, nonce, secret, is_market };
@@ -126,7 +127,8 @@ fn main() -> Result<()> {
                 "out_path", format!("{}", out.display())
             );
 
-            let store = db::SecretStore::open(&db)?;
+            let sled_db = db::open_db(&db)?;
+            let store = db::SecretStore::open(&sled_db)?;
             log::debug!("Loading secrets from DB for commitment", "cmt", &cmt[..16]);
             let secrets = store.get(&cmt)?
                 .ok_or_else(|| anyhow::anyhow!("secrets not found for {cmt}"))?;
@@ -164,7 +166,8 @@ fn main() -> Result<()> {
                 "source", &source
             );
 
-            let store = db::SecretStore::open(&db)?;
+            let sled_db = db::open_db(&db)?;
+            let store = db::SecretStore::open(&sled_db)?;
 
             log::debug!("Loading order A secrets from DB", "cmt_a", &cmt_a[..16]);
             let a = store.get(&cmt_a)?

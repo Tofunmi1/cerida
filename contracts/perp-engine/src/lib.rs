@@ -188,7 +188,7 @@ impl PerpEngine {
         } else {
             TokenClient::new(&env, &cfg.token).transfer(
                 &who,
-                &env.current_contract_address(),
+                env.current_contract_address(),
                 &amount,
             );
             let key = DataKey::Balance(who.clone());
@@ -234,7 +234,7 @@ impl PerpEngine {
     pub fn get_balance(env: Env, who: Address) -> i128 {
         let cfg = Self::config(&env);
         if let Some(vault) = &cfg.vault {
-            CollateralVaultClient::new(&env, &vault).free_balance(&who)
+            CollateralVaultClient::new(&env, vault).free_balance(&who)
         } else {
             Self::read_balance(&env, &who)
         }
@@ -1371,7 +1371,6 @@ impl PerpEngine {
             );
         }
 
-        let cfg = Self::config(&env);
         let liq_note = meta.liquidation_recipient_note.clone();
         let is_partial = !meta.partial_liq_done && settlement > 0;
 
@@ -1569,12 +1568,8 @@ impl PerpEngine {
 
         // Validate price deviation against current TWAP (skip if TWAP not yet established)
         if cfg.twap > 0 {
-            let twap = cfg.twap as u64;
-            let dev = if price > twap {
-                price - twap
-            } else {
-                twap - price
-            };
+            let twap = cfg.twap;
+            let dev = price.abs_diff(twap);
             if dev * 10_000 / twap > MAX_PRICE_DEVIATION_BPS {
                 panic!(
                     "PerpEngine: price deviation too large (price={}, twap={}, max_bps={})",
@@ -4026,7 +4021,7 @@ mod test {
             PositionStatus::Matched,
             "partial liq leaves position open"
         );
-        assert_eq!(pos.partial_liq_done, true);
+        assert!(pos.partial_liq_done);
         assert_eq!(pos.effective_collateral, col / 2);
     }
 
@@ -4118,7 +4113,7 @@ mod test {
 
         let pos = client.get_position(&cmt).unwrap();
         assert_eq!(pos.status, PositionStatus::Liquidated);
-        assert_eq!(pos.partial_liq_done, false, "partial was never triggered");
+        assert!(!pos.partial_liq_done, "partial was never triggered");
     }
 
     #[test]

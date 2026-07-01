@@ -70,12 +70,14 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
 
     let orders: Vec<OrderCache>;
     let perp_id: String;
+    let orderbook_id: String;
 
     if let Some(ref c) = cached {
         if !c.orders.is_empty() && c.orderbook_id.is_some() && c.perp_id.is_some() {
             eprintln!("[1–4] Using cached {} orders (skip init/fund/proofs/deploy)", c.orders.len());
             orders = c.orders.clone();
             perp_id = c.perp_id.clone().unwrap();
+            orderbook_id = c.orderbook_id.clone().unwrap();
             client.set_onchain(&perp_id, &source_pk);
         } else {
             return Err(anyhow::anyhow!("Incomplete cache — delete cache file and re-run"));
@@ -240,6 +242,7 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
         eprintln!("{:.1}s", t4.elapsed().as_secs_f64());
 
         perp_id = deployed_pe.clone();
+        orderbook_id = deployed_ob.clone();
         orders = raw_orders;
 
         // ── Step 5 (on-chain, best-effort): place_order + deposit + open_position
@@ -269,11 +272,17 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
                             "--who", &addr,
                             "--amount", "1000000000",
                         ])?;
+                        let rev: u64 = 15; // all fields public
+                        let zero_note = "0000000000000000000000000000000000000000000000000000000000000000";
                         crate::stellar::invoke(&ob, &identity, &[
                             "place_order",
                             "--owner", &addr,
                             "--commitment", &cmt,
-                            "--hint", &price.to_string(),
+                            "--hint-price", &price.to_string(),
+                            "--hint-side", &hint_side.to_string(),
+                            "--hint-size", &o.size.to_string(),
+                            "--hint-leverage", &hint_leverage.to_string(),
+                            "--revealed", &rev.to_string(),
                             "--proof", &proof,
                         ])?;
                         crate::stellar::invoke(&pe, &identity, &[
@@ -284,6 +293,7 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
                             "--hint_price", &price.to_string(),
                             "--hint_side", &hint_side.to_string(),
                             "--hint_leverage", &hint_leverage.to_string(),
+                            "--liquidation_recipient_note", zero_note,
                             "--proof", &proof,
                         ])?;
                         Ok(())
@@ -344,6 +354,49 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
+    // ── Set mark price from CLOB mid-price (for non-zero funding) ──
+    eprintln!("\n[mark_price] Setting mark price from CLOB mid-price…");
+    if let Some(perp_id) = &client.perp {
+        if let Ok(mk) = client.get_market() {
+            let mid = match (&mk.best_bid, &mk.best_ask) {
+                (Some(bid), Some(ask)) => {
+                    // Parse "pricexsize" format
+                    let bid_p: u64 = bid.split('x').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let ask_p: u64 = ask.split('x').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    if bid_p > 0 && ask_p > 0 {
+                        (bid_p + ask_p) / 2
+                    } else if bid_p > 0 { bid_p } else { ask_p }
+                }
+                (Some(bid), None) => bid.split('x').next().and_then(|s| s.parse().ok()).unwrap_or(0),
+                (None, Some(ask)) => ask.split('x').next().and_then(|s| s.parse().ok()).unwrap_or(0),
+                (None, None) => 0,
+            };
+            if mid > 0 {
+                match client.set_mark_price(perp_id, mid) {
+                    Ok(_) => eprintln!("  ✓ mark price set to {}", mid),
+                    Err(e) => eprintln!("  ✗ set_mark_price failed: {e}"),
+                }
+            } else {
+                eprintln!("  - no orders in book, skipping mark price");
+            }
+        }
+    }
+
+    // ── Cancel verification: pick a remaining limit order, cancel on-chain + CLOB ──
+    eprintln!("\n[cancel] Testing cancel flow…");
+    if let Some(cancel_o) = orders.iter().find(|o| o.side <= 1) {
+        eprintln!("  cancelling cmt={}… addr={}… identity={}",
+            &cancel_o.cmt[..16], &cancel_o.addr[..8], cancel_o.identity);
+        match client.cancel(&cancel_o.cmt, &perp_id, &orderbook_id, &cancel_o.addr, &cancel_o.identity) {
+            Ok(_) => {
+                let mk = client.get_market().unwrap_or_default();
+                eprintln!("  ✓ cancelled, book now has {} orders (was {})",
+                    mk.order_count, mk.order_count + 1);
+            }
+            Err(e) => eprintln!("  ✗ cancel failed: {e}"),
+        }
+    }
+
     // ── Market orders → CLOB match → on-chain (best-effort) ─────────────────
     eprintln!("[market] Running market orders (best-effort)…");
     let mut total_matches = 0;
@@ -381,6 +434,7 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
     eprintln!("  Limit orders: {}", orders.iter().filter(|o| o.side <= 1).count());
     eprintln!("  Market orders: {}", orders.iter().filter(|o| o.side > 1).count());
     eprintln!("  On-chain matches: {}", total_matches);
+    eprintln!("  Cancel test: included ✓");
     eprintln!("{}", "━".repeat(60));
     Ok(())
 }

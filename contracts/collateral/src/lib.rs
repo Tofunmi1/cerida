@@ -56,11 +56,7 @@ impl CollateralVault {
             panic!("CollateralVault: amount must be positive");
         }
         let cfg = Self::config(&env);
-        TokenClient::new(&env, &cfg.token).transfer(
-            &from,
-            &env.current_contract_address(),
-            &amount,
-        );
+        TokenClient::new(&env, &cfg.token).transfer(&from, env.current_contract_address(), &amount);
         let key = DataKey::Free(from.clone());
         let bal = Self::read_free(&env, &from);
         env.storage().persistent().set(&key, &(bal + amount));

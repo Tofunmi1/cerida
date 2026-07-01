@@ -165,6 +165,7 @@ pub fn deploy_and_place(
     // ── Open position A (Alice) ──────────────────────────────────────────
     eprintln!("  [position] Opening position A (Alice, cmt={}…)…", &cmt_a_hex[..12]);
     eprintln!("    collateral={} hint_price={} hint_side={} leverage={}", COLLATERAL, hint_price_a, hint_side_a, LEVERAGE);
+    let zero_note = "0000000000000000000000000000000000000000000000000000000000000000";
     invoke(
         &perp_id,
         &alice.1,
@@ -174,6 +175,7 @@ pub fn deploy_and_place(
             "--hint_price", &hint_price_a.to_string(),
             "--hint_side", &hint_side_a.to_string(),
             "--hint_leverage", &LEVERAGE.to_string(),
+            "--liquidation_recipient_note", zero_note,
             "--proof", proof_a_json,
         ],
     )?;
@@ -195,6 +197,7 @@ pub fn deploy_and_place(
             "--hint_price", &hint_price_b.to_string(),
             "--hint_side", &hint_side_b.to_string(),
             "--hint_leverage", &LEVERAGE.to_string(),
+            "--liquidation_recipient_note", zero_note,
             "--proof", proof_b_json,
         ],
     )?;
@@ -496,6 +499,12 @@ pub fn private_trading_e2e(
             "--hint_price", "100000000",
             "--hint_side", "0",
             "--hint_leverage", "1",
+            "--hint_size", "0",
+            "--tif", "GTC",
+            "--expiry_ledger", "0",
+            "--tp_price", "0",
+            "--sl_price", "0",
+            "--liquidation_recipient_note", "0000000000000000000000000000000000000000000000000000000000000000",
             "--liquidation_recipient", &liq.0,
             "--note_proof", &proof_json(&note_proof.proof),
             "--commit_proof", &proof_json(&commit_proof.proof),

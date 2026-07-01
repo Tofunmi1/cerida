@@ -1,5 +1,6 @@
 use crate::log;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 pub(crate) fn short_id(id: &str) -> &str {
@@ -8,7 +9,7 @@ pub(crate) fn short_id(id: &str) -> &str {
 
 // ── Types ──
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
     Bid = 0,
     Ask = 1,
@@ -23,7 +24,7 @@ impl Side {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OrderType {
     Limit,
     Market,
@@ -33,18 +34,20 @@ pub enum OrderType {
     StopMarket { stop_price: u64 },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub id: String,
     pub side: Side,
     pub price: u64,
     pub size: u64,
     pub remaining: u64,
+    #[serde(skip)]
     pub timestamp_ns: u128,
     pub order_type: OrderType,
+    pub asset: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fill {
     pub taker_id: String,
     pub maker_id: String,
@@ -55,7 +58,7 @@ pub struct Fill {
 
 // ── Order Book ──
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct OrderBook {
     /// Price → FIFO queue of order IDs
     bids: BTreeMap<u64, VecDeque<String>>,
@@ -74,7 +77,8 @@ pub struct OrderBook {
     /// Last executed price (from most recent fill)
     last_price: u64,
 
-    /// Total fills generated
+    /// Total fills generated (not persisted — ephemeral)
+    #[serde(skip)]
     pub fills: Vec<Fill>,
 }
 
@@ -188,6 +192,7 @@ impl OrderBook {
             remaining: size,
             timestamp_ns: 0,
             order_type: OrderType::Limit,
+            asset: 0,
         };
         let book = match side {
             Side::Bid => &mut self.bids,
@@ -535,6 +540,7 @@ pub fn order(id: &str, side: Side, price: u64, size: u64, order_type: OrderType)
         remaining: size,
         timestamp_ns: now_nanos(),
         order_type,
+        asset: 0,
     }
 }
 

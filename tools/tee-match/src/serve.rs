@@ -1,6 +1,7 @@
 use crate::{db, engine, log, proof, stellar};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -100,8 +101,10 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
     );
 
     let start = Instant::now();
-    let store = db::SecretStore::open(&db_path)?;
-    let book = engine::OrderBook::new();
+    let sled_db = db::open_db(&db_path)?;
+    let store = db::SecretStore::open(&sled_db)?;
+    let book_store = db::BookStore::open(&sled_db)?;
+    let books = book_store.load_all()?;
     let listener = TcpListener::bind(addr)?;
     log::info!("TCP listener bound",
         "addr", addr,
@@ -115,12 +118,14 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
     );
 
     let store = Arc::new(store);
-    let book = Arc::new(Mutex::new(book));
+    let books = Arc::new(Mutex::new(books));
+    let book_store = Arc::new(book_store);
     let keys = Arc::new(keys_dir);
 
     for stream in listener.incoming() {
         let store = store.clone();
-        let book = book.clone();
+        let books = books.clone();
+        let book_store = book_store.clone();
         let keys = keys.clone();
         std::thread::spawn(move || {
             use std::io::{BufRead, Write};
@@ -180,10 +185,11 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
                 "init" => handle_init(&store, &keys, &req),
                 "commit-proof" => handle_commit_proof(&store, &keys, &req),
                 "match" => handle_match(&store, &keys, &req),
-                "place" => handle_place(&store, &book, &keys, &req),
-                "cancel" => handle_cancel(&store, &book, &keys, &req),
-                "market" => handle_market(&store, &book, &keys, &req),
-                "get_market" => handle_get_market(&book),
+                "place" => handle_place(&store, &book_store, &books, &keys, &req),
+                "cancel" => handle_cancel(&store, &book_store, &books, &keys, &req),
+                "market" => handle_market(&store, &book_store, &books, &keys, &req),
+                "set_mark_price" => handle_set_mark_price(&req),
+                "get_market" => handle_get_market(&books, &req),
                 other => {
                     log::warning!("Unknown command", "cmd", other, "peer", &peer);
                     Response { ok: false, error: Some(format!("unknown cmd: {other}")), ..Default::default() }
@@ -428,10 +434,11 @@ fn secrets_to_order(cmt: &str, secrets: &db::OrderSecrets, order_type: engine::O
         remaining: secrets.size,
         timestamp_ns: engine::now_nanos(),
         order_type,
+        asset: secrets.asset,
     }
 }
 
-fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: &PathBuf, req: &Request) -> Response {
+fn handle_place(store: &db::SecretStore, book_store: &db::BookStore, books: &Mutex<HashMap<u64, engine::OrderBook>>, keys: &PathBuf, req: &Request) -> Response {
     let start = Instant::now();
     let cmt = match req.cmt.as_ref() {
         Some(c) => c,
@@ -442,7 +449,6 @@ fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: 
         Some(o) => o,
         None => return err(format!("unknown order_type: {ot_str}")),
     };
-    // Patch in stop_price for stop orders
     if let engine::OrderType::StopLimit { ref mut stop_price } = ot {
         *stop_price = req.stop_price.unwrap_or(0);
     }
@@ -457,8 +463,10 @@ fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: 
     };
 
     let order = secrets_to_order(cmt, &secrets, ot);
+    let asset = order.asset;
     log::info!("handle_place: placing order",
         "cmt", engine::short_id(cmt),
+        "asset", asset,
         "secrets_side", secrets.side,
         "secrets_price", secrets.price,
         "secrets_size", secrets.size,
@@ -468,9 +476,12 @@ fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: 
         "order_type", format!("{:?}", order.order_type)
     );
 
-    // Do CLOB match and collect book state, then release lock
     let (fills, best_bid, best_ask, spread, order_count) = {
-        let mut book = book.lock().unwrap();
+        let mut books = books.lock().unwrap();
+        let book = books.entry(asset).or_insert_with(|| {
+            log::info!("Creating new OrderBook", "asset", asset);
+            engine::OrderBook::new()
+        });
         let fills = match book.place(order) {
             Ok(f) => f,
             Err(e) => return err(format!("place failed: {e}")),
@@ -497,7 +508,7 @@ fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: 
         };
         if let (Some(perp), Some(source)) = (perp, source) {
             let maker_side = f.taker_side.opposite();
-            if let Some(result) = do_match(store, keys, cmt, &f.maker_id, perp, source, maker_side, f.price, f.size, Some(book)) {
+            if let Some(result) = do_match(store, keys, cmt, &f.maker_id, perp, source, maker_side, f.price, f.size, Some((books, asset))) {
                 fj.match_price = Some(result.match_price);
                 fj.match_size = Some(result.match_size);
                 fj.nullifier_a = Some(result.nullifier_a);
@@ -507,8 +518,13 @@ fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: 
         fj
     }).collect();
 
+    if let Err(e) = book_store.save_book(asset, &books.lock().unwrap().get(&asset).unwrap()) {
+        log::error!("Failed to persist OrderBook", "err", e.to_string());
+    }
+
     log::info!("Order placed in book",
         "cmt", engine::short_id(cmt),
+        "asset", asset,
         "type", ot_str,
         "fills", fill_json.len(),
         "auto_matched", perp.is_some(),
@@ -526,7 +542,7 @@ fn handle_place(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: 
     }
 }
 
-fn handle_cancel(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: &PathBuf, req: &Request) -> Response {
+fn handle_cancel(store: &db::SecretStore, book_store: &db::BookStore, books: &Mutex<HashMap<u64, engine::OrderBook>>, keys: &PathBuf, req: &Request) -> Response {
     let cmt = match req.cmt.as_ref() {
         Some(c) => c,
         None => return err("missing cmt"),
@@ -558,7 +574,7 @@ fn handle_cancel(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys:
 
     let nullifier = format!("{:0>64x}", out.public_inputs[0].parse::<num_bigint::BigUint>().unwrap());
 
-    if let Err(e) = stellar::submit_cancel(orderbook, perp, owner, cmt, &nullifier, &out) {
+    if let Err(e) = stellar::submit_cancel(orderbook, perp, owner, cmt, &nullifier, &out, source) {
         log::error!("Cancel on-chain submission failed",
             "cmt", &cmt[..16],
             "err", e.to_string()
@@ -566,11 +582,18 @@ fn handle_cancel(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys:
         return err(format!("cancel on-chain submission failed: {e}"));
     }
 
-    // Remove from CLOB book (best-effort; might already be filled/matched)
-    let mut book = book.lock().unwrap();
-    match book.cancel(cmt) {
-        Ok(_) => {}
-        Err(_) => log::warning!("Cancel: order not in CLOB book", "cmt", &cmt[..16]),
+    let asset = secrets.asset;
+    {
+        let mut books = books.lock().unwrap();
+        if let Some(book) = books.get_mut(&asset) {
+            match book.cancel(cmt) {
+                Ok(_) => {}
+                Err(_) => log::warning!("Cancel: order not in CLOB book", "cmt", &cmt[..16]),
+            }
+            if let Err(e) = book_store.save_book(asset, book) {
+                log::error!("Failed to persist OrderBook", "err", e.to_string());
+            }
+        }
     }
 
     log::info!("Order cancelled on-chain and CLOB",
@@ -584,7 +607,7 @@ fn handle_cancel(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys:
     }
 }
 
-fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys: &PathBuf, req: &Request) -> Response {
+fn handle_market(store: &db::SecretStore, book_store: &db::BookStore, books: &Mutex<HashMap<u64, engine::OrderBook>>, keys: &PathBuf, req: &Request) -> Response {
     let start = Instant::now();
     let cmt = match req.cmt.as_ref() {
         Some(c) => c,
@@ -597,8 +620,10 @@ fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys:
     };
 
     let order = secrets_to_order(cmt, &secrets, engine::OrderType::Market);
+    let asset = order.asset;
     log::info!("handle_market: placing order",
         "cmt", engine::short_id(cmt),
+        "asset", asset,
         "secrets_side", secrets.side,
         "secrets_price", secrets.price,
         "secrets_size", secrets.size,
@@ -607,9 +632,12 @@ fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys:
         "order_size", order.size
     );
 
-    // Do CLOB match and collect book state, then release lock
     let (fills, best_bid, best_ask, spread, order_count) = {
-        let mut book = book.lock().unwrap();
+        let mut books = books.lock().unwrap();
+        let book = books.entry(asset).or_insert_with(|| {
+            log::info!("Creating new OrderBook", "asset", asset);
+            engine::OrderBook::new()
+        });
         let fills = match book.place(order) {
             Ok(f) => f,
             Err(e) => return err(format!("market order failed: {e}")),
@@ -636,7 +664,7 @@ fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys:
         };
         if let (Some(perp), Some(source)) = (perp, source) {
             let maker_side = f.taker_side.opposite();
-            if let Some(result) = do_match(store, keys, cmt, &f.maker_id, perp, source, maker_side, f.price, f.size, Some(book)) {
+            if let Some(result) = do_match(store, keys, cmt, &f.maker_id, perp, source, maker_side, f.price, f.size, Some((books, asset))) {
                 fj.match_price = Some(result.match_price);
                 fj.match_size = Some(result.match_size);
                 fj.nullifier_a = Some(result.nullifier_a);
@@ -646,8 +674,13 @@ fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys:
         fj
     }).collect();
 
+    if let Err(e) = book_store.save_book(asset, &books.lock().unwrap().get(&asset).unwrap()) {
+        log::error!("Failed to persist OrderBook", "err", e.to_string());
+    }
+
     log::info!("Market order executed",
         "cmt", engine::short_id(cmt),
+        "asset", asset,
         "fills", fill_json.len(),
         "auto_matched", perp.is_some(),
         "took", log::duration_secs(&start.elapsed())
@@ -664,18 +697,51 @@ fn handle_market(store: &db::SecretStore, book: &Mutex<engine::OrderBook>, keys:
     }
 }
 
-fn handle_get_market(book: &Mutex<engine::OrderBook>) -> Response {
-    let book = book.lock().unwrap();
-    Response {
-        ok: true,
-        best_bid: book.best_bid().map(|(p, s)| format!("{p}x{s}")),
-        best_ask: book.best_ask().map(|(p, s)| format!("{p}x{s}")),
-        spread: book.spread(),
-        order_count: Some(book.order_count()),
-        depth: Some(book.depth(engine::Side::Bid, 5).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
-        bids: Some(book.depth(engine::Side::Bid, 10).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
-        asks: Some(book.depth(engine::Side::Ask, 10).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
-        ..Default::default()
+fn handle_set_mark_price(req: &Request) -> Response {
+    let perp = match req.perp.as_ref() {
+        Some(p) => p,
+        None => return err("missing perp"),
+    };
+    let price = match req.price {
+        Some(p) => p,
+        None => return err("missing price"),
+    };
+    let source = req.source.as_deref().unwrap_or("e2e");
+
+    log::info!("Setting mark price on-chain",
+        "perp", &perp[..8],
+        "price", price,
+        "source", source
+    );
+
+    if let Err(e) = stellar::submit_mark_price(perp, source, price) {
+        log::error!("set_mark_price on-chain failed",
+            "err", e.to_string()
+        );
+        return err(e);
+    }
+
+    log::info!("Mark price set on-chain", "price", price);
+    Response { ok: true, ..Default::default() }
+}
+
+fn handle_get_market(books: &Mutex<HashMap<u64, engine::OrderBook>>, req: &Request) -> Response {
+    let asset = req.asset.unwrap_or(0);
+    let books = books.lock().unwrap();
+    if let Some(book) = books.get(&asset) {
+        Response {
+            ok: true,
+            best_bid: book.best_bid().map(|(p, s)| format!("{p}x{s}")),
+            best_ask: book.best_ask().map(|(p, s)| format!("{p}x{s}")),
+            spread: book.spread(),
+            order_count: Some(book.order_count()),
+            depth: Some(book.depth(engine::Side::Bid, 5).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
+            bids: Some(book.depth(engine::Side::Bid, 10).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
+            asks: Some(book.depth(engine::Side::Ask, 10).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
+            ..Default::default()
+        }
+    } else {
+        Response { ok: true, order_count: Some(0), ..Default::default() }
     }
 }
 
@@ -690,7 +756,7 @@ fn do_match(
     maker_side: engine::Side,
     maker_price: u64,
     maker_size: u64,
-    book: Option<&Mutex<engine::OrderBook>>,
+    books: Option<(&Mutex<HashMap<u64, engine::OrderBook>>, u64)>,
 ) -> Option<MatchResultData> {
     let a = store.get(cmt_a).ok()??;
     let b = store.get(cmt_b).ok()??;
@@ -702,8 +768,10 @@ fn do_match(
         Err(e) => {
             log::error!("Auto-match: proof generation failed", "cmt_a", &cmt_a[..16], "err", e.to_string());
             // Restore maker order to CLOB book (if applicable)
-            if let Some(b) = book {
-                b.lock().unwrap().restore_order(cmt_b, maker_side, maker_price, maker_size);
+            if let Some((books, asset)) = books {
+                if let Some(book) = books.lock().unwrap().get_mut(&asset) {
+                    book.restore_order(cmt_b, maker_side, maker_price, maker_size);
+                }
             }
             return None;
         }
@@ -712,8 +780,10 @@ fn do_match(
     if let Err(e) = stellar::submit_match(perp, source, cmt_a, cmt_b, &out) {
         log::error!("Auto-match: on-chain submission failed", "cmt_a", &cmt_a[..16], "err", e.to_string());
         // Restore maker order to CLOB book (if applicable)
-        if let Some(b) = book {
-            b.lock().unwrap().restore_order(cmt_b, maker_side, maker_price, maker_size);
+        if let Some((books, asset)) = books {
+            if let Some(book) = books.lock().unwrap().get_mut(&asset) {
+                book.restore_order(cmt_b, maker_side, maker_price, maker_size);
+            }
         }
         return None;
     }

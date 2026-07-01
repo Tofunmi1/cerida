@@ -15,7 +15,7 @@ export function ToastContainer() {
   if (!mounted) return null
 
   return createPortal(
-    <div className="fixed bottom-4 right-4 z-[99999] flex flex-col gap-3 max-w-[360px] w-full pointer-events-none items-end">
+    <div className="fixed top-[72px] right-4 z-[99999] flex flex-col gap-3 max-w-[360px] w-full pointer-events-none items-end">
       <AnimatePresence mode="popLayout">
         {toasts.map((toast) => (
           <ToastCard key={toast.id} toast={toast} onClose={dismiss} />

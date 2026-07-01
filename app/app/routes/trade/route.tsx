@@ -10,6 +10,7 @@ import { ToastContainer } from '../../components/toast/toast-container'
 import { ToastProvider } from '../../components/toast/toast-context'
 import MarketBar from '../../components/trade/market-bar'
 import Sidebar from '../../components/trade/sidebar'
+import PortfolioPage from '../../components/trade/portfolio-page'
 
 export const meta = () => [{ title: 'Cerida Perp' }]
 
@@ -298,7 +299,13 @@ function Widget({
   )
 }
 
-function TradeBoard() {
+function TradeBoard({
+  active,
+  onActive,
+}: {
+  active: string
+  onActive: (label: string) => void
+}) {
   const [items, setItems] = useState(INITIAL_ITEMS)
   const [layout, setLayout] = useState(INITIAL_LAYOUT)
   const { ref, width, rowHeight } = useGridSize()
@@ -352,50 +359,56 @@ function TradeBoard() {
 
   return (
     <div className="flex h-screen min-w-0 bg-page">
-      <Sidebar />
+      <Sidebar active={active} onActive={onActive} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <MarketBar />
-        <div ref={ref} className="min-h-0 flex-1 overflow-auto">
-          <ReactGridLayout
-            layout={layout}
-            onLayoutChange={(next: Layout) => setLayout(next)}
-            cols={COLS}
-            rowHeight={rowHeight}
-            width={width}
-            margin={[GAP, GAP]}
-            containerPadding={[PAD, PAD]}
-            draggableHandle=".widget-handle"
-            draggableCancel="input,button,select,textarea,a"
-            resizeHandles={['s', 'e', 'se', 'w', 'n', 'sw', 'ne', 'nw']}
-            compactType="vertical"
-            preventCollision={false}
-            allowOverlap={false}
-            useCSSTransforms
-          >
-          {items.map((item) => {
-            const activeTab = item.tabs[item.active] ?? item.tabs[0]!
-            if (activeTab.type === 'chart') {
-              return (
-                <div key={item.id} className="h-full overflow-hidden rounded-[8px] bg-surface-primary">
-                  <WidgetContent type="chart" />
-                </div>
-              )
-            }
-            return (
-              <div key={item.id} className="h-full">
-                  <Widget
-                    tabs={item.tabs.map((tab) => ({ id: tab.id, label: CATALOG[tab.type].label }))}
-                    active={item.active}
-                    content={<WidgetContent type={activeTab.type} />}
-                    onSelect={(index) => selectTab(item.id, index)}
-                    onAddTab={(type) => addTab(item.id, type)}
-                    onCloseTab={(index) => closeTab(item.id, index)}
-                    onClose={() => removeWidget(item.id)}
-                  />
-                </div>
-              )
-            })}
-          </ReactGridLayout>
+        {active === 'Portfolio' && <PortfolioPage />}
+        <div
+          className="flex min-w-0 flex-1 flex-col"
+          style={{ display: active === 'Portfolio' ? 'none' : 'flex' }}
+        >
+          <MarketBar />
+          <div ref={ref} className="min-h-0 flex-1 overflow-auto">
+            <ReactGridLayout
+              layout={layout}
+              onLayoutChange={(next: Layout) => setLayout(next)}
+              cols={COLS}
+              rowHeight={rowHeight}
+              width={width}
+              margin={[GAP, GAP]}
+              containerPadding={[PAD, PAD]}
+              draggableHandle=".widget-handle"
+              draggableCancel="input,button,select,textarea,a"
+              resizeHandles={['s', 'e', 'se', 'w', 'n', 'sw', 'ne', 'nw']}
+              compactType="vertical"
+              preventCollision={false}
+              allowOverlap={false}
+              useCSSTransforms
+            >
+              {items.map((item) => {
+                const activeTab = item.tabs[item.active] ?? item.tabs[0]!
+                if (activeTab.type === 'chart') {
+                  return (
+                    <div key={item.id} className="h-full overflow-hidden rounded-[8px] bg-surface-primary">
+                      <WidgetContent type="chart" />
+                    </div>
+                  )
+                }
+                return (
+                  <div key={item.id} className="h-full">
+                    <Widget
+                      tabs={item.tabs.map((tab) => ({ id: tab.id, label: CATALOG[tab.type].label }))}
+                      active={item.active}
+                      content={<WidgetContent type={activeTab.type} />}
+                      onSelect={(index) => selectTab(item.id, index)}
+                      onAddTab={(type) => addTab(item.id, type)}
+                      onCloseTab={(index) => closeTab(item.id, index)}
+                      onClose={() => removeWidget(item.id)}
+                    />
+                  </div>
+                )
+              })}
+            </ReactGridLayout>
+          </div>
         </div>
       </div>
     </div>
@@ -403,12 +416,14 @@ function TradeBoard() {
 }
 
 export default function TradeRoute() {
+  const [nav, setNav] = useState('Perps')
+
   return (
     <ThemeProvider>
       <ToastProvider>
         <MarketProvider>
           <LevelsProvider>
-            <TradeBoard />
+            <TradeBoard active={nav} onActive={setNav} />
             <ToastContainer />
           </LevelsProvider>
         </MarketProvider>
