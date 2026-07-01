@@ -152,6 +152,7 @@ pub struct PositionMeta {
     pub effective_collateral: i128, // starts == collateral; halved on partial liquidation
     pub partial_liq_done: bool, // true after one partial liquidation
     pub liquidation_recipient_note: BytesN<32>, // zeros → fallback to owner balance
+    pub from_note: bool,    // true iff opened via open_position_from_note
 }
 
 #[contract]
@@ -419,6 +420,7 @@ impl PerpEngine {
             effective_collateral: collateral,
             partial_liq_done: false,
             liquidation_recipient_note,
+            from_note: false,
         };
         env.storage().persistent().set(&pos_key, &meta);
         env.storage()
@@ -1144,6 +1146,7 @@ impl PerpEngine {
             effective_collateral: collateral,
             partial_liq_done: false,
             liquidation_recipient_note,
+            from_note: true,
         };
         env.storage().persistent().set(&pos_key, &meta);
         env.storage()
@@ -1193,6 +1196,9 @@ impl PerpEngine {
                 "PerpEngine: can only cancel an open position (status={:?})",
                 meta.status as u32
             );
+        }
+        if !meta.from_note {
+            panic!("PerpEngine: position was not opened from a note");
         }
 
         let mut pi: Vec<Bn254Fr> = Vec::new(&env);
@@ -1262,6 +1268,9 @@ impl PerpEngine {
                 "PerpEngine: can only close a matched position (status={:?})",
                 meta.status as u32
             );
+        }
+        if !meta.from_note {
+            panic!("PerpEngine: position was not opened from a note");
         }
 
         let mut pi: Vec<Bn254Fr> = Vec::new(&env);
@@ -2266,6 +2275,7 @@ mod test {
                 effective_collateral: collateral,
                 partial_liq_done: false,
                 liquidation_recipient_note: BytesN::from_array(env, &[0u8; 32]),
+                from_note: false,
             };
             let key = DataKey::Position(commitment.clone());
             env.storage().persistent().set(&key, &meta);
@@ -3474,6 +3484,7 @@ mod test {
                 effective_collateral: collateral,
                 partial_liq_done: false,
                 liquidation_recipient_note: BytesN::from_array(env, &[0u8; 32]),
+                from_note: false,
             };
             let key = DataKey::Position(commitment.clone());
             env.storage().persistent().set(&key, &meta);
@@ -3707,6 +3718,7 @@ mod test {
                 effective_collateral: collateral,
                 partial_liq_done: false,
                 liquidation_recipient_note: BytesN::from_array(env, &[0u8; 32]),
+                from_note: false,
             };
             let key = DataKey::Position(commitment.clone());
             env.storage().persistent().set(&key, &meta);
