@@ -15,6 +15,7 @@ import {
   randomCommitment,
   submitAndWait,
 } from '../../lib/contracts'
+import { positionsStore } from '../../lib/positions-store'
 import { formatUsd } from './format'
 import { toast } from '../toast/toast-context'
 
@@ -490,6 +491,14 @@ export default function TradingPanel() {
 
       toast.update(progressId, { description: 'Submitting…', progress: 90 })
       await submitAndWait(signedOpen)
+
+      positionsStore.add({
+        commitment,
+        symbol,
+        side: side === 'long' ? 0 : 1,
+        leverage,
+        openedAt: Date.now(),
+      })
 
       levels.setEntry(mark)
       await refreshBalance()
