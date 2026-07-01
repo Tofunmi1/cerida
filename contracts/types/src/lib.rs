@@ -115,9 +115,18 @@ pub enum OrderStatus {
 #[derive(Clone)]
 pub struct OracleConfig {
     pub admin: Address,
+    pub price: u64,        // latest submitted spot price
+    pub last_updated: u64, // ledger of last update
+    pub heartbeat: u64,    // max ledgers before price is considered stale
+    pub twap: u64,         // arithmetic mean of last TWAP_WINDOW samples
+}
+
+/// A single price observation stored in the TWAP ring buffer.
+#[contracttype]
+#[derive(Clone)]
+pub struct PriceSample {
     pub price: u64,
-    pub last_updated: u64,
-    pub heartbeat: u64,
+    pub ledger: u64,
 }
 
 // ── Match record linking two matched positions ─────────────────────────

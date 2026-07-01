@@ -9,12 +9,15 @@ use soroban_sdk::{
 };
 use types::{
     CollateralVaultClient, FundingState, Groth16Error, Groth16Proof, MatchRecord, OracleConfig,
-    TimeInForce,
+    PriceSample, TimeInForce,
 };
 
 include!(concat!(env!("OUT_DIR"), "/vk.rs"));
 
-const FUNDING_INTERVAL: u64 = 720; // ledgers (~1 hour at 5s per ledger)
+const FUNDING_INTERVAL: u64 = 5760; // ~8 hours at 5s/ledger; standard perp funding period
+const TWAP_WINDOW: u64 = 8; // number of price samples for TWAP (covers ~8 heartbeat periods)
+const MAX_FUNDING_RATE_BPS: i64 = 75; // ±0.75% cap per funding interval (industry standard)
+const MAX_PRICE_DEVIATION_BPS: u64 = 5000; // new price must be within 50% of TWAP
 const MAINTENANCE_MARGIN_BPS: i128 = 500; // 5% of notional
 const PARTIAL_REWARD_BPS: i128 = 100; // 1% of freed half-collateral → liquidator
 const FULL_REWARD_BPS: i128 = 150; // 1.5% of remaining collateral → liquidator
@@ -104,6 +107,8 @@ pub enum DataKey {
     MarkPrice,
     InsuranceFund,
     BadDebt,
+    TwapSample(u64), // ring buffer slot 0..TWAP_WINDOW-1 → PriceSample
+    TwapHead,        // next write position in ring buffer
 }
 
 #[contracttype]
@@ -1507,19 +1512,83 @@ impl PerpEngine {
         Self::config(&env)
     }
 
+    /// Initialize oracle by setting the oracle admin (called once after initialize).
+    /// Oracle admin is separate from the protocol admin.
+    pub fn set_oracle_admin(env: Env, admin: Address, oracle_admin: Address, heartbeat: u64) {
+        admin.require_auth();
+        let protocol_cfg = Self::config(&env);
+        if protocol_cfg.admin != admin {
+            panic!("PerpEngine: only protocol admin can set oracle admin");
+        }
+        let existing = Self::read_oracle_config(&env);
+        if let Some(ref cfg) = existing {
+            if cfg.admin != admin && cfg.price != 0 {
+                panic!("PerpEngine: oracle already has an admin");
+            }
+        }
+        let cfg = OracleConfig {
+            admin: oracle_admin.clone(),
+            price: existing.as_ref().map(|c| c.price).unwrap_or(0),
+            last_updated: existing.as_ref().map(|c| c.last_updated).unwrap_or(0),
+            heartbeat,
+            twap: existing.as_ref().map(|c| c.twap).unwrap_or(0),
+        };
+        env.storage().persistent().set(&DataKey::OracleConfig, &cfg);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::OracleConfig, 17280, 17280);
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("orc_adm"),),
+            (oracle_admin, heartbeat),
+        );
+    }
+
+    /// Submit a new price observation. Pushes to the TWAP ring buffer and updates spot price.
+    /// New price must be within MAX_PRICE_DEVIATION_BPS of the current TWAP (if TWAP exists).
     pub fn set_price(env: Env, admin: Address, price: u64) {
         admin.require_auth();
-        let mut cfg = Self::read_oracle_config(&env).unwrap_or(OracleConfig {
-            admin: admin.clone(),
-            price: 0,
-            last_updated: 0,
-            heartbeat: 3600,
+        if price == 0 {
+            panic!("PerpEngine: price must be non-zero");
+        }
+        let mut cfg = Self::read_oracle_config(&env).unwrap_or_else(|| {
+            // First call initialises oracle admin to the protocol admin
+            let protocol = Self::config(&env);
+            OracleConfig {
+                admin: protocol.admin.clone(),
+                price: 0,
+                last_updated: 0,
+                heartbeat: 3600,
+                twap: 0,
+            }
         });
         if cfg.admin != admin {
             panic!("PerpEngine: unauthorized oracle admin");
         }
+
+        // Validate price deviation against current TWAP (skip if TWAP not yet established)
+        if cfg.twap > 0 {
+            let twap = cfg.twap as u64;
+            let dev = if price > twap {
+                price - twap
+            } else {
+                twap - price
+            };
+            if dev * 10_000 / twap > MAX_PRICE_DEVIATION_BPS {
+                panic!(
+                    "PerpEngine: price deviation too large (price={}, twap={}, max_bps={})",
+                    price, twap, MAX_PRICE_DEVIATION_BPS
+                );
+            }
+        }
+
+        let ledger = env.ledger().sequence() as u64;
+        let new_twap = Self::push_twap_sample(&env, price, ledger);
+
         cfg.price = price;
-        cfg.last_updated = env.ledger().sequence() as u64;
+        cfg.last_updated = ledger;
+        cfg.twap = new_twap;
         env.storage().persistent().set(&DataKey::OracleConfig, &cfg);
         env.storage()
             .persistent()
@@ -1528,7 +1597,7 @@ impl PerpEngine {
         #[allow(deprecated)]
         env.events().publish(
             (soroban_sdk::symbol_short!("price"),),
-            (price, cfg.last_updated),
+            (price, new_twap, ledger),
         );
     }
 
@@ -1538,13 +1607,27 @@ impl PerpEngine {
             .filter(|&p| p > 0)
     }
 
+    pub fn get_twap(env: Env) -> u64 {
+        Self::read_oracle_config(&env)
+            .map(|cfg| cfg.twap)
+            .unwrap_or(0)
+    }
+
     pub fn get_oracle_config(env: Env) -> Option<OracleConfig> {
         Self::read_oracle_config(&env)
     }
 
-    /// Set the mark price (posted by the TEE keeper from off-chain CLOB mid-price).
-    /// No auth — anyone can post; the TEE is the expected honest actor.
-    pub fn set_mark_price(env: Env, price: u64) {
+    /// Set the mark price (CLOB mid-price posted by the TEE keeper).
+    /// Only the protocol admin may post to prevent manipulation.
+    pub fn set_mark_price(env: Env, keeper: Address, price: u64) {
+        keeper.require_auth();
+        let cfg = Self::config(&env);
+        if cfg.admin != keeper {
+            panic!("PerpEngine: only admin can set mark price");
+        }
+        if price == 0 {
+            panic!("PerpEngine: mark price must be non-zero");
+        }
         env.storage().persistent().set(&DataKey::MarkPrice, &price);
         env.storage()
             .persistent()
@@ -1662,31 +1745,46 @@ impl PerpEngine {
         );
     }
 
+    /// Advance the funding rate accumulator.
+    /// Rate = clamp((twap − mark) / twap × 10_000, ±MAX_FUNDING_RATE_BPS) bps per FUNDING_INTERVAL.
+    /// Cumulative is scaled by 100 so that: payment = cumulative_delta × collateral / 1_000_000
+    /// gives 0.75% of collateral at the cap over one full interval.
     pub fn update_funding(env: Env, keeper: Address) {
         keeper.require_auth();
 
         let mut state = Self::read_funding_state(&env);
         let now = env.ledger().sequence() as u64;
 
-        let oracle_price = Self::require_oracle_price(&env);
-        let mark_price = Self::derive_mark_price(&env);
-        if mark_price == 0 {
-            return;
-        }
-
-        let premium = (oracle_price as i64) - (mark_price as i64);
-        let rate = premium * 100 / (mark_price as i64); // in basis points (0.01%)
-
+        // Require at least half an interval between updates
         let delta = now.saturating_sub(state.last_update);
         if delta < FUNDING_INTERVAL / 2 {
             return;
         }
 
-        let payment = (rate as i128) * (delta as i128) / (FUNDING_INTERVAL as i128);
-        state.cumulative = state.cumulative.wrapping_add(payment);
+        // Use TWAP (manipulation-resistant) as the oracle price for funding
+        let twap = Self::read_oracle_config(&env).map(|c| c.twap).unwrap_or(0);
+        if twap == 0 {
+            return; // oracle not yet priced
+        }
+        let mark_price = Self::derive_mark_price(&env);
+        if mark_price == 0 {
+            return; // mark price not yet posted
+        }
 
-        let elapsed_ledgers = delta;
+        // premium_bps: positive → oracle above mark → longs pay
+        //              negative → oracle below mark → shorts pay
+        let premium_bps = ((twap as i64) - (mark_price as i64)) * 10_000 / (twap as i64);
+        let rate_bps = premium_bps.clamp(-MAX_FUNDING_RATE_BPS, MAX_FUNDING_RATE_BPS);
+
+        // Accumulate: each unit of cumulative = 1/100 bps per interval
+        // After one full interval at MAX_FUNDING_RATE_BPS:
+        //   payment = (rate_bps * 100) * collateral / 1_000_000 = rate_bps * collateral / 10_000
+        //   = 0.0075 * collateral ✓
+        let payment = (rate_bps as i128) * 100_i128 * (delta as i128) / (FUNDING_INTERVAL as i128);
+        state.cumulative = state.cumulative.wrapping_add(payment);
+        state.rate = rate_bps;
         state.last_update = now;
+
         env.storage()
             .persistent()
             .set(&DataKey::FundingState, &state);
@@ -1697,7 +1795,7 @@ impl PerpEngine {
         #[allow(deprecated)]
         env.events().publish(
             (soroban_sdk::symbol_short!("funding"),),
-            (rate, payment, elapsed_ledgers, state.cumulative),
+            (rate_bps, payment, delta, state.cumulative),
         );
     }
 
@@ -1734,6 +1832,47 @@ impl PerpEngine {
         env.storage()
             .persistent()
             .get::<_, OracleConfig>(&DataKey::OracleConfig)
+    }
+
+    /// Push a new price sample into the TWAP ring buffer and return the updated TWAP.
+    fn push_twap_sample(env: &Env, price: u64, ledger: u64) -> u64 {
+        let head: u64 = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::TwapHead)
+            .unwrap_or(0);
+
+        let slot = head % TWAP_WINDOW;
+        env.storage()
+            .persistent()
+            .set(&DataKey::TwapSample(slot), &PriceSample { price, ledger });
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::TwapSample(slot), 17280, 17280);
+
+        let next_head = head + 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::TwapHead, &next_head);
+
+        // Arithmetic mean of all filled slots
+        let mut sum: u128 = 0;
+        let mut count: u64 = 0;
+        for i in 0..TWAP_WINDOW {
+            if let Some(sample) = env
+                .storage()
+                .persistent()
+                .get::<_, PriceSample>(&DataKey::TwapSample(i))
+            {
+                sum += sample.price as u128;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            price
+        } else {
+            (sum / count as u128) as u64
+        }
     }
 
     fn require_oracle_price(env: &Env) -> u64 {
@@ -2201,18 +2340,20 @@ mod test {
         let (env, cid, admin) = setup();
         let client = PerpEngineClient::new(&env, &cid);
         assert_eq!(client.get_price(), None);
+        assert_eq!(client.get_twap(), 0);
 
         client.set_price(&admin, &100_000_000);
         assert_eq!(client.get_price(), Some(100_000_000));
+        assert_eq!(client.get_twap(), 100_000_000);
 
-        client.set_price(&admin, &0);
-        assert_eq!(client.get_price(), None);
-
-        client.set_price(&admin, &200_000_000);
-        assert_eq!(client.get_price(), Some(200_000_000));
+        // Second price within ±50% of TWAP (110M is +10% — fine)
+        client.set_price(&admin, &110_000_000);
+        assert_eq!(client.get_price(), Some(110_000_000));
+        // TWAP = mean(100M, 110M) = 105M
+        assert_eq!(client.get_twap(), 105_000_000);
 
         let cfg = client.get_oracle_config().unwrap();
-        assert_eq!(cfg.price, 200_000_000);
+        assert_eq!(cfg.price, 110_000_000);
         assert_eq!(cfg.admin, admin);
         assert_eq!(cfg.heartbeat, 3600);
     }
@@ -2234,6 +2375,7 @@ mod test {
 
     #[test]
     fn test_oracle_stale_price_get_price_still_works() {
+        // get_price still returns the last price even if stale (only require_oracle_price enforces staleness)
         let (env, cid, admin) = setup();
         let client = PerpEngineClient::new(&env, &cid);
         env.ledger().set(default_ledger_info());
@@ -2251,8 +2393,9 @@ mod test {
         });
 
         assert_eq!(client.get_price(), Some(100_000_000));
-        client.set_price(&admin, &200_000_000);
-        assert_eq!(client.get_price(), Some(200_000_000));
+        // Update within ±50% of TWAP (120M is +20% from 100M)
+        client.set_price(&admin, &120_000_000);
+        assert_eq!(client.get_price(), Some(120_000_000));
     }
 
     #[test]
@@ -2260,6 +2403,90 @@ mod test {
         let (env, cid, _admin) = setup();
         let client = PerpEngineClient::new(&env, &cid);
         assert!(client.get_oracle_config().is_none());
+        assert_eq!(client.get_twap(), 0);
+    }
+
+    #[test]
+    fn test_oracle_twap_accumulates_over_window() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+
+        // Feed 8 prices (one full TWAP_WINDOW): 100, 102, 98, 101, 99, 103, 97, 100
+        let prices: &[u64] = &[
+            100_000, 102_000, 98_000, 101_000, 99_000, 103_000, 97_000, 100_000,
+        ];
+        for &p in prices {
+            client.set_price(&admin, &p);
+        }
+        let twap = client.get_twap();
+        let expected_mean: u64 = prices.iter().sum::<u64>() / prices.len() as u64;
+        assert_eq!(
+            twap, expected_mean,
+            "TWAP should be arithmetic mean of window"
+        );
+    }
+
+    #[test]
+    fn test_oracle_twap_ring_buffer_wraps() {
+        // After TWAP_WINDOW samples, older ones get evicted
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+
+        // Fill window with 100_000 then push one at 110_000 (within ±50%)
+        for _ in 0..8 {
+            client.set_price(&admin, &100_000);
+        }
+        assert_eq!(client.get_twap(), 100_000);
+
+        // Push 110_000 — within 50% of 100_000 ✓
+        client.set_price(&admin, &110_000);
+        // Window now has 7 × 100_000 and 1 × 110_000 → mean = (700_000 + 110_000) / 8 = 101_250
+        assert_eq!(client.get_twap(), 101_250);
+    }
+
+    #[test]
+    #[should_panic(expected = "price deviation too large")]
+    fn test_oracle_price_deviation_rejected() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        client.set_price(&admin, &100_000);
+        // 200_000 is 100% above TWAP of 100_000 — exceeds 50% cap
+        client.set_price(&admin, &200_000);
+    }
+
+    #[test]
+    fn test_oracle_set_admin_and_handoff() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let new_oracle_admin = Address::generate(&env);
+
+        // Protocol admin delegates oracle role
+        client.set_oracle_admin(&admin, &new_oracle_admin, &3600u64);
+        let cfg = client.get_oracle_config().unwrap();
+        assert_eq!(cfg.admin, new_oracle_admin);
+        assert_eq!(cfg.heartbeat, 3600);
+
+        // New oracle admin can set price
+        client.set_price(&new_oracle_admin, &500_000);
+        assert_eq!(client.get_price(), Some(500_000));
+    }
+
+    #[test]
+    #[should_panic(expected = "only admin can set mark price")]
+    fn test_mark_price_unauthorized_panics() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let rando = Address::generate(&env);
+        client.set_mark_price(&rando, &100_000);
+    }
+
+    #[test]
+    fn test_mark_price_set_and_get() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        assert_eq!(client.get_mark_price(), 0);
+        client.set_mark_price(&admin, &500_000);
+        assert_eq!(client.get_mark_price(), 500_000);
     }
 
     #[test]
@@ -2449,16 +2676,78 @@ mod test {
 
     #[test]
     fn test_funding_update() {
+        // oracle TWAP = 1_000_000, mark = 990_000 (oracle > mark → longs pay)
+        // premium_bps = (1_000_000 - 990_000) * 10_000 / 1_000_000 = 100 bps
+        // clamped at max 75 bps → rate = 75
+        // after 5760 ledgers: payment = 75 * 100 * 5760 / 5760 = 7500
         let (env, cid, admin) = setup();
         let client = PerpEngineClient::new(&env, &cid);
-        client.set_price(&admin, &1_000_000_000);
+        client.set_price(&admin, &1_000_000);
+        client.set_mark_price(&admin, &990_000);
 
         let state = client.get_funding_state();
         assert_eq!(state.cumulative, 0);
         assert_eq!(state.rate, 0);
 
         env.ledger().set(LedgerInfo {
-            sequence_number: 1000,
+            sequence_number: 5760, // one full interval
+            timestamp: 0,
+            network_id: [0; 32],
+            protocol_version: 27,
+            base_reserve: 0,
+            min_persistent_entry_ttl: 4096,
+            min_temp_entry_ttl: 16,
+            max_entry_ttl: 6_312_000,
+        });
+
+        let keeper = Address::generate(&env);
+        client.update_funding(&keeper);
+
+        let state = client.get_funding_state();
+        assert_eq!(state.rate, 75, "should be clamped at MAX_FUNDING_RATE_BPS");
+        // payment = 75 * 100 * 5760 / 5760 = 7500
+        assert_eq!(state.cumulative, 7500);
+    }
+
+    #[test]
+    fn test_funding_negative_rate() {
+        // oracle below mark → shorts pay (negative rate)
+        // oracle TWAP = 990_000, mark = 1_000_000 → oracle < mark
+        // premium_bps = (990_000 - 1_000_000) * 10_000 / 990_000 ≈ -101 bps → clamped to -75
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        client.set_price(&admin, &990_000);
+        client.set_mark_price(&admin, &1_000_000);
+
+        env.ledger().set(LedgerInfo {
+            sequence_number: 5760,
+            timestamp: 0,
+            network_id: [0; 32],
+            protocol_version: 27,
+            base_reserve: 0,
+            min_persistent_entry_ttl: 4096,
+            min_temp_entry_ttl: 16,
+            max_entry_ttl: 6_312_000,
+        });
+
+        let keeper = Address::generate(&env);
+        client.update_funding(&keeper);
+
+        let state = client.get_funding_state();
+        assert_eq!(state.rate, -75, "negative rate when oracle < mark");
+        assert_eq!(state.cumulative, -7500);
+    }
+
+    #[test]
+    fn test_funding_no_deviation_zero_rate() {
+        // oracle == mark → premium = 0 → rate = 0
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        client.set_price(&admin, &1_000_000);
+        client.set_mark_price(&admin, &1_000_000);
+
+        env.ledger().set(LedgerInfo {
+            sequence_number: 5760,
             timestamp: 0,
             network_id: [0; 32],
             protocol_version: 27,
@@ -2480,8 +2769,10 @@ mod test {
     fn test_funding_skips_if_too_soon() {
         let (env, cid, admin) = setup();
         let client = PerpEngineClient::new(&env, &cid);
-        client.set_price(&admin, &1_000_000_000);
+        client.set_price(&admin, &1_000_000);
+        client.set_mark_price(&admin, &990_000);
 
+        // sequence_number=10 → delta=10 < FUNDING_INTERVAL/2=2880, should skip
         env.ledger().set(LedgerInfo {
             sequence_number: 10,
             timestamp: 0,
@@ -2497,7 +2788,34 @@ mod test {
         client.update_funding(&keeper);
 
         let state = client.get_funding_state();
-        assert_eq!(state.last_update, 0);
+        assert_eq!(state.last_update, 0, "should not have updated");
+        assert_eq!(state.cumulative, 0);
+    }
+
+    #[test]
+    fn test_funding_skips_without_mark_price() {
+        // If mark price not set, update_funding should return without updating
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        client.set_price(&admin, &1_000_000);
+        // no set_mark_price call
+
+        env.ledger().set(LedgerInfo {
+            sequence_number: 5760,
+            timestamp: 0,
+            network_id: [0; 32],
+            protocol_version: 27,
+            base_reserve: 0,
+            min_persistent_entry_ttl: 4096,
+            min_temp_entry_ttl: 16,
+            max_entry_ttl: 6_312_000,
+        });
+
+        let keeper = Address::generate(&env);
+        client.update_funding(&keeper);
+
+        let state = client.get_funding_state();
+        assert_eq!(state.cumulative, 0, "no update without mark price");
     }
 
     #[test]
