@@ -183,7 +183,12 @@ impl OrderBook {
 
     /// Restore a consumed maker order back into the book (undo a fill).
     /// Called when on-chain match submission fails.
+    /// No-op if the order is already present (avoids duplicates on crash-recovery).
     pub fn restore_order(&mut self, id: &str, side: Side, price: u64, size: u64) {
+        if self.orders.contains_key(id) {
+            log::debug!("restore_order: order already in book, skipping", "id", short_id(id));
+            return;
+        }
         let order = Order {
             id: id.to_string(),
             side,

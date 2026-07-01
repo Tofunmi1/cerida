@@ -1,6 +1,8 @@
 use crate::{engine, log};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +81,65 @@ impl SecretStore {
                 Ok(None)
             }
         }
+    }
+}
+
+// ── Fill Audit Trail ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FillEntry {
+    pub taker_cmt: String,
+    pub maker_cmt: String,
+    pub price: u64,
+    pub size: u64,
+    pub asset: u64,
+    pub status: String, // "pending" | "confirmed" | "failed"
+    pub timestamp_ns: u128,
+}
+
+#[derive(Clone)]
+pub struct FillLedger {
+    tree: sled::Tree,
+    counter: Arc<AtomicU64>,
+}
+
+impl FillLedger {
+    pub fn open(db: &sled::Db) -> anyhow::Result<Self> {
+        let tree = db.open_tree("fills")?;
+        let count = tree.len() as u64;
+        log::info!("Fill ledger opened",
+            "existing_entries", count
+        );
+        Ok(Self { tree, counter: Arc::new(AtomicU64::new(count)) })
+    }
+
+    pub fn record(&self, taker: &str, maker: &str, price: u64, size: u64, asset: u64, status: &str) -> anyhow::Result<()> {
+        let id = self.counter.fetch_add(1, Ordering::Relaxed);
+        let entry = FillEntry {
+            taker_cmt: taker.to_string(),
+            maker_cmt: maker.to_string(),
+            price,
+            size,
+            asset,
+            status: status.to_string(),
+            timestamp_ns: engine::now_nanos(),
+        };
+        let key = format!("{:020}", id);
+        self.tree.insert(key.as_bytes(), serde_json::to_vec(&entry)?)?;
+        self.tree.flush()?;
+        log::debug!("Fill recorded",
+            "id", key,
+            "taker", engine::short_id(taker),
+            "maker", engine::short_id(maker),
+            "price", price,
+            "size", size,
+            "status", status
+        );
+        Ok(())
+    }
+
+    pub fn count(&self) -> u64 {
+        self.counter.load(Ordering::Relaxed)
     }
 }
 
