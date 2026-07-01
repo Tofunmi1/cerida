@@ -12,9 +12,10 @@ use types::{FundingState, Groth16Error, Groth16Proof, MatchRecord, OracleConfig,
 include!(concat!(env!("OUT_DIR"), "/vk.rs"));
 
 const FUNDING_INTERVAL: u64 = 720; // ledgers (~1 hour at 5s per ledger)
-const MAINTENANCE_MARGIN: i128 = 5; // 5 = 50% of initial margin (0.5 / leverage * 10)
-const LIQUIDATOR_REWARD_NUM: i128 = 1; // 1/20 of collateral
-const LIQUIDATOR_REWARD_DEN: i128 = 20;
+const MAINTENANCE_MARGIN_BPS: i128 = 500; // 5% of notional
+const PARTIAL_REWARD_BPS: i128 = 100; // 1% of freed half-collateral → liquidator
+const FULL_REWARD_BPS: i128 = 150; // 1.5% of remaining collateral → liquidator
+const INS_FUND_BPS: i128 = 50; // 0.5% of remaining collateral → insurance fund
 
 struct VerificationKey {
     alpha: G1Affine,
@@ -97,6 +98,9 @@ pub enum DataKey {
     NextMatchId,
     FundingState,
     Note(BytesN<32>),
+    MarkPrice,
+    InsuranceFund,
+    BadDebt,
 }
 
 #[contracttype]
@@ -135,6 +139,9 @@ pub struct PositionMeta {
     pub expiry_ledger: u64, // 0 = no expiry; checked at match time for GTD
     pub tp_price: u64,      // 0 = not set; take-profit trigger
     pub sl_price: u64,      // 0 = not set; stop-loss trigger
+    pub effective_collateral: i128, // starts == collateral; halved on partial liquidation
+    pub partial_liq_done: bool, // true after one partial liquidation
+    pub liquidation_recipient_note: BytesN<32>, // zeros → fallback to owner balance
 }
 
 #[contract]
@@ -227,6 +234,7 @@ impl PerpEngine {
         expiry_ledger: u64,
         tp_price: u64,
         sl_price: u64,
+        liquidation_recipient_note: BytesN<32>,
         proof: Groth16Proof,
     ) {
         owner.require_auth();
@@ -299,6 +307,9 @@ impl PerpEngine {
             expiry_ledger,
             tp_price,
             sl_price,
+            effective_collateral: collateral,
+            partial_liq_done: false,
+            liquidation_recipient_note,
         };
         env.storage().persistent().set(&pos_key, &meta);
         env.storage()
@@ -556,7 +567,7 @@ impl PerpEngine {
 
         let (settlement, _funding) = Self::compute_settlement_with_funding(
             &env,
-            meta.collateral,
+            meta.effective_collateral,
             meta.leverage,
             meta.side,
             meta.matched_price,
@@ -853,7 +864,7 @@ impl PerpEngine {
         }
         let (settlement, _) = Self::compute_settlement_with_funding(
             &env,
-            meta.collateral,
+            meta.effective_collateral,
             meta.leverage,
             meta.side,
             meta.matched_price,
@@ -911,7 +922,7 @@ impl PerpEngine {
         }
         let (settlement, _) = Self::compute_settlement_with_funding(
             &env,
-            meta.collateral,
+            meta.effective_collateral,
             meta.leverage,
             meta.side,
             meta.matched_price,
@@ -957,6 +968,7 @@ impl PerpEngine {
         expiry_ledger: u64,
         tp_price: u64,
         sl_price: u64,
+        liquidation_recipient_note: BytesN<32>,
         liquidation_recipient: Address,
         note_proof: Groth16Proof,
         commit_proof: Groth16Proof,
@@ -1041,6 +1053,9 @@ impl PerpEngine {
             expiry_ledger,
             tp_price,
             sl_price,
+            effective_collateral: collateral,
+            partial_liq_done: false,
+            liquidation_recipient_note,
         };
         env.storage().persistent().set(&pos_key, &meta);
         env.storage()
@@ -1172,7 +1187,7 @@ impl PerpEngine {
         let oracle_price = Self::require_oracle_price(&env);
         let (settlement, _funding) = Self::compute_settlement_with_funding(
             &env,
-            meta.collateral,
+            meta.effective_collateral,
             meta.leverage,
             meta.side,
             meta.matched_price,
@@ -1221,6 +1236,17 @@ impl PerpEngine {
         settlement
     }
 
+    /// Two-tier liquidation with privacy-native proceeds and insurance fund.
+    ///
+    /// Tier 1 — Partial (first MM breach, position still has value):
+    ///   Close 50% of the position. 1% of freed collateral goes to liquidator.
+    ///   Remaining proceeds go to `liquidation_recipient_note` (or owner balance).
+    ///   Position stays open at half effective_collateral.
+    ///
+    /// Tier 2 — Full (second breach, or position at zero on first breach):
+    ///   Close 100%. 1.5% reward to liquidator, 0.5% to insurance fund.
+    ///   Any shortfall in reward is drawn from insurance fund → bad_debt if exhausted.
+    ///   Proceeds to `liquidation_recipient_note` (or owner balance).
     pub fn liquidate(env: Env, commitment: BytesN<32>, liquidator: Address) -> i128 {
         liquidator.require_auth();
 
@@ -1239,10 +1265,9 @@ impl PerpEngine {
         }
 
         let oracle_price = Self::require_oracle_price(&env);
-
-        let (settlement, _funding) = Self::compute_settlement_with_funding(
+        let (settlement, _) = Self::compute_settlement_with_funding(
             &env,
-            meta.collateral,
+            meta.effective_collateral,
             meta.leverage,
             meta.side,
             meta.matched_price,
@@ -1250,7 +1275,7 @@ impl PerpEngine {
             meta.funding_at_open,
         );
 
-        let mm = meta.collateral * MAINTENANCE_MARGIN / 10 / meta.leverage as i128;
+        let mm = meta.effective_collateral * MAINTENANCE_MARGIN_BPS / 10_000;
         if settlement >= mm {
             panic!(
                 "PerpEngine: position is not under-collateralized (settlement={}, mm={})",
@@ -1258,38 +1283,141 @@ impl PerpEngine {
             );
         }
 
-        let reward = meta.collateral * LIQUIDATOR_REWARD_NUM / LIQUIDATOR_REWARD_DEN;
-        let to_owner = settlement.saturating_sub(reward).max(0);
-
-        let bal = Self::read_balance(&env, &meta.owner);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(meta.owner.clone()), &(bal + to_owner));
         let cfg = Self::config(&env);
-        TokenClient::new(&env, &cfg.token).transfer(
-            &env.current_contract_address(),
-            &liquidator,
-            &reward,
-        );
+        let liq_note = meta.liquidation_recipient_note.clone();
+        let is_partial = !meta.partial_liq_done && settlement > 0;
 
-        meta.status = PositionStatus::Liquidated;
-        meta.matched_price = oracle_price;
-        env.storage().persistent().set(&pos_key, &meta);
+        if is_partial {
+            // ── Tier 1: Partial liquidation ───────────────────────────────
+            let half_collateral = meta.effective_collateral / 2;
+            let half_settlement = settlement / 2;
+            let penalty = half_collateral * PARTIAL_REWARD_BPS / 10_000;
+            let to_owner = (half_settlement - penalty).max(0);
+
+            // Shrink the position to 50%
+            meta.effective_collateral -= half_collateral;
+            meta.partial_liq_done = true;
+            meta.matched_price = oracle_price; // reset entry for remaining half
+            env.storage().persistent().set(&pos_key, &meta);
+            env.storage()
+                .persistent()
+                .extend_ttl(&pos_key, 17280, 17280);
+
+            // Pay liquidator
+            if penalty > 0 {
+                TokenClient::new(&env, &cfg.token).transfer(
+                    &env.current_contract_address(),
+                    &liquidator,
+                    &penalty,
+                );
+            }
+
+            // Pay owner proceeds (private or public)
+            Self::pay_liquidation_proceeds(&env, &meta.owner, &liq_note, to_owner);
+
+            #[allow(deprecated)]
+            env.events().publish(
+                (soroban_sdk::symbol_short!("pliq"),),
+                (
+                    commitment,
+                    liquidator,
+                    oracle_price,
+                    penalty,
+                    to_owner,
+                    meta.effective_collateral,
+                ),
+            );
+
+            penalty
+        } else {
+            // ── Tier 2: Full liquidation ───────────────────────────────────
+            let eff = meta.effective_collateral;
+            let base_reward = eff * FULL_REWARD_BPS / 10_000;
+            let ins_fee = eff * INS_FUND_BPS / 10_000;
+            let total_fees = base_reward + ins_fee;
+
+            let (actual_reward, ins_delta, to_owner) = if settlement >= total_fees {
+                // Healthy liquidation: pay all fees, owner gets remainder
+                (base_reward, ins_fee, settlement - total_fees)
+            } else if settlement >= base_reward {
+                // Marginal: pay full reward, partial insurance contribution
+                (base_reward, settlement - base_reward, 0i128)
+            } else {
+                // Underwater: draw from insurance fund to top up reward
+                let shortfall = base_reward - settlement;
+                let ins_fund = Self::read_insurance_fund(&env);
+                let draw = shortfall.min(ins_fund);
+                let unmet = shortfall - draw;
+                if unmet > 0 {
+                    Self::accrue_bad_debt(&env, unmet);
+                }
+                // ins_delta is negative (we draw from fund)
+                (settlement + draw, -(draw), 0i128)
+            };
+
+            // Apply insurance fund delta
+            Self::update_insurance_fund(&env, ins_delta);
+
+            // Pay liquidator
+            if actual_reward > 0 {
+                TokenClient::new(&env, &cfg.token).transfer(
+                    &env.current_contract_address(),
+                    &liquidator,
+                    &actual_reward,
+                );
+            }
+
+            // Pay owner proceeds (private or public)
+            Self::pay_liquidation_proceeds(&env, &meta.owner, &liq_note, to_owner);
+
+            meta.status = PositionStatus::Liquidated;
+            meta.matched_price = oracle_price;
+            env.storage().persistent().set(&pos_key, &meta);
+            env.storage()
+                .persistent()
+                .extend_ttl(&pos_key, 17280, 17280);
+
+            if meta.match_id != 0 {
+                Self::try_close_match(&env, meta.match_id, &commitment);
+            }
+
+            #[allow(deprecated)]
+            env.events().publish(
+                (soroban_sdk::symbol_short!("liq"),),
+                (
+                    commitment,
+                    liquidator,
+                    oracle_price,
+                    actual_reward,
+                    to_owner,
+                    ins_delta,
+                ),
+            );
+
+            actual_reward
+        }
+    }
+
+    /// Top up the insurance fund. Callable by anyone.
+    pub fn fund_insurance(env: Env, from: Address, amount: i128) {
+        from.require_auth();
+        if amount <= 0 {
+            panic!("PerpEngine: amount must be positive");
+        }
+        let cfg = Self::config(&env);
+        TokenClient::new(&env, &cfg.token).transfer(&from, env.current_contract_address(), &amount);
+        Self::update_insurance_fund(&env, amount);
+    }
+
+    pub fn insurance_balance(env: Env) -> i128 {
+        Self::read_insurance_fund(&env)
+    }
+
+    pub fn bad_debt(env: Env) -> i128 {
         env.storage()
             .persistent()
-            .extend_ttl(&pos_key, 17280, 17280);
-
-        if meta.match_id != 0 {
-            Self::try_close_match(&env, meta.match_id, &commitment);
-        }
-
-        #[allow(deprecated)]
-        env.events().publish(
-            (soroban_sdk::symbol_short!("liq"),),
-            (commitment, liquidator, oracle_price, reward, to_owner),
-        );
-
-        settlement
+            .get(&DataKey::BadDebt)
+            .unwrap_or(0i128)
     }
 
     pub fn get_position(env: Env, commitment: BytesN<32>) -> Option<PositionMeta> {
@@ -1341,6 +1469,25 @@ impl PerpEngine {
 
     pub fn get_oracle_config(env: Env) -> Option<OracleConfig> {
         Self::read_oracle_config(&env)
+    }
+
+    /// Set the mark price (posted by the TEE keeper from off-chain CLOB mid-price).
+    /// No auth — anyone can post; the TEE is the expected honest actor.
+    pub fn set_mark_price(env: Env, price: u64) {
+        env.storage().persistent().set(&DataKey::MarkPrice, &price);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::MarkPrice, 17280, 17280);
+        #[allow(deprecated)]
+        env.events()
+            .publish((soroban_sdk::symbol_short!("mark_p"),), (price,));
+    }
+
+    pub fn get_mark_price(env: Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::MarkPrice)
+            .unwrap_or(0)
     }
 
     pub fn get_match_record(env: Env, match_id: u64) -> Option<MatchRecord> {
@@ -1627,8 +1774,65 @@ impl PerpEngine {
     }
 
     fn derive_mark_price(env: &Env) -> u64 {
-        // Use oracle price as mark price for now
-        Self::read_oracle_config(env).map(|c| c.price).unwrap_or(0)
+        env.storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::MarkPrice)
+            .unwrap_or(0)
+    }
+
+    fn read_insurance_fund(env: &Env) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::InsuranceFund)
+            .unwrap_or(0i128)
+    }
+
+    fn update_insurance_fund(env: &Env, delta: i128) {
+        let current = Self::read_insurance_fund(env);
+        let next = (current + delta).max(0);
+        env.storage()
+            .persistent()
+            .set(&DataKey::InsuranceFund, &next);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::InsuranceFund, 17280, 17280);
+    }
+
+    fn accrue_bad_debt(env: &Env, amount: i128) {
+        let current: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BadDebt)
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&DataKey::BadDebt, &(current + amount));
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::BadDebt, 17280, 17280);
+    }
+
+    /// Credit liquidation proceeds to the owner's shielded note (if set) or balance.
+    fn pay_liquidation_proceeds(env: &Env, owner: &Address, note: &BytesN<32>, amount: i128) {
+        if amount <= 0 {
+            return;
+        }
+        let zero = BytesN::from_array(env, &[0u8; 32]);
+        if *note != zero {
+            let note_key = DataKey::Note(note.clone());
+            let existing: i128 = env.storage().persistent().get(&note_key).unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&note_key, &(existing + amount));
+            env.storage()
+                .persistent()
+                .extend_ttl(&note_key, 17280, 17280);
+        } else {
+            let bal = Self::read_balance(env, owner);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Balance(owner.clone()), &(bal + amount));
+        }
     }
 }
 
@@ -1833,6 +2037,9 @@ mod test {
                 expiry_ledger: 0,
                 tp_price: 0,
                 sl_price: 0,
+                effective_collateral: collateral,
+                partial_liq_done: false,
+                liquidation_recipient_note: BytesN::from_array(env, &[0u8; 32]),
             };
             let key = DataKey::Position(commitment.clone());
             env.storage().persistent().set(&key, &meta);
@@ -2535,6 +2742,7 @@ mod test {
             &0u64,
             &0u64,
             &0u64,
+            &BytesN::from_array(&env, &[0u8; 32]),
             &liq_recipient,
             &note_proof,
             &commit_proof,
@@ -2576,6 +2784,7 @@ mod test {
             &0u64,
             &0u64,
             &0u64,
+            &BytesN::from_array(&env, &[0u8; 32]),
             &liq_recipient,
             &note_proof,
             &commit_proof,
@@ -2630,6 +2839,7 @@ mod test {
             &0u64,
             &0u64,
             &0u64,
+            &BytesN::from_array(&env, &[0u8; 32]),
             &liq_recipient,
             &note_proof,
             &commit_proof,
@@ -2701,6 +2911,7 @@ mod test {
             &0u64,
             &0u64,
             &0u64,
+            &BytesN::from_array(&env, &[0u8; 32]),
             &liq_recipient,
             &note_proof,
             &commit_proof,
@@ -2855,6 +3066,9 @@ mod test {
                 expiry_ledger,
                 tp_price: 0,
                 sl_price: 0,
+                effective_collateral: collateral,
+                partial_liq_done: false,
+                liquidation_recipient_note: BytesN::from_array(env, &[0u8; 32]),
             };
             let key = DataKey::Position(commitment.clone());
             env.storage().persistent().set(&key, &meta);
@@ -3085,6 +3299,9 @@ mod test {
                 expiry_ledger: 0,
                 tp_price,
                 sl_price,
+                effective_collateral: collateral,
+                partial_liq_done: false,
+                liquidation_recipient_note: BytesN::from_array(env, &[0u8; 32]),
             };
             let key = DataKey::Position(commitment.clone());
             env.storage().persistent().set(&key, &meta);
@@ -3308,5 +3525,331 @@ mod test {
         );
         client.set_price(&admin, &50);
         client.trigger_sl(&cmt);
+    }
+
+    // ── Tiered liquidation tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_partial_liquidation_tier1() {
+        // Tier 1 fires when position is below maintenance margin but has positive settlement.
+        // Oracle drops to 90% of entry (long, 10x → settlement = collateral - 10% * 10 = 0)
+        // We need settlement > 0 but < mm. Use 10x long, entry=100, oracle=94 → pnl=−60%, eff_col=40
+        // Actually let's use simpler numbers: collateral=1_000_000, leverage=5, long, entry=100, oracle=91
+        // notional = 5_000_000; pnl = (91-100)/100 * 5_000_000 = −450_000
+        // settlement = 1_000_000 - 450_000 = 550_000; mm = 1_000_000 * 500/10000 = 50_000
+        // settlement(550_000) > mm(50_000) → NOT liquidatable. Need bigger drop.
+        // entry=100, oracle=60: pnl = (60-100)/100 * 5_000_000 = −2_000_000
+        // settlement = 1_000_000 - 2_000_000 = −1_000_000 < 0 → skip to tier 2 directly
+        // For tier 1 we need: 0 < settlement < mm
+        // mm = collateral * 500/10000 = collateral/20
+        // settlement = collateral + pnl; pnl = (oracle-entry)/entry * collateral * leverage
+        // Need: 0 < collateral + pnl < collateral/20
+        // pnl ≈ −collateral for tight range. Leverage=1 makes it easier:
+        // collateral=1_000_000, leverage=1, long, entry=10_000_000, oracle=9_900_000
+        // notional=1_000_000; pnl=(9.9M−10M)/10M * 1_000_000 = −10_000
+        // settlement = 1_000_000 - 10_000 = 990_000; mm=50_000 → still solvent
+        // Use leverage=20: notional=20_000_000; pnl=(9.9M−10M)/10M*20_000_000=−200_000
+        // settlement=800_000; mm=50_000 → still not liq
+        // The key: settlement must be < mm = collateral * 5% = 50_000
+        // settlement = col + (oracle-entry)/entry * col * lev
+        // For col=1_000_000, lev=10, entry=100, oracle=x:
+        // settlement = 1_000_000 + (x-100)/100 * 10_000_000 = 1_000_000 + (x-100)*100_000
+        // For 0 < settlement < 50_000: 0 < 1_000_000 + (x-100)*100_000 < 50_000
+        // (x-100)*100_000 = -950_000 to -1_000_000 → x = 90.5..90 → use x=91 → s=100_000 > mm
+        // Need oracle=90.5 (not integer). Use collateral=2_000_000 instead:
+        // mm = 100_000; settlement = 2_000_000 + (x-100)*200_000
+        // for x=90: settlement = 2_000_000 - 2_000_000 = 0 → NOT > 0
+        // for x=91: settlement = 200_000 > mm(100_000) still solvent
+        // Use leverage=20: notional=40_000_000; mm=100_000
+        // settlement = 2_000_000 + (x-100)*400_000; for x=95: =2_000_000-2_000_000=0; x=95.2 → s=80_000 < mm but need int
+        // Simplest approach: use small collateral so mm > settlement in integer arithmetic
+        // col=100, lev=10, entry=100, oracle=91: s=100+(91-100)/100*1000=100-90=10; mm=5 → 10>5 solvent!
+        // oracle=90: s=0 (not >0, goes to tier2); oracle=90: (90-100)/100*1000=-100; s=100-100=0
+        // Use entry=1000, oracle=901: pnl=(901-1000)/1000*col*10=(−99/1000)*1000=−990; s=10; mm=5 → s>mm solvent
+        // oracle=900: pnl=−1000; s=0 → tier2
+        // oracle=901 with col=100: s=col+(901-1000)/1000*100*10=100-99=1 (if integer div truncates)
+        // Actually in our code: (oracle-entry) as i128 * notional / entry as i128
+        // Let's just set it up so settlement=30, mm=50 — need to reverse-engineer from the compute fn
+        // SIMPLEST: use col=1000, lev=10, entry=10000, oracle=9951
+        // pnl=(9951-10000)*1000*10/10000=(−49*10000)/10000=−490; s=1000-490=510; mm=50 → solvent
+        // oracle=9500: pnl=(−500)*10000/10000=−5000; s=1000-5000=−4000 < 0 → tier2
+        // oracle=9901: pnl=−9900000/10000=−990; s=10; mm=50 → tier1! 10<50
+
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let liquidator = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[60u8; 32]);
+
+        let col: i128 = 1_000;
+        let lev: u64 = 10;
+        let entry: u64 = 10_000;
+        // settlement = col + col*lev*(oracle-entry)/entry = 1000 + (oracle-10000)
+        // oracle=9010: settlement=10, mm=col*500/10000=50 → 0<10<50 → tier 1
+        let oracle: u64 = 9_010;
+
+        let cfg = client.get_config();
+        let token_admin = StellarAssetClient::new(&env, &cfg.token);
+        token_admin.mint(&cid, &(col * 10));
+
+        client.set_price(&admin, &oracle);
+        create_position(
+            &env,
+            &cid,
+            &owner,
+            &cmt,
+            col,
+            lev,
+            0, // long
+            entry,
+            PositionStatus::Matched,
+            0,
+        );
+
+        env.mock_all_auths();
+        let reward = client.liquidate(&cmt, &liquidator);
+        assert!(reward > 0, "liquidator should receive partial reward");
+
+        let pos = client.get_position(&cmt).unwrap();
+        assert_eq!(
+            pos.status,
+            PositionStatus::Matched,
+            "partial liq leaves position open"
+        );
+        assert_eq!(pos.partial_liq_done, true);
+        assert_eq!(pos.effective_collateral, col / 2);
+    }
+
+    #[test]
+    fn test_full_liquidation_after_partial() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let liquidator = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[61u8; 32]);
+
+        // entry=10000, col=1000, lev=10: settlement = col + (oracle-entry)
+        // Tier 1 at oracle=9010: settlement=10, mm=50 → partial fires
+        // After partial: effective_col=500, matched_price=9010
+        //   new settlement = 500 + 500*10*(oracle-9010)/9010
+        //   new mm = 500*500/10000 = 25
+        // Tier 2 at oracle=8000: settlement≈500+5000*(8000-9010)/9010=500-560=-60 < 0 → full
+
+        let col: i128 = 1_000;
+        let entry: u64 = 10_000;
+
+        let cfg = client.get_config();
+        let token_admin = StellarAssetClient::new(&env, &cfg.token);
+        token_admin.mint(&cid, &(col * 20));
+
+        client.set_price(&admin, &9_010u64);
+        create_position(
+            &env,
+            &cid,
+            &owner,
+            &cmt,
+            col,
+            10,
+            0,
+            entry,
+            PositionStatus::Matched,
+            0,
+        );
+
+        env.mock_all_auths();
+        // Tier 1
+        client.liquidate(&cmt, &liquidator);
+
+        // Drive oracle low enough for tier 2 (settlement < 0 on halved position)
+        client.set_price(&admin, &8_000u64);
+        let reward = client.liquidate(&cmt, &liquidator);
+        let _ = reward;
+
+        let pos = client.get_position(&cmt).unwrap();
+        assert_eq!(pos.status, PositionStatus::Liquidated);
+    }
+
+    #[test]
+    fn test_full_liquidation_direct_no_partial() {
+        // When settlement <= 0, skip straight to tier 2 even if partial_liq_done=false
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let liquidator = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[62u8; 32]);
+
+        let col: i128 = 1_000;
+        let entry: u64 = 10_000;
+
+        let cfg = client.get_config();
+        let token_admin = StellarAssetClient::new(&env, &cfg.token);
+        token_admin.mint(&cid, &(col * 10));
+
+        // settlement = col + (oracle-entry) = 1000 + (oracle-10000)
+        // oracle=8900: settlement=-100 ≤ 0 → tier2 directly (skips tier1)
+        client.set_price(&admin, &8_900u64);
+        create_position(
+            &env,
+            &cid,
+            &owner,
+            &cmt,
+            col,
+            10,
+            0,
+            entry,
+            PositionStatus::Matched,
+            0,
+        );
+
+        env.mock_all_auths();
+        let reward = client.liquidate(&cmt, &liquidator);
+        // settlement is negative, ins_fund empty → reward ≈ 0
+        let _ = reward;
+
+        let pos = client.get_position(&cmt).unwrap();
+        assert_eq!(pos.status, PositionStatus::Liquidated);
+        assert_eq!(pos.partial_liq_done, false, "partial was never triggered");
+    }
+
+    #[test]
+    fn test_fund_insurance_and_balance() {
+        let (env, cid, _admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let funder = Address::generate(&env);
+
+        let cfg = client.get_config();
+        let token_admin = StellarAssetClient::new(&env, &cfg.token);
+        token_admin.mint(&funder, &1_000_000);
+
+        assert_eq!(client.insurance_balance(), 0);
+
+        env.mock_all_auths();
+        client.fund_insurance(&funder, &500_000i128);
+        assert_eq!(client.insurance_balance(), 500_000);
+
+        client.fund_insurance(&funder, &200_000i128);
+        assert_eq!(client.insurance_balance(), 700_000);
+    }
+
+    #[test]
+    fn test_insurance_fund_covers_shortfall() {
+        // When settlement < base_reward, insurance fund tops up liquidator reward
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let liquidator = Address::generate(&env);
+        let funder = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[63u8; 32]);
+
+        let col: i128 = 1_000;
+        let entry: u64 = 10_000;
+
+        let cfg = client.get_config();
+        let token_admin = StellarAssetClient::new(&env, &cfg.token);
+        // Fund contract for transfers + funder for insurance
+        token_admin.mint(&cid, &(col * 10));
+        token_admin.mint(&funder, &col);
+
+        env.mock_all_auths();
+        client.fund_insurance(&funder, &col);
+        let ins_before = client.insurance_balance();
+        assert_eq!(ins_before, col);
+
+        // settlement = col + (oracle-entry): oracle=8900 → settlement=-100 (negative)
+        // base_reward = col*150/10000 = 15; shortfall=15; draw=min(15,col)=15 → ins after=985
+        client.set_price(&admin, &8_900u64);
+        create_position(
+            &env,
+            &cid,
+            &owner,
+            &cmt,
+            col,
+            10,
+            0,
+            entry,
+            PositionStatus::Matched,
+            0,
+        );
+
+        let reward = client.liquidate(&cmt, &liquidator);
+        assert!(reward > 0, "insurance should top up reward");
+        assert!(
+            client.insurance_balance() < ins_before,
+            "insurance fund should decrease"
+        );
+        assert_eq!(
+            client.bad_debt(),
+            0,
+            "no bad debt when fund covers shortfall"
+        );
+    }
+
+    #[test]
+    fn test_bad_debt_accrues_when_fund_empty() {
+        // When settlement is deeply negative and insurance fund is empty, bad debt accumulates
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let liquidator = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[64u8; 32]);
+
+        let col: i128 = 1_000;
+        let entry: u64 = 10_000;
+
+        let cfg = client.get_config();
+        let token_admin = StellarAssetClient::new(&env, &cfg.token);
+        token_admin.mint(&cid, &(col * 10));
+
+        // No insurance fund seeded
+        assert_eq!(client.insurance_balance(), 0);
+        assert_eq!(client.bad_debt(), 0);
+
+        // oracle=8900: settlement=-100; base_reward=col*150/10000=15; shortfall=15; ins_fund=0; bad_debt=15
+        client.set_price(&admin, &8_900u64);
+        create_position(
+            &env,
+            &cid,
+            &owner,
+            &cmt,
+            col,
+            10,
+            0,
+            entry,
+            PositionStatus::Matched,
+            0,
+        );
+
+        env.mock_all_auths();
+        client.liquidate(&cmt, &liquidator);
+
+        assert_eq!(client.bad_debt(), 15);
+    }
+
+    #[test]
+    #[should_panic(expected = "not under-collateralized")]
+    fn test_liquidate_solvent_position_panics() {
+        let (env, cid, admin) = setup();
+        let client = PerpEngineClient::new(&env, &cid);
+        let owner = Address::generate(&env);
+        let liquidator = Address::generate(&env);
+        let cmt = BytesN::from_array(&env, &[65u8; 32]);
+
+        // oracle above entry → long position is profitable, not liquidatable
+        client.set_price(&admin, &15_000u64);
+        create_position(
+            &env,
+            &cid,
+            &owner,
+            &cmt,
+            1_000,
+            10,
+            0,
+            10_000,
+            PositionStatus::Matched,
+            0,
+        );
+
+        env.mock_all_auths();
+        client.liquidate(&cmt, &liquidator);
     }
 }
