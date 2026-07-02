@@ -1,7 +1,6 @@
 // ── CER-PERP Keepers ─────────────────────────────────────────────
-// Oracle price keeper + market maker for 6 markets.
+// Oracle price keeper + market maker + liquidator for 6 markets.
 // Deployed separately from the TEE server.
-// Connects to Stellar testnet RPC + TEE match server.
 // ─────────────────────────────────────────────────────────────────
 
 use anyhow::Result;
@@ -28,20 +27,25 @@ struct Cli {
     oracle_interval_secs: u64,
     #[arg(long, default_value = "60")]
     mm_interval_secs: u64,
+    #[arg(long, default_value = "30")]
+    liq_interval_secs: u64,
     #[arg(long)]
     no_oracle: bool,
     #[arg(long)]
     no_market_maker: bool,
+    #[arg(long)]
+    no_liquidator: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     eprintln!("═══ CER-PERP Keepers ═══");
-    eprintln!("  perp_engine: {}", cli.perp_id);
-    eprintln!("  tee_server:  {}", cli.tee_addr);
-    eprintln!("  markets:     {}", MARKETS.len());
-    eprintln!("  oracle:      {} (interval={}s)", if cli.no_oracle { "OFF" } else { "ON" }, cli.oracle_interval_secs);
+    eprintln!("  perp_engine:  {}", cli.perp_id);
+    eprintln!("  tee_server:   {}", cli.tee_addr);
+    eprintln!("  markets:      {}", MARKETS.len());
+    eprintln!("  oracle:       {} (interval={}s)", if cli.no_oracle { "OFF" } else { "ON" }, cli.oracle_interval_secs);
     eprintln!("  market_maker: {} (interval={}s)", if cli.no_market_maker { "OFF" } else { "ON" }, cli.mm_interval_secs);
+    eprintln!("  liquidator:   {} (interval={}s)", if cli.no_liquidator { "OFF" } else { "ON" }, cli.liq_interval_secs);
 
     let perp = cli.perp_id.clone();
     let tee = cli.tee_addr.clone();
@@ -56,7 +60,12 @@ fn main() -> Result<()> {
         thread::spawn(move || mm_loop(&tee, Duration::from_secs(cli.mm_interval_secs)));
     }
 
-    // Keep main thread alive
+    if !cli.no_liquidator {
+        let perp = perp.clone();
+        let interval = Duration::from_secs(cli.liq_interval_secs);
+        thread::spawn(move || liquidator_loop(&perp, interval));
+    }
+
     loop {
         thread::sleep(Duration::from_secs(10));
     }
@@ -98,7 +107,79 @@ fn set_oracle_price(perp_id: &str, asset_id: &str, price: u64, source: &str) -> 
 
 fn mm_loop(_tee_addr: &str, interval: Duration) {
     loop {
-        // TODO: market making — place bid/ask orders via TEE server
         thread::sleep(interval);
+    }
+}
+
+// ── Liquidator ────────────────────────────────────────────────
+
+fn liquidator_loop(perp_id: &str, interval: Duration) {
+    let rpc = e2e::soroban_rpc::SorobanRpc::new();
+    let source = e2e::stellar::SOURCE;
+    let mut scanned = 0u64;
+
+    loop {
+        let t = Instant::now();
+        let mut liq_count = 0;
+        let mut checked = 0;
+
+        // Walk all known positions by querying the asset list, then the
+        // Position storage keys we've tracked locally (benchmark cache).
+        // For now, scan a reverse mapping: check stored positions from the
+        // benchmark cache file, or scan a pre-configured watchlist.
+
+        if let Some(watchlist) = load_watchlist() {
+            for cmt in &watchlist {
+                checked += 1;
+                match try_liquidate(&rpc, perp_id, source, cmt) {
+                    Ok(true) => {
+                        liq_count += 1;
+                        eprintln!("  [liquidator] 💧 liquidated {}", &cmt[..16]);
+                    }
+                    Ok(false) => {} // healthy
+                    Err(e) => eprintln!("  [liquidator] err {}: {}", &cmt[..8], e),
+                }
+                thread::sleep(Duration::from_secs(2));
+            }
+        }
+
+        scanned += 1;
+        eprintln!("  [liquidator] scan #{scanned}: {checked} checked, {liq_count} liquidated ({:.1}s)",
+            t.elapsed().as_secs_f64());
+        thread::sleep(interval);
+    }
+}
+
+fn load_watchlist() -> Option<Vec<String>> {
+    let path = "keepers/watchlist.json";
+    let data = std::fs::read_to_string(path).ok()?;
+    let cmts: Vec<String> = serde_json::from_str(&data).ok()?;
+    if cmts.is_empty() { None } else { Some(cmts) }
+}
+
+/// Returns Ok(true) if liquidated, Ok(false) if healthy, Err on failure.
+fn try_liquidate(
+    rpc: &e2e::soroban_rpc::SorobanRpc,
+    perp_id: &str,
+    source: &str,
+    cmt: &str,
+) -> Result<bool> {
+    use e2e::soroban_rpc::scval_bytes32;
+    match rpc.invoke_xdr(perp_id, source, "liquidate", vec![
+        scval_bytes32(cmt)?,
+    ]) {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("not under-collateralized")
+                || msg.contains("can only liquidate a matched")
+                || msg.contains("position not found")
+                || msg.contains("solvent")
+            {
+                Ok(false) // healthy or not ready, not an error
+            } else {
+                Err(e)
+            }
+        }
     }
 }
