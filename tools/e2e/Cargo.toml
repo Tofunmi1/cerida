@@ -4,6 +4,10 @@ name = "e2e"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "e2e"
+path = "src/lib.rs"
+
 [dependencies]
 ark-bn254 = "0.6"
 ark-ff = "0.6"
