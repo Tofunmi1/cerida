@@ -534,7 +534,7 @@ pub fn multi_market_setup(perp_id: &str) -> Result<()> {
     ];
 
     for (i, (name, price, max_lev)) in markets.iter().enumerate() {
-        let asset_hex = format!("{:0>64x}", i);
+        let asset_hex = format!("{:0>64x}", i + 1); // start at 1, skip default (0)
         eprintln!("  [deploy] registering {name} (asset_id={i}, price={price}, max_lev={max_lev})…");
 
         let config = scval_asset_config(*max_lev, 500, 1000, 100, 150, 50, true)?;
@@ -924,9 +924,9 @@ fn deploy(wasm: &Path) -> Result<String> {
     eprintln!("  [deploy] Precomputed contract ID: {}", id);
     eprintln!("  [deploy] WASM: {} ({} bytes)", wasm.display(), wasm_size);
 
-    if wasm_size > 20_000 {
-        // stellar CLI v22 fails on WASMs > ~27KB. Use RPC path: install then deploy.
-        eprintln!("  [deploy] large WASM — installing + deploying via RPC…");
+    if wasm_size > 1 {
+        // stellar CLI v22 fails to parse WASM files. Always use RPC path.
+        eprintln!("  [deploy] installing + deploying via RPC…");
         let hash = install_wasm(wasm)?;
         let contract_id = crate::soroban_rpc::deploy_contract_via_rpc(&hash, &salt_hex, SOURCE)?;
         eprintln!("  [deploy] waiting 30s for propagation…");
