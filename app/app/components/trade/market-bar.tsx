@@ -1,7 +1,13 @@
 import { useMemo, useState } from 'react'
 import {
+  IconAlertTriangleFilled,
   IconBell,
+  IconBook,
+  IconBriefcase,
   IconChevronDown,
+  IconCopy,
+  IconExternalLink,
+  IconLogout,
   IconSearch,
   IconSettings,
   IconPalette,
@@ -14,12 +20,20 @@ import { formatContractBalance, useWallet } from '../../context/wallet-context'
 import { formatCompactUsd, formatUsd } from './format'
 import { toast } from '../toast/toast-context'
 
-export default function MarketBar() {
+export default function MarketBar({
+  active,
+  onActive,
+  onOpenSettings,
+}: {
+  active: string
+  onActive: (label: string) => void
+  onOpenSettings: () => void
+}) {
   const { symbol, setSymbol, mark, index, changePct, funding, openInterest, volume24h } = useMarket()
   const { theme, setTheme } = useTheme()
-  const { connected, publicKey, balance, connecting, connect, disconnect } = useWallet()
   const [marketOpen, setMarketOpen] = useState(false)
   const [themeOpen, setThemeOpen] = useState(false)
+  const [alertsOpen, setAlertsOpen] = useState(false)
   const activeMarket = MARKET_CATALOG.find((market) => market.symbol === symbol) ?? MARKET_CATALOG[0]!
   const activeTheme = THEMES.find((item) => item.id === theme) ?? THEMES[0]!
   const positive = changePct >= 0
@@ -65,6 +79,19 @@ export default function MarketBar() {
         </div>
 
         <div className="ml-auto flex items-center gap-1">
+          <NavPill
+            icon={<IconBriefcase size={15} stroke={1.8} />}
+            label="Portfolio"
+            active={active === 'Portfolio'}
+            onClick={() => onActive('Portfolio')}
+          />
+          <NavPill
+            icon={<IconBook size={15} stroke={1.8} />}
+            label="Docs"
+            active={active === 'Docs'}
+            onClick={() => onActive('Docs')}
+          />
+          <div className="mx-1 h-5 w-px bg-border-subtle" />
           <div className="relative">
             <button
               onClick={() => setThemeOpen((value) => !value)}
@@ -100,34 +127,29 @@ export default function MarketBar() {
               </>
             )}
           </div>
-          <IconButton label="Alerts" onClick={() => toast.info('Alerts', 'Price alerts are not configured in this build yet.')}>
-            <IconBell size={15} stroke={1.8} />
-          </IconButton>
-          <IconButton label="Settings" onClick={() => toast.info('Settings', 'Trading preferences are coming next.')}>
+          <div className="relative">
+            <IconButton label="Alerts" onClick={() => setAlertsOpen((v) => !v)}>
+              <IconBell size={15} stroke={1.8} />
+            </IconButton>
+            {alertsOpen && (
+              <>
+                <div className="fixed inset-0 z-[70]" onClick={() => setAlertsOpen(false)} />
+                <div className="absolute right-0 top-11 z-[71] w-72 rounded-[10px] border border-border-subtle bg-surface-primary p-1 shadow-xl">
+                  <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-widest text-text-quaternary">
+                    Notifications
+                  </div>
+                  <div className="flex flex-col items-center gap-2 px-4 py-8 text-center">
+                    <IconBell size={22} stroke={1.5} className="text-text-quaternary" />
+                    <p className="text-[12px] text-text-tertiary">No notifications yet.</p>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+          <IconButton label="Settings" onClick={onOpenSettings}>
             <IconSettings size={15} stroke={1.8} />
           </IconButton>
-          {connected && publicKey ? (
-            <button
-              onClick={disconnect}
-              title="Disconnect wallet"
-              className="flex items-center gap-2 rounded-[8px] border border-border-subtle bg-surface-card px-3 py-2 text-[12px] font-semibold text-text-primary hover:bg-surface-hover"
-            >
-              <IconWallet size={15} stroke={2} />
-              <span className="tabular-nums">${formatContractBalance(balance)}</span>
-              <span className="max-w-[80px] truncate font-mono text-[10px] text-text-tertiary">
-                {publicKey.slice(0, 4)}…{publicKey.slice(-4)}
-              </span>
-            </button>
-          ) : (
-            <button
-              onClick={connect}
-              disabled={connecting}
-              className="flex items-center gap-2 rounded-[8px] bg-brand-violet px-3 py-2 text-[12px] font-semibold text-white disabled:opacity-60"
-            >
-              <IconWallet size={15} stroke={2} />
-              {connecting ? 'Connecting…' : 'Connect'}
-            </button>
-          )}
+          <WalletButton />
         </div>
       </div>
 
@@ -290,6 +312,33 @@ function Stat({ label, children }: { label: string; children: React.ReactNode })
   )
 }
 
+function NavPill({
+  icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode
+  label: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex h-9 items-center gap-2 rounded-[8px] border px-2.5 text-[12px] font-semibold transition-colors ${
+        active
+          ? 'border-border-subtle bg-surface-card text-text-primary'
+          : 'border-border-subtle bg-surface-primary text-text-secondary hover:text-text-primary'
+      }`}
+      title={label}
+    >
+      {icon}
+      <span className="hidden lg:inline">{label}</span>
+    </button>
+  )
+}
+
 function IconButton({
   label,
   children,
@@ -308,5 +357,106 @@ function IconButton({
     >
       {children}
     </button>
+  )
+}
+
+function WalletButton() {
+  const { connected, connecting, publicKey, balance, balanceLoading, wrongNetwork, connect, disconnect } =
+    useWallet()
+  const [open, setOpen] = useState(false)
+
+  const copyAddress = async () => {
+    if (!publicKey) return
+    await navigator.clipboard.writeText(publicKey)
+    toast.success('Copied', 'Address copied to clipboard.', { duration: 2000 })
+  }
+
+  if (!connected || !publicKey) {
+    return (
+      <button
+        onClick={connect}
+        disabled={connecting}
+        className="flex items-center gap-2 rounded-[8px] bg-brand-violet px-3 py-2 text-[12px] font-semibold text-white disabled:opacity-60"
+      >
+        <IconWallet size={15} stroke={2} />
+        {connecting ? 'Connecting…' : 'Connect'}
+      </button>
+    )
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={`flex items-center gap-2 rounded-[8px] border px-3 py-2 text-[12px] font-semibold transition-colors ${
+          wrongNetwork
+            ? 'border-warning/40 bg-warning/10 text-warning'
+            : 'border-border-subtle bg-surface-card text-text-primary hover:bg-surface-hover'
+        }`}
+        title={wrongNetwork ? 'Wrong network — click for details' : undefined}
+      >
+        {wrongNetwork ? (
+          <IconAlertTriangleFilled size={15} />
+        ) : (
+          <IconWallet size={15} stroke={2} />
+        )}
+        <span className="tabular-nums">
+          {balanceLoading ? '…' : `$${formatContractBalance(balance)}`}
+        </span>
+        <span className="max-w-[80px] truncate font-mono text-[10px] text-text-tertiary">
+          {publicKey.slice(0, 4)}…{publicKey.slice(-4)}
+        </span>
+        <IconChevronDown size={12} stroke={2} />
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-[70]" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-11 z-[71] w-64 rounded-[10px] border border-border-subtle bg-surface-primary p-1 shadow-xl">
+            {wrongNetwork && (
+              <div className="m-1 flex items-start gap-2 rounded-[8px] bg-warning/10 px-3 py-2 text-[11px] text-warning">
+                <IconAlertTriangleFilled size={14} className="mt-0.5 shrink-0" />
+                <span>Freighter is on the wrong network. Switch to Testnet to trade.</span>
+              </div>
+            )}
+            <div className="px-3 py-2">
+              <div className="text-[10px] uppercase tracking-widest text-text-quaternary">Address</div>
+              <div className="mt-0.5 truncate font-mono text-[12px] text-text-primary">{publicKey}</div>
+            </div>
+            <button
+              onClick={copyAddress}
+              className="flex w-full items-center gap-2.5 rounded-[7px] px-3 py-2 text-left text-[12px] font-medium text-text-secondary transition-colors hover:bg-surface-card hover:text-text-primary"
+            >
+              <IconCopy size={14} stroke={1.8} />
+              Copy address
+            </button>
+            <button
+              onClick={() =>
+                window.open(
+                  `https://stellar.expert/explorer/testnet/account/${publicKey}`,
+                  '_blank',
+                  'noopener,noreferrer',
+                )
+              }
+              className="flex w-full items-center gap-2.5 rounded-[7px] px-3 py-2 text-left text-[12px] font-medium text-text-secondary transition-colors hover:bg-surface-card hover:text-text-primary"
+            >
+              <IconExternalLink size={14} stroke={1.8} />
+              View on Stellar Expert
+            </button>
+            <div className="mx-1 my-1 h-px bg-border-subtle" />
+            <button
+              onClick={() => {
+                disconnect()
+                setOpen(false)
+              }}
+              className="flex w-full items-center gap-2.5 rounded-[7px] px-3 py-2 text-left text-[12px] font-medium text-bearish-red transition-colors hover:bg-surface-card"
+            >
+              <IconLogout size={14} stroke={1.8} />
+              Disconnect
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   )
 }

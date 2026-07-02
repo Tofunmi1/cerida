@@ -78,7 +78,6 @@ impl TryFrom<Bytes> for Groth16Proof {
 #[contracttype]
 #[derive(Clone)]
 pub struct OrderMeta {
-    pub owner: Address,
     pub hint_price: u64,
     pub hint_side: u64,
     pub hint_size: u64,
@@ -108,6 +107,19 @@ pub enum OrderStatus {
     Open = 0,
     Cancelled = 1,
     Expired = 2,
+}
+
+// ── Asset Configuration for multi-asset / RWA perp support ──────────────
+#[contracttype]
+#[derive(Clone)]
+pub struct AssetConfig {
+    pub max_leverage: u64,
+    pub maintenance_margin_bps: i128,
+    pub initial_margin_bps: i128,
+    pub liq_partial_reward_bps: i128,
+    pub liq_full_reward_bps: i128,
+    pub ins_fund_bps: i128,
+    pub active: bool,
 }
 
 // ── Oracle ──────────────────────────────────────────────────────────────

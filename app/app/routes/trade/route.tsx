@@ -5,6 +5,7 @@ import 'react-grid-layout/css/styles.css'
 import { IconPlus, IconX } from '@tabler/icons-react'
 import { LevelsProvider } from '../../context/levels-context'
 import { MarketProvider } from '../../context/market-context'
+import { SettingsProvider } from '../../context/settings-context'
 import { ThemeProvider } from '../../context/theme-context'
 import { WalletProvider } from '../../context/wallet-context'
 import { ToastContainer } from '../../components/toast/toast-container'
@@ -12,6 +13,7 @@ import { ToastProvider } from '../../components/toast/toast-context'
 import MarketBar from '../../components/trade/market-bar'
 import Sidebar from '../../components/trade/sidebar'
 import PortfolioPage from '../../components/trade/portfolio-page'
+import SettingsModal from '../../components/trade/settings-modal'
 
 export const meta = () => [{ title: 'Cerida Perp' }]
 
@@ -309,6 +311,7 @@ function TradeBoard({
 }) {
   const [items, setItems] = useState(INITIAL_ITEMS)
   const [layout, setLayout] = useState(INITIAL_LAYOUT)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const { ref, width, rowHeight } = useGridSize()
   const nextId = useRef(0)
 
@@ -362,12 +365,10 @@ function TradeBoard({
     <div className="flex h-screen min-w-0 bg-page">
       <Sidebar active={active} onActive={onActive} />
       <div className="flex min-w-0 flex-1 flex-col">
-        {active === 'Portfolio' && <PortfolioPage />}
-        <div
-          className="flex min-w-0 flex-1 flex-col"
-          style={{ display: active === 'Portfolio' ? 'none' : 'flex' }}
-        >
-          <MarketBar />
+        {active === 'Portfolio' && <PortfolioPage onClose={() => onActive('Perps')} />}
+        {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <MarketBar active={active} onActive={onActive} onOpenSettings={() => setSettingsOpen(true)} />
           <div ref={ref} className="min-h-0 flex-1 overflow-auto">
             <ReactGridLayout
               layout={layout}
@@ -424,10 +425,12 @@ export default function TradeRoute() {
       <ToastProvider>
         <WalletProvider>
           <MarketProvider>
-            <LevelsProvider>
-              <TradeBoard active={nav} onActive={setNav} />
-              <ToastContainer />
-            </LevelsProvider>
+            <SettingsProvider>
+              <LevelsProvider>
+                <TradeBoard active={nav} onActive={setNav} />
+                <ToastContainer />
+              </LevelsProvider>
+            </SettingsProvider>
           </MarketProvider>
         </WalletProvider>
       </ToastProvider>

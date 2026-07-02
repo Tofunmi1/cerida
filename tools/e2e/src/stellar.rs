@@ -14,6 +14,7 @@ const NETWORK_PASSPHRASE: &str = "Test SDF Network ; September 2015";
 pub const SOURCE: &str = "e2e";
 const COLLATERAL: i128 = 1_000_000_000;
 const LEVERAGE: u64 = 1;
+const DEFAULT_ASSET: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 pub struct E2eContext {
     pub orderbook_id: String,
@@ -25,9 +26,11 @@ pub struct E2eContext {
     pub cmt_b_hex: String,
 }
 
-/// Deploy contracts, place orders, deposit, open positions (all before match).
-pub fn deploy_and_place(
-    wasm_dir: &Path,
+/// Reuse already-deployed contracts: place orders, deposit, open positions.
+pub fn setup_with_existing(
+    keys_dir: &Path,
+    perp_id: &str,
+    orderbook_id: &str,
     proof_a_json: &str,
     proof_b_json: &str,
     cmt_a_hex: &str,
@@ -41,6 +44,87 @@ pub fn deploy_and_place(
     hint_leverage_a: u64,
     hint_leverage_b: u64,
     revealed: u64,
+    asset_id: &str,
+) -> Result<E2eContext> {
+    let alice = generate_keypair("e2e-alice");
+    let bob = generate_keypair("e2e-bob");
+    let source_pk = source_pubkey()?;
+    eprintln!("  ✓ admin source: {}", source_pk);
+    eprintln!("  ✓ alice: {} (identity: {})", alice.0, alice.1);
+    eprintln!("  ✓ bob:   {} (identity: {})", bob.0, bob.1);
+    fund(&alice.0, "alice");
+    fund(&bob.0, "bob");
+    eprintln!("  ✓ using existing orderbook: {}", orderbook_id);
+    eprintln!("  ✓ using existing perp:      {}", perp_id);
+
+    let usdc_sac = deploy_usdc_sac()?;
+    trust_usdc(&usdc_sac, &alice.1, &alice.0)?;
+    mint_usdc(&usdc_sac, &alice.0, COLLATERAL)?;
+    trust_usdc(&usdc_sac, &bob.1, &bob.0)?;
+    mint_usdc(&usdc_sac, &bob.0, COLLATERAL)?;
+
+    ob_place_order(orderbook_id, &alice.1, cmt_a_hex,
+        hint_price_a, hint_side_a, hint_size_a, hint_leverage_a, revealed, asset_id, proof_a_json)?;
+    eprintln!("  ✓ order A placed");
+
+    ob_place_order(orderbook_id, &bob.1, cmt_b_hex,
+        hint_price_b, hint_side_b, hint_size_b, hint_leverage_b, revealed, asset_id, proof_b_json)?;
+    eprintln!("  ✓ order B placed");
+
+    let zero_note = "0000000000000000000000000000000000000000000000000000000000000000";
+    let note_secret_a: u64 = rand::random();
+    let (note_cmt_a, note_null_a, note_proof_a) =
+        crate::proof::gen_note_spend(keys_dir, COLLATERAL as u64, note_secret_a)?;
+    perp_deposit_note(perp_id, &alice.1, &alice.0, &note_cmt_a, COLLATERAL)?;
+    perp_open_position(
+        perp_id, SOURCE, &note_cmt_a, &note_null_a, cmt_a_hex,
+        hint_price_a, hint_side_a, hint_leverage_a, 0, 0, 0, 0,
+        zero_note, zero_note, asset_id,
+        &proof_json(&note_proof_a.proof), proof_a_json,
+    )?;
+    eprintln!("  ✓ position A opened");
+
+    let note_secret_b: u64 = rand::random();
+    let (note_cmt_b, note_null_b, note_proof_b) =
+        crate::proof::gen_note_spend(keys_dir, COLLATERAL as u64, note_secret_b)?;
+    perp_deposit_note(perp_id, &bob.1, &bob.0, &note_cmt_b, COLLATERAL)?;
+    perp_open_position(
+        perp_id, SOURCE, &note_cmt_b, &note_null_b, cmt_b_hex,
+        hint_price_b, hint_side_b, hint_leverage_b, 0, 0, 0, 0,
+        zero_note, zero_note, asset_id,
+        &proof_json(&note_proof_b.proof), proof_b_json,
+    )?;
+    eprintln!("  ✓ position B opened");
+
+    Ok(E2eContext {
+        orderbook_id: orderbook_id.to_string(),
+        perp_id: perp_id.to_string(),
+        source_pk,
+        alice,
+        bob,
+        cmt_a_hex: cmt_a_hex.to_string(),
+        cmt_b_hex: cmt_b_hex.to_string(),
+    })
+}
+
+/// Deploy contracts, place orders, deposit, open positions (all before match).
+pub fn deploy_and_place(
+    wasm_dir: &Path,
+    keys_dir: &Path,
+    proof_a_json: &str,
+    proof_b_json: &str,
+    cmt_a_hex: &str,
+    cmt_b_hex: &str,
+    hint_price_a: u64,
+    hint_price_b: u64,
+    hint_side_a: u64,
+    hint_side_b: u64,
+    hint_size_a: u64,
+    hint_size_b: u64,
+    hint_leverage_a: u64,
+    hint_leverage_b: u64,
+    revealed: u64,
+    asset_id: &str,
 ) -> Result<E2eContext> {
     let step_start = Instant::now();
     let ob_wasm = wasm_dir.join("orderbook.wasm");
@@ -77,7 +161,7 @@ pub fn deploy_and_place(
 
     // ── Get native SAC token ID ──────────────────────────────────────────
     eprintln!("  [token] Resolving native SAC asset…");
-    let native_token = native_token_id()?;
+    let native_token = deploy_usdc_sac()?;
     eprintln!("  ✓ native token: {}", native_token);
 
     // ── Initialize perp engine ──────────────────────────────────────────
@@ -90,122 +174,62 @@ pub fn deploy_and_place(
     eprintln!("  [place] Placing order A (Alice, cmt={}…)…", &cmt_a_hex[..12]);
     eprintln!("    hint_price={} hint_side={} hint_size={} hint_leverage={} revealed={}",
         hint_price_a, hint_side_a, hint_size_a, hint_leverage_a, revealed);
-    invoke(
-        &orderbook_id,
-        &alice.1,
-        &[
-            "place_order", "--owner", &alice.0, "--commitment", cmt_a_hex,
-            "--hint-price", &hint_price_a.to_string(),
-            "--hint-side", &hint_side_a.to_string(),
-            "--hint-size", &hint_size_a.to_string(),
-            "--hint-leverage", &hint_leverage_a.to_string(),
-            "--revealed", &revealed.to_string(),
-            "--proof", proof_a_json,
-        ],
-    )?;
-    let st_a = invoke_view(
-        &orderbook_id, &alice.0,
-        &["status", "--commitment", cmt_a_hex],
-    )?;
-    eprintln!("  ✓ order A placed, status: {}", st_a);
+    ob_place_order(&orderbook_id, &alice.1, cmt_a_hex,
+        hint_price_a, hint_side_a, hint_size_a, hint_leverage_a, revealed, &DEFAULT_ASSET, proof_a_json)?;
+    eprintln!("  ✓ order A placed");
 
     // ── Place order B (Bob) ──────────────────────────────────────────────
     eprintln!("  [place] Placing order B (Bob, cmt={}…)…", &cmt_b_hex[..12]);
     eprintln!("    hint_price={} hint_side={} hint_size={} hint_leverage={} revealed={}",
         hint_price_b, hint_side_b, hint_size_b, hint_leverage_b, revealed);
-    invoke(
-        &orderbook_id,
-        &bob.1,
-        &[
-            "place_order", "--owner", &bob.0, "--commitment", cmt_b_hex,
-            "--hint-price", &hint_price_b.to_string(),
-            "--hint-side", &hint_side_b.to_string(),
-            "--hint-size", &hint_size_b.to_string(),
-            "--hint-leverage", &hint_leverage_b.to_string(),
-            "--revealed", &revealed.to_string(),
-            "--proof", proof_b_json,
-        ],
-    )?;
-    let st_b = invoke_view(
-        &orderbook_id, &bob.0,
-        &["status", "--commitment", cmt_b_hex],
-    )?;
-    eprintln!("  ✓ order B placed, status: {}", st_b);
+    ob_place_order(&orderbook_id, &bob.1, cmt_b_hex,
+        hint_price_b, hint_side_b, hint_size_b, hint_leverage_b, revealed, &DEFAULT_ASSET, proof_b_json)?;
+    eprintln!("  ✓ order B placed");
 
-    // ── Deposit collateral (Alice) ──────────────────────────────────────
-    eprintln!("  [deposit] Alice depositing {} stroops…", COLLATERAL);
-    invoke(
-        &perp_id,
-        &alice.1,
-        &[
-            "deposit", "--who", &alice.0, "--amount", &COLLATERAL.to_string(),
-        ],
-    )?;
-    let bal_a = invoke_view(
-        &perp_id, &alice.0,
-        &["get_balance", "--who", &alice.0],
-    )?;
-    eprintln!("  ✓ Alice balance: {}", bal_a);
+    // ── Generate note proof & deposit_note (Alice) ─────────────────────
+    eprintln!("  [note] Alice: generating note proof…");
+    let note_secret_a: u64 = rand::random();
+    let (note_cmt_a, note_null_a, note_proof_a) =
+        crate::proof::gen_note_spend(keys_dir, COLLATERAL as u64, note_secret_a)?;
+    eprintln!("  [deposit_note] Alice depositing {} stroops…", COLLATERAL);
+    trust_usdc(&native_token, &alice.1, &alice.0)?;
+    mint_usdc(&native_token, &alice.0, COLLATERAL)?;
+    perp_deposit_note(&perp_id, &alice.1, &alice.0, &note_cmt_a, COLLATERAL)?;
+    eprintln!("  ✓ Alice note deposited");
 
-    // ── Deposit collateral (Bob) ────────────────────────────────────────
-    eprintln!("  [deposit] Bob depositing {} stroops…", COLLATERAL);
-    invoke(
-        &perp_id,
-        &bob.1,
-        &[
-            "deposit", "--who", &bob.0, "--amount", &COLLATERAL.to_string(),
-        ],
-    )?;
-    let bal_b = invoke_view(
-        &perp_id, &bob.0,
-        &["get_balance", "--who", &bob.0],
-    )?;
-    eprintln!("  ✓ Bob balance: {}", bal_b);
+    // ── Generate note proof & deposit_note (Bob) ───────────────────────
+    eprintln!("  [note] Bob: generating note proof…");
+    let note_secret_b: u64 = rand::random();
+    let (note_cmt_b, note_null_b, note_proof_b) =
+        crate::proof::gen_note_spend(keys_dir, COLLATERAL as u64, note_secret_b)?;
+    eprintln!("  [deposit_note] Bob depositing {} stroops…", COLLATERAL);
+    trust_usdc(&native_token, &bob.1, &bob.0)?;
+    mint_usdc(&native_token, &bob.0, COLLATERAL)?;
+    perp_deposit_note(&perp_id, &bob.1, &bob.0, &note_cmt_b, COLLATERAL)?;
+    eprintln!("  ✓ Bob note deposited");
 
-    // ── Open position A (Alice) ──────────────────────────────────────────
-    eprintln!("  [position] Opening position A (Alice, cmt={}…)…", &cmt_a_hex[..12]);
-    eprintln!("    collateral={} hint_price={} hint_side={} leverage={}", COLLATERAL, hint_price_a, hint_side_a, LEVERAGE);
+    // ── Open position A from note (Alice) ────────────────────────────────
     let zero_note = "0000000000000000000000000000000000000000000000000000000000000000";
-    invoke(
-        &perp_id,
-        &alice.1,
-        &[
-            "open_position", "--owner", &alice.0, "--commitment", cmt_a_hex,
-            "--collateral", &COLLATERAL.to_string(),
-            "--hint_price", &hint_price_a.to_string(),
-            "--hint_side", &hint_side_a.to_string(),
-            "--hint_leverage", &LEVERAGE.to_string(),
-            "--liquidation_recipient_note", zero_note,
-            "--proof", proof_a_json,
-        ],
+    eprintln!("  [position] Opening position A from note (Alice, cmt={}…)…", &cmt_a_hex[..12]);
+    eprintln!("    hint_price={} hint_side={} hint_leverage={}", hint_price_a, hint_side_a, hint_leverage_a);
+    perp_open_position(
+        &perp_id, SOURCE, &note_cmt_a, &note_null_a, cmt_a_hex,
+        hint_price_a, hint_side_a, hint_leverage_a, 0, 0, 0, 0,
+        zero_note, zero_note, &DEFAULT_ASSET,
+        &proof_json(&note_proof_a.proof), proof_a_json,
     )?;
-    let pos_a = invoke_view(
-        &perp_id, &alice.0,
-        &["get_position", "--commitment", cmt_a_hex],
-    )?;
-    eprintln!("  ✓ position A: {}", pos_a);
+    eprintln!("  ✓ position A opened");
 
-    // ── Open position B (Bob) ──────────────────────────────────────────
-    eprintln!("  [position] Opening position B (Bob, cmt={}…)…", &cmt_b_hex[..12]);
-    eprintln!("    collateral={} hint_price={} hint_side={} leverage={}", COLLATERAL, hint_price_b, hint_side_b, LEVERAGE);
-    invoke(
-        &perp_id,
-        &bob.1,
-        &[
-            "open_position", "--owner", &bob.0, "--commitment", cmt_b_hex,
-            "--collateral", &COLLATERAL.to_string(),
-            "--hint_price", &hint_price_b.to_string(),
-            "--hint_side", &hint_side_b.to_string(),
-            "--hint_leverage", &LEVERAGE.to_string(),
-            "--liquidation_recipient_note", zero_note,
-            "--proof", proof_b_json,
-        ],
+    // ── Open position B from note (Bob) ──────────────────────────────────
+    eprintln!("  [position] Opening position B from note (Bob, cmt={}…)…", &cmt_b_hex[..12]);
+    eprintln!("    hint_price={} hint_side={} hint_leverage={}", hint_price_b, hint_side_b, hint_leverage_b);
+    perp_open_position(
+        &perp_id, SOURCE, &note_cmt_b, &note_null_b, cmt_b_hex,
+        hint_price_b, hint_side_b, hint_leverage_b, 0, 0, 0, 0,
+        zero_note, zero_note, &DEFAULT_ASSET,
+        &proof_json(&note_proof_b.proof), proof_b_json,
     )?;
-    let pos_b = invoke_view(
-        &perp_id, &bob.0,
-        &["get_position", "--commitment", cmt_b_hex],
-    )?;
-    eprintln!("  ✓ position B: {}", pos_b);
+    eprintln!("  ✓ position B opened");
 
     eprintln!("  [setup] Deploy + setup completed in {:.2}s", step_start.elapsed().as_secs_f64());
 
@@ -223,6 +247,7 @@ pub fn deploy_and_place(
 /// Full e2e: deploy, place, deposit, open, match, verify (local proof gen).
 pub fn run_e2e(
     wasm_dir: &Path,
+    keys_dir: &Path,
     p_a: &crate::proof::RawProof,
     p_b: &crate::proof::RawProof,
     p_match: &crate::proof::RawProof,
@@ -244,13 +269,13 @@ pub fn run_e2e(
 
     eprintln!("── Phase 1: Deploy, place, deposit, open ──");
     let ctx = deploy_and_place(
-        wasm_dir, &proof_a_json, &proof_b_json,
+        wasm_dir, keys_dir, &proof_a_json, &proof_b_json,
         cmt_a_hex, cmt_b_hex,
         hint_price_a, hint_price_b,
         hint_side_a, hint_side_b,
         hint_size_a, hint_size_b,
         hint_leverage_a, hint_leverage_b,
-        revealed,
+        revealed, &DEFAULT_ASSET,
     )?;
 
     let match_price_hex = &p_match.public_inputs[2];
@@ -262,19 +287,12 @@ pub fn run_e2e(
     eprintln!("── Phase 2: On-chain match ──");
     eprintln!("  [match] match_positions(cmt_a={}…, cmt_b={}…)",
         &cmt_a_hex[..12], &cmt_b_hex[..12]);
-    invoke(
+    perp_match_positions(
         &ctx.perp_id,
-        SOURCE,
-        &[
-            "match_positions",
-            "--cmt_a", cmt_a_hex,
-            "--cmt_b", cmt_b_hex,
-            "--nullifier_a", &hex_field(nf_a_hex),
-            "--nullifier_b", &hex_field(nf_b_hex),
-            "--match_price", &hex_field(match_price_hex),
-            "--match_size", &hex_field(match_size_hex),
-            "--proof", &proof_json(&p_match.proof),
-        ],
+        cmt_a_hex, cmt_b_hex,
+        &hex_field(nf_a_hex), &hex_field(nf_b_hex),
+        &hex_field(match_price_hex), &hex_field(match_size_hex),
+        &proof_json(&p_match.proof),
     )?;
 
     verify_match(&ctx, nf_a_hex, nf_b_hex)?;
@@ -284,44 +302,16 @@ pub fn run_e2e(
 
 /// Verify match results on-chain (positions + nullifiers).
 pub fn verify_match(ctx: &E2eContext, nf_a_hex: &str, nf_b_hex: &str) -> Result<()> {
+    use crate::soroban_rpc::scval_bytes32;
     eprintln!("  [verify] Checking matched positions…");
-    let pos_a2 = invoke_view(
-        &ctx.perp_id, &ctx.alice.0,
-        &["get_position", "--commitment", &ctx.cmt_a_hex],
-    )?;
-    let pos_b2 = invoke_view(
-        &ctx.perp_id, &ctx.bob.0,
-        &["get_position", "--commitment", &ctx.cmt_b_hex],
-    )?;
+    let pos_a2 = xdr_view(&ctx.perp_id, "get_position", vec![scval_bytes32(&ctx.cmt_a_hex)?])?;
+    let pos_b2 = xdr_view(&ctx.perp_id, "get_position", vec![scval_bytes32(&ctx.cmt_b_hex)?])?;
     eprintln!("  ✓ position A: {}", pos_a2);
     eprintln!("  ✓ position B: {}", pos_b2);
 
-    // Parse status field to confirm match
-    let status_a: u64 = serde_json::from_str(
-        &serde_json::from_str::<serde_json::Value>(&pos_a2)
-            .ok()
-            .and_then(|v| v["status"].as_u64())
-            .map(|s| s.to_string())
-            .unwrap_or_default()
-    ).unwrap_or(99);
-    let status_b: u64 = serde_json::from_str(
-        &serde_json::from_str::<serde_json::Value>(&pos_b2)
-            .ok()
-            .and_then(|v| v["status"].as_u64())
-            .map(|s| s.to_string())
-            .unwrap_or_default()
-    ).unwrap_or(99);
-    eprintln!("  [status] A={} (1=Matched) B={} (1=Matched)", status_a, status_b);
-
     eprintln!("  [verify] Checking nullifiers…");
-    let spent_a = invoke_view(
-        &ctx.perp_id, &ctx.alice.0,
-        &["is_spent", "--nullifier", &hex_field(nf_a_hex)],
-    )?;
-    let spent_b = invoke_view(
-        &ctx.perp_id, &ctx.bob.0,
-        &["is_spent", "--nullifier", &hex_field(nf_b_hex)],
-    )?;
+    let spent_a = xdr_view(&ctx.perp_id, "is_spent", vec![scval_bytes32(&hex_field(nf_a_hex))?])?;
+    let spent_b = xdr_view(&ctx.perp_id, "is_spent", vec![scval_bytes32(&hex_field(nf_b_hex))?])?;
     eprintln!("  ✓ nullifier A spent: {}", spent_a);
     eprintln!("  ✓ nullifier B spent: {}", spent_b);
 
@@ -371,7 +361,7 @@ pub fn private_deposit_e2e(
 
     let perp_id = deploy(&pe_wasm)?;
     eprintln!("  ✓ perp-engine: {}", perp_id);
-    let native_token = native_token_id()?;
+    let native_token = deploy_usdc_sac()?;
     init_perp_engine(&perp_id, SOURCE, &native_token)?;
     eprintln!("  ✓ initialized");
 
@@ -384,48 +374,23 @@ pub fn private_deposit_e2e(
     eprintln!("  note_commitment: {}…", &cmt_hex[..16]);
     eprintln!("  nullifier:       {}…", &null_hex[..16]);
 
+    use crate::soroban_rpc::scval_bytes32;
     // Alice calls deposit_note — amount is visible, but the commitment (not address) is stored
-    invoke(
-        &perp_id,
-        &alice.1,
-        &[
-            "deposit_note",
-            "--from", &alice.0,
-            "--note_commitment", &cmt_hex,
-            "--amount", &amount.to_string(),
-        ],
-    )?;
-
-    // Verify note is stored
-    let stored = invoke_view(
-        &perp_id, &alice.0,
-        &["get_note", "--note_commitment", &cmt_hex],
-    )?;
-    eprintln!("  ✓ get_note → {}", stored);
+    trust_usdc(&native_token, &alice.1, &alice.0)?;
+    mint_usdc(&native_token, &alice.0, amount as i128)?;
+    perp_deposit_note(&perp_id, &alice.1, &alice.0, &cmt_hex, amount as i128)?;
+    eprintln!("  ✓ note deposited");
 
     eprintln!("\n── Phase 3: Shielded withdrawal to Bob ──");
     eprintln!("  recipient: {} (different from depositor {})", &bob.0[..8], &alice.0[..8]);
 
-    let proof_json = proof_json(&note_proof.proof);
-    invoke(
-        &perp_id,
-        SOURCE,
-        &[
-            "withdraw_note",
-            "--note_commitment", &cmt_hex,
-            "--nullifier", &null_hex,
-            "--recipient", &bob.0,
-            "--proof", &proof_json,
-        ],
-    )?;
+    let pj = proof_json(&note_proof.proof);
+    perp_withdraw_note(&perp_id, SOURCE, &cmt_hex, &null_hex, &bob.0, &pj)?;
 
-    // Verify nullifier is now spent
-    let spent = invoke_view(
-        &perp_id, &source_pk,
-        &["is_spent", "--nullifier", &null_hex],
-    )?;
+    let spent = xdr_view(&perp_id, "is_spent", vec![scval_bytes32(&null_hex)?])?;
     eprintln!("  ✓ nullifier spent: {}", spent);
-    assert_eq!(spent.trim(), "true", "nullifier should be spent after withdrawal");
+    assert!(spent.contains("true") || spent.contains("Bool(true)"),
+        "nullifier should be spent after withdrawal, got: {spent}");
 
     eprintln!("\n  Privacy check:");
     eprintln!("    Depositor (alice): {}", alice.0);
@@ -463,10 +428,11 @@ pub fn private_trading_e2e(
 
     fund(&alice.0, "alice");
     fund(&liq.0, "liq");
+    fund(&recipient.0, "recipient");
 
     let perp_id = deploy(&pe_wasm)?;
     eprintln!("  ✓ perp-engine: {}", perp_id);
-    let native_token = native_token_id()?;
+    let native_token = deploy_usdc_sac()?;
     init_perp_engine(&perp_id, SOURCE, &native_token)?;
     eprintln!("  ✓ initialized");
 
@@ -475,47 +441,30 @@ pub fn private_trading_e2e(
         crate::proof::gen_note_spend(keys_dir, amount, note_secret)?;
     eprintln!("  note_commitment: {}…", &note_cmt_hex[..16]);
 
-    invoke(
-        &perp_id, &alice.1,
-        &["deposit_note", "--from", &alice.0, "--note_commitment", &note_cmt_hex,
-          "--amount", &amount.to_string()],
-    )?;
-    let stored = invoke_view(&perp_id, &alice.0, &["get_note", "--note_commitment", &note_cmt_hex])?;
-    eprintln!("  ✓ note stored: {}", stored);
+    use crate::soroban_rpc::scval_bytes32;
+    trust_usdc(&native_token, &alice.1, &alice.0)?;
+    mint_usdc(&native_token, &alice.0, amount as i128)?;
+    perp_deposit_note(&perp_id, &alice.1, &alice.0, &note_cmt_hex, amount as i128)?;
+    eprintln!("  ✓ note deposited");
 
     eprintln!("\n── Phase 3: Open position from note ──");
     let commit_proof =
-        crate::proof::gen_commitment(keys_dir, 0, 100_000_000, 1, 1, 0, 0, 42, order_secret)?;
+        crate::proof::gen_commitment(keys_dir, 0, 100_000_000, 1, 1, 0, 0, 42, order_secret, false)?;
     let pos_cmt_hex = hex_field(&commit_proof.public_inputs[0]);
     eprintln!("  position_commitment: {}…", &pos_cmt_hex[..16]);
 
-    invoke(
-        &perp_id, SOURCE,
-        &[
-            "open_position_from_note",
-            "--note_commitment", &note_cmt_hex,
-            "--note_nullifier", &note_null_hex,
-            "--position_commitment", &pos_cmt_hex,
-            "--hint_price", "100000000",
-            "--hint_side", "0",
-            "--hint_leverage", "1",
-            "--hint_size", "0",
-            "--tif", "GTC",
-            "--expiry_ledger", "0",
-            "--tp_price", "0",
-            "--sl_price", "0",
-            "--liquidation_recipient_note", "0000000000000000000000000000000000000000000000000000000000000000",
-            "--liquidation_recipient", &liq.0,
-            "--note_proof", &proof_json(&note_proof.proof),
-            "--commit_proof", &proof_json(&commit_proof.proof),
-        ],
+    let zero_note = "0000000000000000000000000000000000000000000000000000000000000000";
+    perp_open_position(
+        &perp_id, SOURCE, &note_cmt_hex, &note_null_hex, &pos_cmt_hex,
+        100_000_000, 0, 1, 0, 0, 0, 0,
+        zero_note, zero_note, DEFAULT_ASSET,
+        &proof_json(&note_proof.proof), &proof_json(&commit_proof.proof),
     )?;
 
-    let pos = invoke_view(&perp_id, &alice.0, &["get_position", "--commitment", &pos_cmt_hex])?;
-    eprintln!("  ✓ position: {}", pos);
-    let note_null_spent = invoke_view(&perp_id, &source_pk, &["is_spent", "--nullifier", &note_null_hex])?;
+    let note_null_spent = xdr_view(&perp_id, "is_spent", vec![scval_bytes32(&note_null_hex)?])?;
     eprintln!("  ✓ note nullifier spent: {}", note_null_spent);
-    assert_eq!(note_null_spent.trim(), "true", "note nullifier should be spent after open_position_from_note");
+    assert!(note_null_spent.contains("true") || note_null_spent.contains("Bool(true)"),
+        "note nullifier should be spent after open_position_from_note, got: {note_null_spent}");
 
     eprintln!("\n── Phase 4: Cancel position → settlement note ──");
     let (cancel_null_hex, cancel_proof) =
@@ -525,40 +474,21 @@ pub fn private_trading_e2e(
     eprintln!("  cancel_nullifier: {}…", &cancel_null_hex[..16]);
     eprintln!("  settlement_note:  {}…", &settle_cmt_hex[..16]);
 
-    invoke(
-        &perp_id, SOURCE,
-        &[
-            "cancel_position_to_note",
-            "--position_commitment", &pos_cmt_hex,
-            "--cancel_nullifier", &cancel_null_hex,
-            "--recipient_note", &settle_cmt_hex,
-            "--cancel_proof", &proof_json(&cancel_proof.proof),
-        ],
+    perp_cancel_position(
+        &perp_id, SOURCE, &pos_cmt_hex, &cancel_null_hex, &settle_cmt_hex,
+        &proof_json(&cancel_proof.proof),
     )?;
-
-    let settle_stored = invoke_view(&perp_id, &source_pk, &["get_note", "--note_commitment", &settle_cmt_hex])?;
-    eprintln!("  ✓ settlement note stored: {}", settle_stored);
+    eprintln!("  ✓ position cancelled");
 
     eprintln!("\n── Phase 5: Withdraw settlement note ──");
     eprintln!("  recipient: {} (unlinked from original depositor)", &recipient.0[..8]);
 
-    invoke(
-        &perp_id, SOURCE,
-        &[
-            "withdraw_note",
-            "--note_commitment", &settle_cmt_hex,
-            "--nullifier", &settle_null_hex,
-            "--recipient", &recipient.0,
-            "--proof", &proof_json(&settle_proof.proof),
-        ],
-    )?;
+    perp_withdraw_note(&perp_id, SOURCE, &settle_cmt_hex, &settle_null_hex, &recipient.0, &proof_json(&settle_proof.proof))?;
 
-    let settle_null_spent = invoke_view(
-        &perp_id, &source_pk,
-        &["is_spent", "--nullifier", &settle_null_hex],
-    )?;
+    let settle_null_spent = xdr_view(&perp_id, "is_spent", vec![scval_bytes32(&settle_null_hex)?])?;
     eprintln!("  ✓ settlement nullifier spent: {}", settle_null_spent);
-    assert_eq!(settle_null_spent.trim(), "true", "settlement nullifier should be spent");
+    assert!(settle_null_spent.contains("true") || settle_null_spent.contains("Bool(true)"),
+        "settlement nullifier should be spent, got: {settle_null_spent}");
 
     eprintln!("\n  Privacy summary:");
     eprintln!("    Depositor (alice):     {}", alice.0);
@@ -582,19 +512,54 @@ pub fn deploy_contracts(wasm_dir: &Path) -> Result<(String, String, String, Stri
     let source_pk = source_pubkey()?;
     let orderbook_id = deploy(&ob_wasm)?;
     let perp_id = deploy(&pe_wasm)?;
-    let native_token = native_token_id()?;
+    let usdc_sac = deploy_usdc_sac()?;
 
-    Ok((orderbook_id, perp_id, source_pk, native_token))
+    Ok((orderbook_id, perp_id, source_pk, usdc_sac))
 }
 
 
 /// Initialize perp-engine with admin and token (retries on contract-not-found).
 pub fn init_perp_engine(perp_id: &str, admin: &str, token: &str) -> Result<String> {
+    use crate::soroban_rpc::{scval_address, scval_bytes32, scval_asset_config, SorobanRpc};
+    let rpc = SorobanRpc::new();
+    // `admin` may be an identity name (e.g. "e2e") — resolve to G... pubkey
+    let admin_pk = if admin.starts_with('G') {
+        admin.to_string()
+    } else {
+        std::process::Command::new("stellar")
+            .args(["keys", "address", admin])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("could not resolve identity '{admin}' to pubkey"))?
+    };
+    let args = vec![
+        scval_address(&admin_pk)?,
+        scval_address(token)?,
+        stellar_xdr::ScVal::Void, // vault: Option<Address> = None
+    ];
     const MAX_ATTEMPTS: u32 = 60;
     const RETRY_SECS: u64 = 10;
     for attempt in 0..MAX_ATTEMPTS {
-        match invoke(perp_id, SOURCE, &["initialize", "--admin", admin, "--token", token]) {
-            Ok(r) => return Ok(r),
+        match rpc.invoke_xdr(perp_id, SOURCE, "initialize", args.clone()) {
+            Ok(r) => {
+                // Register default asset
+                let default_asset = DEFAULT_ASSET;
+                let config = scval_asset_config(50, 500, 1000, 100, 150, 50, true)?;
+                let register_args = vec![
+                    scval_address(&admin_pk)?,
+                    scval_bytes32(default_asset)?,
+                    stellar_xdr::ScVal::Bytes(stellar_xdr::ScBytes(stellar_xdr::BytesM::default())),
+                    config,
+                ];
+                match rpc.invoke_xdr(perp_id, SOURCE, "register_asset", register_args) {
+                    Ok(_) => eprintln!("  [init] default asset registered"),
+                    Err(e) => eprintln!("  [init] register_asset note: {}", e),
+                }
+                return Ok(r);
+            }
             Err(e) => {
                 let msg = e.to_string().to_lowercase();
                 if (msg.contains("contract not found") || msg.contains("missing")) && attempt < MAX_ATTEMPTS - 1 {
@@ -610,6 +575,128 @@ pub fn init_perp_engine(perp_id: &str, admin: &str, token: &str) -> Result<Strin
     unreachable!()
 }
 
+pub fn ob_place_order(
+    ob_id: &str, identity: &str,
+    commitment: &str,
+    hint_price: u64, hint_side: u64, hint_size: u64, hint_leverage: u64,
+    revealed: u64, asset_id: &str, proof: &str,
+) -> Result<()> {
+    use crate::soroban_rpc::{scval_bytes32, scval_u64, scval_tif, scval_proof};
+    let rpc = crate::soroban_rpc::SorobanRpc::new();
+    // portfolio_key = all-zeros for isolated margin (second public input of commitment circuit)
+    let zeros = "0000000000000000000000000000000000000000000000000000000000000000";
+    rpc.invoke_xdr(ob_id, identity, "place_order", vec![
+        scval_bytes32(commitment)?,
+        scval_bytes32(zeros)?,
+        scval_u64(hint_price),
+        scval_u64(hint_side),
+        scval_u64(hint_size),
+        scval_u64(hint_leverage),
+        scval_u64(revealed),
+        scval_tif("GTC")?,
+        scval_u64(0), // expiry_ledger
+        scval_bytes32(asset_id)?,
+        scval_proof(proof)?,
+    ])?;
+    Ok(())
+}
+
+fn xdr_view(contract_id: &str, function: &str, args: Vec<stellar_xdr::ScVal>) -> Result<String> {
+    let rpc = crate::soroban_rpc::SorobanRpc::new();
+    rpc.invoke_view_xdr(contract_id, SOURCE, function, args)
+}
+
+fn perp_match_positions(
+    perp_id: &str,
+    cmt_a: &str, cmt_b: &str,
+    nf_a: &str, nf_b: &str,
+    match_price: &str, match_size: &str,
+    proof: &str,
+) -> Result<()> {
+    use crate::soroban_rpc::{scval_bytes32, scval_proof};
+    let rpc = crate::soroban_rpc::SorobanRpc::new();
+    rpc.invoke_xdr(perp_id, SOURCE, "match_positions", vec![
+        scval_bytes32(cmt_a)?,
+        scval_bytes32(cmt_b)?,
+        scval_bytes32(nf_a)?,
+        scval_bytes32(nf_b)?,
+        scval_bytes32(match_price)?,
+        scval_bytes32(match_size)?,
+        scval_proof(proof)?,
+    ])?;
+    Ok(())
+}
+
+pub fn perp_deposit_note(perp_id: &str, from_identity: &str, from_pk: &str, commitment: &str, amount: i128) -> Result<()> {
+    use crate::soroban_rpc::{scval_address, scval_bytes32, scval_i128};
+    let rpc = crate::soroban_rpc::SorobanRpc::new();
+    rpc.invoke_xdr(perp_id, from_identity, "deposit_note", vec![
+        scval_address(from_pk)?,
+        scval_bytes32(commitment)?,
+        scval_i128(amount),
+    ])?;
+    Ok(())
+}
+
+fn perp_withdraw_note(perp_id: &str, source_identity: &str, commitment: &str, nullifier: &str, recipient_pk: &str, proof: &str) -> Result<()> {
+    use crate::soroban_rpc::{scval_address, scval_bytes32, scval_proof};
+    let rpc = crate::soroban_rpc::SorobanRpc::new();
+    rpc.invoke_xdr(perp_id, source_identity, "withdraw_note", vec![
+        scval_bytes32(commitment)?,
+        scval_bytes32(nullifier)?,
+        scval_address(recipient_pk)?,
+        scval_proof(proof)?,
+    ])?;
+    Ok(())
+}
+
+pub fn perp_open_position(
+    perp_id: &str, source_identity: &str,
+    note_cmt: &str, note_null: &str, pos_cmt: &str,
+    hint_price: u64, hint_side: u64, hint_leverage: u64, hint_size: u64,
+    expiry_ledger: u64, tp_price: u64, sl_price: u64,
+    liq_note: &str, portfolio_key: &str,
+    asset_id: &str,
+    note_proof: &str, commit_proof: &str,
+) -> Result<()> {
+    use crate::soroban_rpc::{scval_bytes32, scval_u64, scval_tif, scval_proof};
+    let rpc = crate::soroban_rpc::SorobanRpc::new();
+    rpc.invoke_xdr(perp_id, source_identity, "open_position_from_note", vec![
+        scval_bytes32(note_cmt)?,
+        scval_bytes32(note_null)?,
+        scval_bytes32(pos_cmt)?,
+        scval_u64(hint_price),
+        scval_u64(hint_side),
+        scval_u64(hint_leverage),
+        scval_u64(hint_size),
+        scval_tif("GTC")?,
+        scval_u64(expiry_ledger),
+        scval_u64(tp_price),
+        scval_u64(sl_price),
+        scval_bytes32(liq_note)?,
+        scval_bytes32(portfolio_key)?,
+        scval_bytes32(asset_id)?,
+        scval_proof(note_proof)?,
+        scval_proof(commit_proof)?,
+    ])?;
+    Ok(())
+}
+
+fn perp_cancel_position(
+    perp_id: &str, source_identity: &str,
+    pos_cmt: &str, cancel_null: &str, recipient_note: &str, cancel_proof: &str,
+) -> Result<()> {
+    use crate::soroban_rpc::{scval_bytes32, scval_proof};
+    let rpc = crate::soroban_rpc::SorobanRpc::new();
+    rpc.invoke_xdr(perp_id, source_identity, "cancel_position_to_note", vec![
+        scval_bytes32(pos_cmt)?,
+        scval_bytes32(cancel_null)?,
+        scval_bytes32(recipient_note)?,
+        scval_proof(cancel_proof)?,
+    ])?;
+    Ok(())
+}
+
 pub fn hex_field(decimal: &str) -> String {
     // Already 64-char hex? Pass through.
     if decimal.len() == 64 && decimal.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -619,24 +706,92 @@ pub fn hex_field(decimal: &str) -> String {
     format!("{:0>64x}", n)
 }
 
-fn proof_json(p: &rust_circuits::ProofHex) -> String {
+pub fn proof_json(p: &rust_circuits::ProofHex) -> String {
     serde_json::json!({"a": p.a, "b": p.b, "c": p.c}).to_string()
 }
 
-fn native_token_id() -> Result<String> {
+pub fn native_token_id() -> Result<String> {
     let out = std::process::Command::new("stellar")
-        .args(["contract", "id", "asset", "--asset", "native", "--network-passphrase", NETWORK_PASSPHRASE, "--rpc-url", &rpc_url()])
+        .args([
+            "contract", "id", "asset",
+            "--asset", "native",
+            "--network-passphrase", NETWORK_PASSPHRASE,
+            "--rpc-url", &rpc_url(),
+        ])
         .output()
-        .map_err(|e| anyhow::anyhow!("Failed to get native token id: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("get native token id: {e}"))?;
+    if !out.status.success() {
+        anyhow::bail!("stellar contract id asset native failed:\n{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let id = String::from_utf8(out.stdout)?.trim().to_string();
+    eprintln!("  [rpc] native SAC token: {}", id);
+    Ok(id)
+}
+
+pub fn deploy_usdc_sac() -> Result<String> {
+    let issuer = source_pubkey()?;
+    let asset = format!("USDC:{issuer}");
+
+    eprintln!("  [usdc] Deploying USDC SAC (issuer={})…", &issuer[..8]);
+    let out = std::process::Command::new("stellar")
+        .args([
+            "contract", "asset", "deploy",
+            "--asset", &asset,
+            "--source", SOURCE,
+            "--network-passphrase", NETWORK_PASSPHRASE,
+            "--rpc-url", &rpc_url(),
+        ])
+        .output()
+        .map_err(|e| anyhow::anyhow!("deploy USDC SAC: {e}"))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let combined = format!("{stdout}\n{stderr}");
+        if !combined.contains("ExistingValue") && !combined.contains("already") {
+            anyhow::bail!("deploy USDC SAC failed:\n{stderr}");
+        }
+        eprintln!("  [usdc] SAC already deployed, fetching ID…");
+    }
+
+    let out = std::process::Command::new("stellar")
+        .args([
+            "contract", "id", "asset",
+            "--asset", &asset,
+            "--network-passphrase", NETWORK_PASSPHRASE,
+            "--rpc-url", &rpc_url(),
+        ])
+        .output()
+        .map_err(|e| anyhow::anyhow!("get USDC SAC id: {e}"))?;
+
     if !out.status.success() {
         anyhow::bail!("stellar contract id asset failed:\n{}", String::from_utf8_lossy(&out.stderr));
     }
-    let id = String::from_utf8(out.stdout)
-        .map_err(|_| anyhow::anyhow!("Invalid UTF-8"))?
-        .trim()
-        .to_string();
-    eprintln!("  [rpc] native SAC token: {}", id);
+
+    let id = String::from_utf8(out.stdout)?.trim().to_string();
+    eprintln!("  [usdc] SAC: {}", id);
     Ok(id)
+}
+
+pub fn trust_usdc(sac_id: &str, identity: &str, pk: &str) -> Result<()> {
+    use crate::soroban_rpc::{scval_address, SorobanRpc};
+    let rpc = SorobanRpc::new();
+    rpc.invoke_xdr(sac_id, identity, "trust", vec![
+        scval_address(pk)?,
+    ])?;
+    eprintln!("  [usdc] trustline created for {}…", &pk[..8]);
+    Ok(())
+}
+
+pub fn mint_usdc(sac_id: &str, to_pk: &str, amount: i128) -> Result<()> {
+    use crate::soroban_rpc::{scval_address, scval_i128, SorobanRpc};
+    let rpc = SorobanRpc::new();
+    rpc.invoke_xdr(sac_id, SOURCE, "mint", vec![
+        scval_address(to_pk)?,
+        scval_i128(amount),
+    ])?;
+    eprintln!("  [usdc] minted {} to {}…", amount, &to_pk[..8]);
+    Ok(())
 }
 
 pub fn generate_keypair(name: &str) -> (String, String) {
@@ -704,15 +859,30 @@ pub fn fund(pk: &str, label: &str) {
     eprintln!("  [fund] {} funded ({:.2}s)", label, start.elapsed().as_secs_f64());
 }
 
+fn install_wasm(wasm: &Path) -> Result<String> {
+    let wasm_bytes = std::fs::read(wasm)?;
+    crate::soroban_rpc::install_wasm_via_rpc(&wasm_bytes, SOURCE)
+}
+
 fn deploy(wasm: &Path) -> Result<String> {
     eprintln!("  [deploy] Preparing deployment…");
     let salt: [u8; 32] = rand::thread_rng().gen();
     let salt_hex = hex::encode(salt);
     let source_pk = source_pubkey()?;
     let id = precompute_id(&salt_hex, &source_pk)?;
+    let wasm_size = std::fs::metadata(wasm).map(|m| m.len()).unwrap_or(0);
     eprintln!("  [deploy] Precomputed contract ID: {}", id);
-    eprintln!("  [deploy] WASM: {} ({} bytes)", wasm.display(),
-        std::fs::metadata(wasm).map(|m| m.len()).unwrap_or(0));
+    eprintln!("  [deploy] WASM: {} ({} bytes)", wasm.display(), wasm_size);
+
+    if wasm_size > 20_000 {
+        // stellar CLI v22 fails on WASMs > ~27KB. Use RPC path: install then deploy.
+        eprintln!("  [deploy] large WASM — installing + deploying via RPC…");
+        let hash = install_wasm(wasm)?;
+        let contract_id = crate::soroban_rpc::deploy_contract_via_rpc(&hash, &salt_hex, SOURCE)?;
+        eprintln!("  [deploy] waiting 30s for propagation…");
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        return Ok(contract_id);
+    }
 
     let output = std::process::Command::new("stellar")
         .args([
@@ -725,7 +895,16 @@ fn deploy(wasm: &Path) -> Result<String> {
         ])
         .output()
         .map_err(|e| anyhow::anyhow!("deploy cmd: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // stellar contract deploy prints the contract ID to stdout on success
+    let stdout_id = stdout.trim().to_string();
+    if output.status.success() && !stdout_id.is_empty() && stdout_id.starts_with('C') {
+        eprintln!("  [deploy] TX confirmed, waiting 30s for propagation…");
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        eprintln!("  [deploy] ✓ Contract confirmed on-chain: {}", stdout_id);
+        return Ok(stdout_id);
+    }
     if let Some(tx_hash) = extract_tx_hash(&stderr) {
         eprintln!("  [deploy] TX submitted: {tx_hash}");
         eprintln!("  [deploy] Waiting for confirmation (max 240s)…");
@@ -743,7 +922,7 @@ fn deploy(wasm: &Path) -> Result<String> {
         }
         anyhow::bail!("deploy TX {tx_hash} not confirmed after 360s");
     }
-    anyhow::bail!("deploy failed: could not extract tx hash:\n{stderr}");
+    anyhow::bail!("deploy failed:\nstdout: {stdout}\nstderr: {stderr}");
 }
 
 fn precompute_id(salt_hex: &str, source_pk: &str) -> Result<String> {

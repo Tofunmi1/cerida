@@ -844,3 +844,159 @@ fn do_match(
 fn err(s: impl std::fmt::Display) -> Response {
     Response { ok: false, error: Some(s.to_string()), ..Default::default() }
 }
+
+// ── Secure HTTP Server (Attestation + Encryption) ───────────────────
+// TLS is handled by a reverse proxy (GCP LB, nginx, or sidecar).
+// This server provides the application-layer security: attestation + AEAD.
+
+#[cfg(feature = "secure")]
+pub mod secure {
+    use super::*;
+    use crate::attestation;
+    use crate::crypto;
+    use axum::{
+        extract::{Query, State},
+        routing::{get, post},
+        Json, Router,
+    };
+    use std::sync::Arc as StdArc;
+
+    #[derive(Clone)]
+    pub struct SecureState {
+        pub store: StdArc<db::SecretStore>,
+        pub books: StdArc<RwLock<HashMap<u64, engine::OrderBook>>>,
+        pub book_store: StdArc<db::BookStore>,
+        pub fills: StdArc<db::FillLedger>,
+        pub keys_dir: PathBuf,
+        pub attestation_policy: StdArc<attestation::AttestationPolicy>,
+    }
+
+    pub async fn run_secure(
+        addr: &str,
+        db_path: PathBuf,
+        keys_dir: PathBuf,
+    ) -> Result<()> {
+        let sled_db = db::open_db(&db_path)?;
+        let store = db::SecretStore::open(&sled_db)?;
+        let book_store = db::BookStore::open(&sled_db)?;
+        let books = book_store.load_all()?;
+        let fills = db::FillLedger::open(&sled_db)?;
+
+        let state = SecureState {
+            store: StdArc::new(store),
+            books: StdArc::new(RwLock::new(books)),
+            book_store: StdArc::new(book_store),
+            fills: StdArc::new(fills),
+            keys_dir,
+            attestation_policy: StdArc::new(attestation::AttestationPolicy::default()),
+        };
+
+        let app = Router::new()
+            .route("/attestation", get(handle_attestation))
+            .route("/init", post(handle_init_secure))
+            .route("/place", post(handle_place_secure))
+            .route("/cancel", post(handle_cancel_secure))
+            .route("/match", post(handle_match_secure))
+            .route("/market", post(handle_market_secure))
+            .route("/get_market", get(handle_get_market_secure))
+            .route("/set_mark_price", post(handle_set_mark_price_secure))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+
+        log::info!("Secure HTTP server listening",
+            "addr", addr,
+            "note", "TLS must be terminated by a reverse proxy"
+        );
+
+        axum::serve(listener, app).await?;
+        Ok(())
+    }
+
+    /// GET /attestation?nonce=<hex> — request an attestation token bound to TLS EKM.
+    async fn handle_attestation(
+        State(state): State<SecureState>,
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let nonce_hex = params.get("nonce").cloned().unwrap_or_default();
+        let nonce = hex::decode(&nonce_hex).unwrap_or_default();
+
+        match attestation::request_attestation_token("https://sts.googleapis.com", &[], "OIDC") {
+            Ok(token) => {
+                let policy = &*state.attestation_policy;
+                match attestation::verify_attestation_token(&token, policy, &nonce) {
+                    Ok(claims) => {
+                        log::info!("Attestation token verified",
+                            "hwmodel", &claims.hwmodel,
+                            "dbgstat", &claims.dbgstat
+                        );
+                        Json(serde_json::json!({"ok": true, "token": token}))
+                    }
+                    Err(e) => {
+                        log::error!("Attestation verification failed", "err", e.to_string());
+                        Json(serde_json::json!({"ok": false, "error": e.to_string()}))
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Attestation request failed", "err", e.to_string());
+                Json(serde_json::json!({"ok": false, "error": e.to_string()}))
+            }
+        }
+    }
+
+    /// POST /init — encrypted order init. Body: { "encrypted": "<base64>" }
+    async fn handle_init_secure(
+        State(state): State<SecureState>,
+        Json(payload): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        // The DEK is provided via CER_DEK env var (set by the GCP Confidential Space launcher
+        // after unwrapping from KMS at startup).
+        let dek_hex = match std::env::var("CER_DEK") {
+            Ok(v) => v,
+            Err(_) => return Json(serde_json::json!({"ok": false, "error": "CER_DEK not set"})),
+        };
+        let dek_bytes = match hex::decode(&dek_hex) {
+            Ok(v) if v.len() == 32 => {
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&v);
+                key
+            }
+            _ => return Json(serde_json::json!({"ok": false, "error": "invalid CER_DEK"})),
+        };
+
+        let encrypted_b64 = match payload["encrypted"].as_str() {
+            Some(s) => s,
+            None => return Json(serde_json::json!({"ok": false, "error": "missing encrypted"})),
+        };
+
+        let encrypted = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encrypted_b64) {
+            Ok(v) => v,
+            Err(e) => return Json(serde_json::json!({"ok": false, "error": format!("b64: {e}")})),
+        };
+
+        if encrypted.len() < 12 {
+            return Json(serde_json::json!({"ok": false, "error": "too short"}));
+        }
+
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&encrypted[..12]);
+        let payload = crypto::EncryptedPayload {
+            nonce,
+            ciphertext: encrypted[12..].to_vec(),
+        };
+
+        let plaintext = match crypto::decrypt(&dek_bytes, &payload) {
+            Ok(p) => p,
+            Err(e) => return Json(serde_json::json!({"ok": false, "error": format!("decrypt: {e}")})),
+        };
+
+        let req: Request = match serde_json::from_slice(&plaintext) {
+            Ok(r) => r,
+            Err(e) => return Json(serde_json::json!({"ok": false, "error": format!("json: {e}")})),
+        };
+
+        let resp = handle_init(&state.store, &state.keys_dir, &req);
+        Json(serde_json::json!(resp))
+    }
+}

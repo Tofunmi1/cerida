@@ -153,6 +153,14 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:9720")]
         server_addr: String,
 
+        /// Skip deployment and use an existing perp-engine contract ID
+        #[arg(long)]
+        perp: Option<String>,
+
+        /// Skip deployment and use an existing orderbook contract ID
+        #[arg(long)]
+        orderbook: Option<String>,
+
         #[arg(long, default_value = "0")]
         side_a: u64,
         #[arg(long, default_value = "100000")]
@@ -209,10 +217,10 @@ fn main() -> Result<()> {
             eprintln!("  Match: price={} size={}", match_price, match_size);
 
             let p_a = proof::gen_commitment(
-                &keys_dir, side_a, price_a, size_a, leverage_a, 0, 0, nonce_a, secret_a,
+                &keys_dir, side_a, price_a, size_a, leverage_a, 0, 0, nonce_a, secret_a, false,
             )?;
             let p_b = proof::gen_commitment(
-                &keys_dir, side_b, price_b, size_b, leverage_b, 0, 0, nonce_b, secret_b,
+                &keys_dir, side_b, price_b, size_b, leverage_b, 0, 0, nonce_b, secret_b, false,
             )?;
             let p_match = proof::gen_match(
                 &keys_dir,
@@ -287,10 +295,10 @@ fn main() -> Result<()> {
 
             eprintln!("── Generating ZK proofs ──");
             let p_a = proof::gen_commitment(
-                &keys_dir, side_a, price_a, size_a, leverage_a, 0, 0, nonce_a, secret_a,
+                &keys_dir, side_a, price_a, size_a, leverage_a, 0, 0, nonce_a, secret_a, false,
             )?;
             let p_b = proof::gen_commitment(
-                &keys_dir, side_b, price_b, size_b, leverage_b, 0, 0, nonce_b, secret_b,
+                &keys_dir, side_b, price_b, size_b, leverage_b, 0, 0, nonce_b, secret_b, false,
             )?;
             let p_match = proof::gen_match(
                 &keys_dir,
@@ -305,13 +313,13 @@ fn main() -> Result<()> {
             eprintln!("  commitment A: {} ({} hex chars)", &cmt_a_hex[..16], cmt_a_hex.len());
             eprintln!("  commitment B: {} ({} hex chars)", &cmt_b_hex[..16], cmt_b_hex.len());
 
-            stellar::run_e2e(&wasm_dir, &p_a, &p_b, &p_match, &cmt_a_hex, &cmt_b_hex)?;
+            stellar::run_e2e(&wasm_dir, &keys_dir, &p_a, &p_b, &p_match, &cmt_a_hex, &cmt_b_hex)?;
         }
         Command::Server {
             server_addr,
             side_a, price_a, size_a, leverage_a, nonce_a, secret_a,
             side_b, price_b, size_b, leverage_b, nonce_b, secret_b,
-            match_price: _, match_size: _,
+            match_price: _, match_size: _, perp, orderbook,
         } => {
             eprintln!("━━━ E2E via TEE Match Server ━━━");
             eprintln!("  Server: {server_addr}");
@@ -347,18 +355,33 @@ fn main() -> Result<()> {
             eprintln!("  ✓ proof A: {} bytes", proof_a_json.len());
             eprintln!("  ✓ proof B: {} bytes", proof_b_json.len());
 
-            // ── Step 3: Deploy contracts, place orders, deposit, open positions ──
-            eprintln!("\n── Step 3/5: Deploy and setup ──");
-            let ctx = stellar::deploy_and_place(
-                &wasm_dir,
-                &proof_a_json, &proof_b_json,
-                &cmt_a_hex, &cmt_b_hex,
-                price_a, price_b,
-                side_a, side_b,
-                size_a, size_b,
-                leverage_a, leverage_b,
-                15, // revealed: all fields public
-            )?;
+            // ── Step 3: Setup (deploy or reuse existing contracts) ──
+            eprintln!("\n── Step 3/5: Setup ──");
+            let ctx = if let (Some(perp_id), Some(ob_id)) = (perp, orderbook) {
+                eprintln!("  Using existing contracts (skip deploy)");
+                stellar::setup_with_existing(
+                    &keys_dir,
+                    &perp_id, &ob_id,
+                    &proof_a_json, &proof_b_json,
+                    &cmt_a_hex, &cmt_b_hex,
+                    price_a, price_b,
+                    side_a, side_b,
+                    size_a, size_b,
+                    leverage_a, leverage_b,
+                    15, &"0000000000000000000000000000000000000000000000000000000000000000",
+                )?
+            } else {
+                stellar::deploy_and_place(
+                    &wasm_dir, &keys_dir,
+                    &proof_a_json, &proof_b_json,
+                    &cmt_a_hex, &cmt_b_hex,
+                    price_a, price_b,
+                    side_a, side_b,
+                    size_a, size_b,
+                    leverage_a, leverage_b,
+                    15, &"0000000000000000000000000000000000000000000000000000000000000000",
+                )?
+            };
             eprintln!("  ✓ orderbook: {}", ctx.orderbook_id);
             eprintln!("  ✓ perp: {}", ctx.perp_id);
             eprintln!("  ✓ admin: {}", ctx.source_pk);

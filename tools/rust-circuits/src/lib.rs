@@ -142,6 +142,8 @@ pub fn setup_all(
             nonce: Fr::ZERO,
             secret: Fr::ZERO,
             commitment: Fr::ZERO,
+            use_cross: Fr::ZERO,
+            portfolio_key: Fr::ZERO,
         },
         alpha,
         beta,
@@ -299,6 +301,12 @@ pub fn compute_commitment(
     h7.value().unwrap()
 }
 
+pub fn compute_portfolio_key(secret: Fr) -> Fr {
+    let ps = FpVar::Constant(secret);
+    let zero = FpVar::Constant(Fr::from(0u64));
+    poseidon2_hash_t3(&ps, &zero, 20).unwrap().value().unwrap()
+}
+
 pub fn compute_nullifier(cmt: Fr, secret: Fr) -> Fr {
     let pc = FpVar::Constant(cmt);
     let ps = FpVar::Constant(secret);
@@ -324,8 +332,15 @@ pub fn prove_commitment(
     is_market: Fr,
     nonce: Fr,
     secret: Fr,
+    use_cross: bool,
 ) -> Result<ProofOutput, SynthesisError> {
     let cmt = compute_commitment(side, price, size, leverage, asset, is_market, nonce, secret);
+    let cross_fr = if use_cross { Fr::from(1u64) } else { Fr::ZERO };
+    let pk = if use_cross {
+        compute_portfolio_key(secret)
+    } else {
+        Fr::ZERO
+    };
     let mut rng = rand::thread_rng();
     let setup = OrderCommitment {
         side: Fr::ZERO,
@@ -337,6 +352,8 @@ pub fn prove_commitment(
         nonce: Fr::ZERO,
         secret: Fr::ZERO,
         commitment: Fr::ZERO,
+        use_cross: Fr::ZERO,
+        portfolio_key: Fr::ZERO,
     };
     let circuit = OrderCommitment {
         side,
@@ -348,8 +365,10 @@ pub fn prove_commitment(
         nonce,
         secret,
         commitment: cmt,
+        use_cross: cross_fr,
+        portfolio_key: pk,
     };
-    prove_raw(setup, circuit, vec![cmt], &mut rng)
+    prove_raw(setup, circuit, vec![cmt, pk], &mut rng)
 }
 
 pub fn prove_cancel(commitment: Fr, secret: Fr) -> Result<ProofOutput, SynthesisError> {
@@ -378,8 +397,15 @@ pub fn prove_commitment_with_pk(
     is_market: Fr,
     nonce: Fr,
     secret: Fr,
+    use_cross: bool,
 ) -> Result<ProofOutput, SynthesisError> {
     let cmt = compute_commitment(side, price, size, leverage, asset, is_market, nonce, secret);
+    let cross_fr = if use_cross { Fr::from(1u64) } else { Fr::ZERO };
+    let portfolio_key = if use_cross {
+        compute_portfolio_key(secret)
+    } else {
+        Fr::ZERO
+    };
     let mut rng = rand::thread_rng();
     let circuit = OrderCommitment {
         side,
@@ -391,8 +417,10 @@ pub fn prove_commitment_with_pk(
         nonce,
         secret,
         commitment: cmt,
+        use_cross: cross_fr,
+        portfolio_key,
     };
-    prove_with_pk(pk, circuit, vec![cmt], &mut rng)
+    prove_with_pk(pk, circuit, vec![cmt, portfolio_key], &mut rng)
 }
 
 pub fn prove_match(
@@ -651,6 +679,8 @@ mod tests {
             nonce: fields[6],
             secret: fields[7],
             commitment: cmt,
+            use_cross: Fr::ZERO,
+            portfolio_key: Fr::ZERO,
         };
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(cs.is_satisfied().unwrap());
@@ -673,6 +703,8 @@ mod tests {
             nonce: Fr::ZERO,
             secret: Fr::ZERO,
             commitment: Fr::ZERO,
+            use_cross: Fr::ZERO,
+            portfolio_key: Fr::ZERO,
         };
         let pk = Groth16::<Bn254>::generate_random_parameters_with_reduction(setup_circuit, rng)?;
         let vk = pk.vk.clone();
@@ -686,10 +718,16 @@ mod tests {
             nonce: fields[6],
             secret: fields[7],
             commitment: cmt,
+            use_cross: Fr::ZERO,
+            portfolio_key: Fr::ZERO,
         };
         let proof = Groth16::<Bn254>::create_random_proof_with_reduction(prove_circuit, &pk, rng)?;
         let pvk = prepare_verifying_key(&vk);
-        assert!(Groth16::<Bn254>::verify_proof(&pvk, &proof, &[cmt])?);
+        assert!(Groth16::<Bn254>::verify_proof(
+            &pvk,
+            &proof,
+            &[cmt, Fr::ZERO]
+        )?);
         Ok(())
     }
 

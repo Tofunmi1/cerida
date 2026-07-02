@@ -16,3 +16,21 @@ serde_json = "1"
 sled = "0.34"
 rand = "0.8"
 rust-circuits = { path = "../rust-circuits" }
+
+# Secure mode (attestation, encryption, HTTP API)
+tokio = { version = "1", features = ["full"], optional = true }
+axum = { version = "0.7", optional = true }
+reqwest = { version = "0.12", features = ["json", "blocking"], optional = true, default-features = false }
+jsonwebtoken = { version = "9", optional = true }
+base64 = { version = "0.22", optional = true }
+aes-gcm = { version = "0.10", optional = true }
+ring = { version = "0.17", optional = true, features = ["std"] }
+zeroize = { version = "1", optional = true, features = ["zeroize_derive"] }
+
+[features]
+default = []
+secure = [
+  "tokio", "axum",
+  "reqwest", "jsonwebtoken", "base64",
+  "aes-gcm", "ring", "zeroize",
+]

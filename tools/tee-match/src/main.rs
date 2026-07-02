@@ -5,6 +5,13 @@ mod proof;
 mod serve;
 mod stellar;
 
+#[cfg(feature = "secure")]
+mod attestation;
+#[cfg(feature = "secure")]
+mod crypto;
+#[cfg(feature = "secure")]
+mod kms;
+
 use anyhow::Result;
 use clap::Parser;
 use std::path::{Path, PathBuf};
@@ -63,9 +70,17 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Run as a persistent TCP server
+    /// Run as a persistent TCP server (dev mode)
     Serve {
         #[arg(long, default_value = "0.0.0.0:9720")]
+        addr: String,
+        #[arg(long)]
+        db: PathBuf,
+    },
+    /// Run as a secure HTTP server with attestation + encryption
+    #[cfg(feature = "secure")]
+    ServeSecure {
+        #[arg(long, default_value = "0.0.0.0:9721")]
         addr: String,
         #[arg(long)]
         db: PathBuf,
@@ -155,6 +170,19 @@ fn main() -> Result<()> {
                 "keys_dir", format!("{}", keys_dir.display())
             );
             serve::run(&addr, db, keys_dir.clone())?;
+        }
+
+        #[cfg(feature = "secure")]
+        Command::ServeSecure { addr, db } => {
+            log::info!("═══ TEE Secure Server Launch ═══",
+                "listen_addr", &addr,
+                "db_path", format!("{}", db.display()),
+                "keys_dir", format!("{}", keys_dir.display())
+            );
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(serve::secure::run_secure(
+                &addr, db, keys_dir.clone(),
+            ))?;
         }
 
         Command::Match { db, perp, cmt_a, cmt_b, source } => {

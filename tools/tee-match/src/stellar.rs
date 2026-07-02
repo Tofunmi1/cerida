@@ -13,7 +13,7 @@ const NETWORK_PASSPHRASE: &str = "Test SDF Network ; September 2015";
 
 const SOURCE_IDENTITY: &str = "e2e";
 
-pub fn submit_match(perp_id: &str, _source: &str, cmt_a: &str, cmt_b: &str, proof: &MatchProof) -> Result<()> {
+pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof: &MatchProof) -> Result<()> {
     let start = Instant::now();
 
     let hex = |dec: &str| -> String {
@@ -33,14 +33,11 @@ pub fn submit_match(perp_id: &str, _source: &str, cmt_a: &str, cmt_b: &str, proo
     })
     .to_string();
 
-    let tmp = std::env::temp_dir().join(format!("tee_match_proof_{}.json", std::process::id()));
-    std::fs::write(&tmp, &proof_json)?;
-
     let mut cmd = std::process::Command::new("stellar");
     cmd.args([
         "contract", "invoke",
         "--id", perp_id,
-        "--source", SOURCE_IDENTITY,
+        "--source", source,
         "--network-passphrase", NETWORK_PASSPHRASE,
         "--rpc-url", &rpc_url(),
         "--",
@@ -51,7 +48,7 @@ pub fn submit_match(perp_id: &str, _source: &str, cmt_a: &str, cmt_b: &str, proo
         "--nullifier_b", &nullifier_b_hex,
         "--match_price", &match_price_hex,
         "--match_size", &match_size_hex,
-        "--proof-file-path", &tmp.to_string_lossy(),
+        "--proof", &proof_json,
     ]);
 
     log::debug!("Executing stellar CLI command",
@@ -65,7 +62,6 @@ pub fn submit_match(perp_id: &str, _source: &str, cmt_a: &str, cmt_b: &str, proo
     let exec_start = Instant::now();
     let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar invoke: {e}"))?;
     let exec_duration = exec_start.elapsed();
-    let _ = std::fs::remove_file(&tmp);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -130,7 +126,7 @@ pub fn submit_cancel(
             "--network-passphrase", NETWORK_PASSPHRASE,
             "--rpc-url", &rpc_url(),
             "--",
-            method, "--owner", owner,
+            method,
             "--commitment", commitment,
             "--nullifier", nullifier,
             "--proof", &proof_json,

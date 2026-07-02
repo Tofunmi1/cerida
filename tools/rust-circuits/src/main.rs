@@ -29,6 +29,8 @@ enum Command {
         asset_id: u64,
         #[arg(long)]
         nonce: u64,
+        #[arg(long, default_value = "false")]
+        cross_margin: bool,
         #[arg(long)]
         secret: u64,
     },
@@ -125,6 +127,7 @@ fn main() -> Result<()> {
             asset_id,
             nonce,
             secret,
+            cross_margin,
         } => {
             let out = prove_commitment(
                 Fr::from(side),
@@ -135,6 +138,7 @@ fn main() -> Result<()> {
                 Fr::from(0),
                 Fr::from(nonce),
                 Fr::from(secret),
+                cross_margin,
             )?;
             println!("{}", serde_json::to_string_pretty(&out)?);
         }

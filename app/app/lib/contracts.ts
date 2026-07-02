@@ -121,6 +121,41 @@ function enumToScVal(variant: string): xdr.ScVal {
   ])
 }
 
+// Groth16Proof contracttype encodes as Map { a: Bytes(64), b: Bytes(128), c: Bytes(64) }.
+// Zero bytes are a placeholder — will fail on-chain until WASM proof generation is wired.
+function zeroProof(): xdr.ScVal {
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('a'),
+      val: xdr.ScVal.scvBytes(Buffer.alloc(64)),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('b'),
+      val: xdr.ScVal.scvBytes(Buffer.alloc(128)),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('c'),
+      val: xdr.ScVal.scvBytes(Buffer.alloc(64)),
+    }),
+  ])
+}
+
+/**
+ * Returns a stable 32-byte cross-margin key for the given wallet address,
+ * persisted in localStorage. All positions opened with cross-margin from this
+ * wallet will share this key as their on-chain portfolio group tag.
+ */
+export function crossMarginKey(walletAddress: string): string {
+  const storageKey = `cerida-cross-key-${walletAddress}`
+  const existing = localStorage.getItem(storageKey)
+  if (existing) return existing
+  const bytes = new Uint8Array(32)
+  crypto.getRandomValues(bytes)
+  const key = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
+  localStorage.setItem(storageKey, key)
+  return key
+}
+
 export interface PositionMeta {
   owner: string
   collateral: bigint
@@ -192,23 +227,28 @@ export async function buildOpenPositionTx(
     collateral: bigint
     tpPrice?: number
     slPrice?: number
+    /** 64-char hex; zeros (default) = isolated margin. Non-zero = cross-margin group tag. */
+    portfolioKey?: string
   },
 ) {
   const zeroNote = bytes32ToScVal('0'.repeat(64))
+  const portfolioKey = bytes32ToScVal(opts.portfolioKey ?? '0'.repeat(64))
 
   return buildTx(sourcePublicKey, CONTRACT_IDS.perpEngine, 'open_position', [
-    addressToScVal(sourcePublicKey),
-    bytes32ToScVal(opts.commitment),
-    u64ToScVal(opts.hintPrice),
-    u64ToScVal(opts.side),
-    u64ToScVal(opts.leverage),
-    u64ToScVal(opts.size),
-    enumToScVal('GTC'),
-    u64ToScVal(0),
-    u64ToScVal(opts.tpPrice ?? 0),
-    u64ToScVal(opts.slPrice ?? 0),
-    zeroNote,
-    i128ToScVal(opts.collateral),
+    addressToScVal(sourcePublicKey),  // owner
+    bytes32ToScVal(opts.commitment),   // commitment
+    i128ToScVal(opts.collateral),      // collateral
+    u64ToScVal(opts.hintPrice),        // hint_price
+    u64ToScVal(opts.side),             // hint_side
+    u64ToScVal(opts.leverage),         // hint_leverage
+    u64ToScVal(opts.size),             // hint_size
+    enumToScVal('GTC'),                // tif
+    u64ToScVal(0),                     // expiry_ledger
+    u64ToScVal(opts.tpPrice ?? 0),     // tp_price
+    u64ToScVal(opts.slPrice ?? 0),     // sl_price
+    zeroNote,                          // liquidation_recipient_note
+    portfolioKey,                      // portfolio_key
+    zeroProof(),                       // proof (placeholder — needs WASM prover)
   ])
 }
 

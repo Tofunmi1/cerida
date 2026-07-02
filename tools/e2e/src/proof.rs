@@ -35,6 +35,7 @@ pub fn gen_commitment(
     is_market: u64,
     nonce: u64,
     secret: u64,
+    use_cross: bool,
 ) -> Result<RawProof> {
     let pk = load_pk(&pk_path(keys_dir, "order_commitment"))
         .with_context(|| format!("Failed to load commitment proving key from {}", keys_dir.display()))?;
@@ -43,7 +44,7 @@ pub fn gen_commitment(
         &pk,
         Fr::from(side), Fr::from(price), Fr::from(size),
         Fr::from(leverage), Fr::from(asset), is_market_fr,
-        Fr::from(nonce), Fr::from(secret),
+        Fr::from(nonce), Fr::from(secret), use_cross,
     )?;
     // Verify proof locally before trusting on-chain
     let cmt = Fr::from_str(&out.public_inputs[0]).unwrap();

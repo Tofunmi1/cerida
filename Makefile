@@ -19,7 +19,10 @@ circuit-setup:
 build-orderbook:
 	VK_COMMIT_JSON=$(CIRCUIT_KEYS)/order_commitment_vk.json \
 	VK_CANCEL_JSON=$(CIRCUIT_KEYS)/order_cancel_vk.json \
-	  cargo build --target wasm32v1-none --release -p orderbook -p verifier-groth16 -p types
+	  cargo build --target wasm32v1-none --release -p orderbook
+	wasm-opt -Oz --strip-debug --strip-producers --strip-target-features \
+	  $(ROOT)/target/wasm32v1-none/release/orderbook.wasm \
+	  -o $(ROOT)/target/wasm32v1-none/release/orderbook.wasm
 	ls -la $(ROOT)/target/wasm32v1-none/release/orderbook.wasm
 
 build-perp-engine:
@@ -28,6 +31,9 @@ build-perp-engine:
 	VK_MATCH_JSON=$(CIRCUIT_KEYS)/order_match_vk.json \
 	VK_NOTE_SPEND_JSON=$(CIRCUIT_KEYS)/note_spend_vk.json \
 	  cargo build --target wasm32v1-none --release -p perp-engine
+	wasm-opt -Oz --strip-debug --strip-producers \
+	  $(ROOT)/target/wasm32v1-none/release/perp_engine.wasm \
+	  -o $(ROOT)/target/wasm32v1-none/release/perp_engine.wasm
 	ls -la $(ROOT)/target/wasm32v1-none/release/perp_engine.wasm
 
 build-contracts: build-orderbook build-perp-engine

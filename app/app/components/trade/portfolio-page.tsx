@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { IconArrowDownToArc, IconArrowUpFromArc, IconChevronDown } from '@tabler/icons-react'
+import { IconArrowDownToArc, IconArrowUpFromArc, IconChevronDown, IconX } from '@tabler/icons-react'
 import { formatUsd } from './format'
 
 const ASSETS = ['USDC', 'ETH', 'BTC', 'SOL'] as const
@@ -200,120 +200,137 @@ const STAT_CARDS = [
   { label: 'Unrealized PnL', value: '+$157.26', delta: null, positive: true },
 ]
 
-export default function PortfolioPage() {
+export default function PortfolioPage({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<'deposit' | 'withdraw'>('deposit')
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-auto bg-page px-6 py-5">
-      <div className="mb-5">
-        <h1 className="text-[15px] font-semibold uppercase tracking-widest text-text-primary">
-          Portfolio
-        </h1>
-        <p className="mt-0.5 text-[12px] text-text-quaternary">Manage balances and transfers</p>
-      </div>
-
-      <div className="mb-6 grid grid-cols-4 gap-3">
-        {STAT_CARDS.map((card) => (
-          <div
-            key={card.label}
-            className="rounded-[8px] border border-border-subtle bg-surface-primary px-4 py-3"
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/35 p-6 backdrop-blur-sm"
+      onMouseDown={(event) => {
+        if (event.currentTarget === event.target) onClose()
+      }}
+    >
+      <div className="flex h-[min(820px,90vh)] w-[min(1080px,94vw)] flex-col overflow-hidden rounded-[14px] border border-border-subtle bg-surface-primary shadow-2xl">
+        <div className="flex shrink-0 items-center gap-3 border-b border-border-subtle px-6 py-4">
+          <div>
+            <h1 className="text-[15px] font-semibold uppercase tracking-widest text-text-primary">
+              Portfolio
+            </h1>
+            <p className="mt-0.5 text-[12px] text-text-quaternary">Manage balances and transfers</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="ml-auto grid h-9 w-9 place-items-center rounded-[8px] text-text-tertiary hover:bg-surface-hover hover:text-text-primary"
           >
-            <div className="text-[10px] uppercase tracking-widest text-text-quaternary">
-              {card.label}
-            </div>
-            <div className="mt-1.5 flex items-baseline gap-2">
-              <span
-                className={`text-[18px] font-semibold tabular-nums ${
-                  card.positive === true
-                    ? 'text-bullish-green'
-                    : card.positive === false
-                      ? 'text-bearish-red'
-                      : 'text-text-primary'
-                }`}
-              >
-                {card.value}
-              </span>
-              {card.delta && (
-                <span
-                  className={`text-[11px] font-medium ${
-                    card.positive ? 'text-bullish-green' : 'text-bearish-red'
-                  }`}
-                >
-                  {card.delta}
-                </span>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="grid min-h-0 grid-cols-[380px_1fr] gap-4">
-        <div className="rounded-[8px] border border-border-subtle bg-surface-primary">
-          <div className="flex border-b border-border-subtle">
-            {(['deposit', 'withdraw'] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`relative flex flex-1 items-center justify-center gap-2 py-2.5 text-[12px] font-semibold uppercase tracking-widest transition-colors ${
-                  tab === t ? 'text-text-primary' : 'text-text-quaternary hover:text-text-secondary'
-                }`}
-              >
-                {t === 'deposit' ? (
-                  <IconArrowDownToArc size={13} stroke={2} />
-                ) : (
-                  <IconArrowUpFromArc size={13} stroke={2} />
-                )}
-                {t}
-                {tab === t && (
-                  <span className="absolute bottom-0 left-4 right-4 h-[2px] rounded-full bg-text-primary" />
-                )}
-              </button>
-            ))}
-          </div>
-          <div className="p-4">
-            <TransferPanel mode={tab} />
-          </div>
+            <IconX size={18} stroke={2} />
+          </button>
         </div>
 
-        <div className="rounded-[8px] border border-border-subtle bg-surface-primary">
-          <div className="border-b border-border-subtle px-4 py-2.5">
-            <span className="text-[10px] uppercase tracking-widest text-text-quaternary">
-              Transaction History
-            </span>
-          </div>
-          <div className="grid grid-cols-[1fr_80px_110px_140px_80px] border-b border-border-subtle px-4 py-2 text-[10px] uppercase tracking-widest text-text-quaternary">
-            <span>Type</span>
-            <span>Asset</span>
-            <span className="text-right">Amount</span>
-            <span className="text-right">Time</span>
-            <span className="text-right">Status</span>
-          </div>
-          <div className="divide-y divide-border-subtle/60">
-            {HISTORY.map((row, i) => (
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto bg-page px-6 py-5">
+          <div className="mb-6 grid grid-cols-4 gap-3">
+            {STAT_CARDS.map((card) => (
               <div
-                key={i}
-                className="grid grid-cols-[1fr_80px_110px_140px_80px] px-4 py-2.5 text-[12px] tabular-nums"
+                key={card.label}
+                className="rounded-[8px] border border-border-subtle bg-surface-primary px-4 py-3"
               >
-                <span
-                  className={`flex items-center gap-1.5 font-medium ${
-                    row.type === 'Deposit' ? 'text-bullish-green' : 'text-brand-violet'
-                  }`}
-                >
-                  {row.type === 'Deposit' ? (
-                    <IconArrowDownToArc size={12} stroke={2} />
-                  ) : (
-                    <IconArrowUpFromArc size={12} stroke={2} />
+                <div className="text-[10px] uppercase tracking-widest text-text-quaternary">
+                  {card.label}
+                </div>
+                <div className="mt-1.5 flex items-baseline gap-2">
+                  <span
+                    className={`text-[18px] font-semibold tabular-nums ${
+                      card.positive === true
+                        ? 'text-bullish-green'
+                        : card.positive === false
+                          ? 'text-bearish-red'
+                          : 'text-text-primary'
+                    }`}
+                  >
+                    {card.value}
+                  </span>
+                  {card.delta && (
+                    <span
+                      className={`text-[11px] font-medium ${
+                        card.positive ? 'text-bullish-green' : 'text-bearish-red'
+                      }`}
+                    >
+                      {card.delta}
+                    </span>
                   )}
-                  {row.type}
-                </span>
-                <span className="font-bold text-text-secondary">{row.asset}</span>
-                <span className="text-right text-text-primary">
-                  {row.amount} {row.asset}
-                </span>
-                <span className="text-right text-text-tertiary">{row.time}</span>
-                <span className="text-right text-bullish-green">{row.status}</span>
+                </div>
               </div>
             ))}
+          </div>
+
+          <div className="grid min-h-0 grid-cols-[380px_1fr] gap-4">
+            <div className="rounded-[8px] border border-border-subtle bg-surface-primary">
+              <div className="flex border-b border-border-subtle">
+                {(['deposit', 'withdraw'] as const).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setTab(t)}
+                    className={`relative flex flex-1 items-center justify-center gap-2 py-2.5 text-[12px] font-semibold uppercase tracking-widest transition-colors ${
+                      tab === t ? 'text-text-primary' : 'text-text-quaternary hover:text-text-secondary'
+                    }`}
+                  >
+                    {t === 'deposit' ? (
+                      <IconArrowDownToArc size={13} stroke={2} />
+                    ) : (
+                      <IconArrowUpFromArc size={13} stroke={2} />
+                    )}
+                    {t}
+                    {tab === t && (
+                      <span className="absolute bottom-0 left-4 right-4 h-[2px] rounded-full bg-text-primary" />
+                    )}
+                  </button>
+                ))}
+              </div>
+              <div className="p-4">
+                <TransferPanel mode={tab} />
+              </div>
+            </div>
+
+            <div className="rounded-[8px] border border-border-subtle bg-surface-primary">
+              <div className="border-b border-border-subtle px-4 py-2.5">
+                <span className="text-[10px] uppercase tracking-widest text-text-quaternary">
+                  Transaction History
+                </span>
+              </div>
+              <div className="grid grid-cols-[1fr_80px_110px_140px_80px] border-b border-border-subtle px-4 py-2 text-[10px] uppercase tracking-widest text-text-quaternary">
+                <span>Type</span>
+                <span>Asset</span>
+                <span className="text-right">Amount</span>
+                <span className="text-right">Time</span>
+                <span className="text-right">Status</span>
+              </div>
+              <div className="divide-y divide-border-subtle/60">
+                {HISTORY.map((row, i) => (
+                  <div
+                    key={i}
+                    className="grid grid-cols-[1fr_80px_110px_140px_80px] px-4 py-2.5 text-[12px] tabular-nums"
+                  >
+                    <span
+                      className={`flex items-center gap-1.5 font-medium ${
+                        row.type === 'Deposit' ? 'text-bullish-green' : 'text-brand-violet'
+                      }`}
+                    >
+                      {row.type === 'Deposit' ? (
+                        <IconArrowDownToArc size={12} stroke={2} />
+                      ) : (
+                        <IconArrowUpFromArc size={12} stroke={2} />
+                      )}
+                      {row.type}
+                    </span>
+                    <span className="font-bold text-text-secondary">{row.asset}</span>
+                    <span className="text-right text-text-primary">
+                      {row.amount} {row.asset}
+                    </span>
+                    <span className="text-right text-text-tertiary">{row.time}</span>
+                    <span className="text-right text-bullish-green">{row.status}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </div>

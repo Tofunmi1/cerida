@@ -28,6 +28,14 @@ struct OrderCache {
     #[serde(default = "one")]
     leverage: u64,
     proof_json: String,
+    #[serde(default)]
+    note_cmt: String,
+    #[serde(default)]
+    note_nf: String,
+    #[serde(default)]
+    note_proof_json: String,
+    #[serde(default)]
+    cancelled: bool,
 }
 
 fn one() -> u64 { 1 }
@@ -68,9 +76,10 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
     let source_pk = crate::stellar::source_pubkey()?;
     let cached = load_cache(keys_dir);
 
-    let orders: Vec<OrderCache>;
+    let mut orders: Vec<OrderCache>;
     let perp_id: String;
     let orderbook_id: String;
+    let cached_native_token: Option<String>;
 
     if let Some(ref c) = cached {
         if !c.orders.is_empty() && c.orderbook_id.is_some() && c.perp_id.is_some() {
@@ -78,6 +87,7 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
             orders = c.orders.clone();
             perp_id = c.perp_id.clone().unwrap();
             orderbook_id = c.orderbook_id.clone().unwrap();
+            cached_native_token = c.native_token.clone();
             client.set_onchain(&perp_id, &source_pk);
         } else {
             return Err(anyhow::anyhow!("Incomplete cache — delete cache file and re-run"));
@@ -170,7 +180,8 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
                 let server_addr = cfg.server_addr.clone();
                 s.spawn(move || -> Result<OrderCache> {
                     let c = ServerClient::new(&server_addr);
-                    let cmt = c.init_raw(p.side, p.price, p.size, p.leverage, 0, p.nonce, p.nonce + 999)?;
+                    let secret: u64 = rand::random();
+                    let cmt = c.init_raw(p.side, p.price, p.size, p.leverage, 0, p.nonce, secret)?;
                     Ok(OrderCache {
                         cmt,
                         addr: p.addr,
@@ -180,6 +191,10 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
                         size: p.size,
                         leverage: p.leverage,
                         proof_json: String::new(),
+                        note_cmt: String::new(),
+                        note_nf: String::new(),
+                        note_proof_json: String::new(),
+                        cancelled: false,
                     })
                 })
             }).collect();
@@ -243,16 +258,57 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
 
         perp_id = deployed_pe.clone();
         orderbook_id = deployed_ob.clone();
+        cached_native_token = Some(nt.clone());
         orders = raw_orders;
 
-        // ── Step 5 (on-chain, best-effort): place_order + deposit + open_position
-        // Opens positions for ALL orders (limit + market) so on-chain match works.
-        eprintln!("[5/6] On-chain place/deposit/open ({} orders, parallel, best-effort)…", orders.len());
+        // ── Step 5 (on-chain, best-effort): deposit_note + place_order + open_position_from_note
+        // Generates note proofs sequentially, then executes TXs in parallel.
+        eprintln!("[5/6] Generating {} note proofs…", orders.len());
         let t5 = Instant::now();
+        for o in &mut orders {
+            let ns: u64 = rand::random();
+            match crate::proof::gen_note_spend(keys_dir, 1_000_000_000u64, ns) {
+                Ok((note_cmt, note_nf, note_proof)) => {
+                    let note_proof_json = crate::stellar::proof_json(&note_proof.proof);
+                    o.note_cmt = note_cmt;
+                    o.note_nf = note_nf;
+                    o.note_proof_json = note_proof_json;
+                }
+                Err(e) => eprintln!("  ✗ note proof failed: {e}"),
+            }
+        }
+        eprintln!("[5/6] Executing on-chain TXs ({} orders, parallel, best-effort)…", orders.len());
 
+        // Phase A-1: trust (parallel, each order signs with its own identity)
+        eprintln!("[5/6] Phase A-1: trust USDC (parallel)…");
+        let sac_ref = &nt;
+        std::thread::scope(|s| {
+            let handles: Vec<_> = orders.iter().map(|o| {
+                let sac = sac_ref.clone();
+                let identity = o.identity.clone();
+                let addr = o.addr.clone();
+                s.spawn(move || {
+                    if let Err(e) = crate::stellar::trust_usdc(&sac, &identity, &addr) {
+                        eprintln!("  ✗ trust_usdc for {}: {e}", &addr[..8]);
+                    }
+                })
+            }).collect();
+            for h in handles { let _ = h.join(); }
+        });
+
+        // Phase A-2: mint (sequential, all sign with SOURCE)
+        eprintln!("[5/6] Phase A-2: mint USDC (sequential)…");
+        for o in &orders {
+            if let Err(e) = crate::stellar::mint_usdc(&nt, &o.addr, 1_000_000_000) {
+                eprintln!("  ✗ mint_usdc for {}: {e}", &o.addr[..8]);
+            }
+        }
+
+        // Phase A-3: deposit_note + place_order (parallel, per-identity)
+        eprintln!("[5/6] Phase A-3: deposit_note + place_order (parallel)…");
         let ob_ref = &deployed_ob;
         let pe_ref = &deployed_pe;
-        std::thread::scope(|s| {
+        let open_position_inputs: Vec<_> = std::thread::scope(|s| {
             let handles: Vec<_> = orders.iter().enumerate().map(|(i, o)| {
                 let ob = ob_ref.clone();
                 let pe = pe_ref.clone();
@@ -261,51 +317,47 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
                 let cmt = o.cmt.clone();
                 let price = o.price;
                 let raw_side = o.side;
-                // Normalize side: server maps 0/3→Bid(0), 1/2→Ask(1)
                 let hint_side = if raw_side == 0 || raw_side == 3 { 0 } else { 1 };
                 let hint_leverage = o.leverage;
+                let size = o.size;
                 let proof = o.proof_json.clone();
-                s.spawn(move || {
-                    let r = (|| -> Result<()> {
-                        crate::stellar::invoke(&pe, &identity, &[
-                            "deposit",
-                            "--who", &addr,
-                            "--amount", "1000000000",
-                        ])?;
-                        let rev: u64 = 15; // all fields public
-                        let zero_note = "0000000000000000000000000000000000000000000000000000000000000000";
-                        crate::stellar::invoke(&ob, &identity, &[
-                            "place_order",
-                            "--owner", &addr,
-                            "--commitment", &cmt,
-                            "--hint-price", &price.to_string(),
-                            "--hint-side", &hint_side.to_string(),
-                            "--hint-size", &o.size.to_string(),
-                            "--hint-leverage", &hint_leverage.to_string(),
-                            "--revealed", &rev.to_string(),
-                            "--proof", &proof,
-                        ])?;
-                        crate::stellar::invoke(&pe, &identity, &[
-                            "open_position",
-                            "--owner", &addr,
-                            "--commitment", &cmt,
-                            "--collateral", "1000000000",
-                            "--hint_price", &price.to_string(),
-                            "--hint_side", &hint_side.to_string(),
-                            "--hint_leverage", &hint_leverage.to_string(),
-                            "--liquidation_recipient_note", zero_note,
-                            "--proof", &proof,
-                        ])?;
+                let note_cmt = o.note_cmt.clone();
+                let note_nf = o.note_nf.clone();
+                let note_proof_json = o.note_proof_json.clone();
+                s.spawn(move || -> (usize, bool, String, String, String, u64, u64, u64, String, String) {
+                    let ok = (|| -> Result<()> {
+                        crate::stellar::perp_deposit_note(&pe, &identity, &addr, &note_cmt, 1_000_000_000)?;
+                        if raw_side <= 1 {
+                            crate::stellar::ob_place_order(&ob, &identity, &cmt, price, hint_side, size, hint_leverage, 15, &"0000000000000000000000000000000000000000000000000000000000000000", &proof)?;
+                        }
                         Ok(())
                     })();
-                    match r {
-                        Ok(()) => eprintln!("  [order-{}] ✓ all 3 TXs confirmed", i),
-                        Err(e) => eprintln!("  [order-{}] ✗ {e}", i),
-                    }
+                    if let Err(e) = &ok { eprintln!("  [order-{i}] ✗ deposit/place: {e}"); }
+                    (i, ok.is_ok(), pe, note_cmt, note_nf, price, hint_side, hint_leverage, note_proof_json, proof)
                 })
             }).collect();
-            for h in handles { let _ = h.join(); }
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
+
+        // Phase B: open_position_from_note sequentially (all share "e2e" source account)
+        eprintln!("[5/6] Phase B: open_position_from_note (sequential, e2e account)…");
+        let zeros = "0000000000000000000000000000000000000000000000000000000000000000";
+        for (i, ok, pe, note_cmt, note_nf, price, hint_side, hint_leverage, note_proof_json, proof) in open_position_inputs {
+            if !ok { eprintln!("  [order-{i}] ✗ skipped (deposit/place failed)"); continue; }
+            let r = crate::stellar::perp_open_position(
+                &pe, crate::stellar::SOURCE,
+                &note_cmt, &note_nf, &orders[i].cmt,
+                price, hint_side, hint_leverage, 0,
+                0, 0, 0,
+                zeros, zeros,
+                &"0000000000000000000000000000000000000000000000000000000000000000",
+                &note_proof_json, &proof,
+            );
+            match r {
+                Ok(()) => eprintln!("  [order-{i}] ✓ all 3 TXs confirmed"),
+                Err(e) => eprintln!("  [order-{i}] ✗ open_position: {e}"),
+            }
+        }
 
         eprintln!("[5/6] {:.1}s", t5.elapsed().as_secs_f64());
 
@@ -384,7 +436,8 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
 
     // ── Cancel verification: pick a remaining limit order, cancel on-chain + CLOB ──
     eprintln!("\n[cancel] Testing cancel flow…");
-    if let Some(cancel_o) = orders.iter().find(|o| o.side <= 1) {
+    if let Some(cancel_idx) = orders.iter().position(|o| o.side <= 1 && !o.cancelled) {
+        let cancel_o = &orders[cancel_idx];
         eprintln!("  cancelling cmt={}… addr={}… identity={}",
             &cancel_o.cmt[..16], &cancel_o.addr[..8], cancel_o.identity);
         match client.cancel(&cancel_o.cmt, &perp_id, &orderbook_id, &cancel_o.addr, &cancel_o.identity) {
@@ -392,9 +445,18 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
                 let mk = client.get_market().unwrap_or_default();
                 eprintln!("  ✓ cancelled, book now has {} orders (was {})",
                     mk.order_count, mk.order_count + 1);
+                orders[cancel_idx].cancelled = true;
+                let _ = save_cache(keys_dir, &Cache {
+                    orders: orders.clone(),
+                    orderbook_id: Some(orderbook_id.clone()),
+                    perp_id: Some(perp_id.clone()),
+                    native_token: cached_native_token.clone(),
+                });
             }
             Err(e) => eprintln!("  ✗ cancel failed: {e}"),
         }
+    } else {
+        eprintln!("  - no uncancelled limit orders available, skipping");
     }
 
     // ── Market orders → CLOB match → on-chain (best-effort) ─────────────────

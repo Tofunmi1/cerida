@@ -171,6 +171,83 @@ function movingAverage(data: Candle[], length: number) {
   return out
 }
 
+// ─── Volume Profile Primitive (draws on chart's own canvas via pane primitive) ─
+type VPData = {
+  bkts: Map<number, { buy: number; sell: number }>
+  lo: number; hi: number; maxB: number; pocKey: number; tick: number
+}
+
+class VPRenderer {
+  constructor(private _d: VPData) {}
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  draw(target: any): void {
+    target.useMediaCoordinateSpace(({ context: ctx, mediaSize }: { context: CanvasRenderingContext2D; mediaSize: { width: number; height: number } }) => {
+      const { bkts, lo, hi, maxB, pocKey, tick } = this._d
+      if (!bkts.size || hi <= lo) return
+
+      const H      = mediaSize.height
+      const VW     = 44                        // narrower strip
+      const right  = mediaSize.width           // right edge of pane (touches price axis)
+      const left   = right - VW
+      const topOff = H * 0.08
+      const dataH  = H * 0.70
+      const span   = hi - lo
+      const yOf    = (p: number) => topOff + dataH * (1 - (p - lo) / span)
+      const GAP    = 0.5
+
+      // Subtle strip backdrop
+      ctx.fillStyle = 'rgba(0,0,0,0.10)'
+      ctx.fillRect(left, topOff, VW, dataH)
+
+      for (const [k, b] of bkts.entries()) {
+        const price  = k * tick
+        const yT     = yOf(price + tick)
+        const yB     = yOf(price)
+        const cellH  = Math.max(1.5, yB - yT)
+        if (yB < 0 || yT > H) continue
+
+        const total  = b.buy + b.sell
+        const barLen = (total / maxB) * (VW - 2)
+        const sellW  = ((b.sell / total) * barLen)
+        const buyW   = barLen - sellW
+        const isPOC  = k === pocKey
+
+        // POC: full-width glow highlight
+        if (isPOC) {
+          ctx.fillStyle = 'rgba(200,220,50,0.12)'
+          ctx.fillRect(left, yT, VW, cellH)
+        }
+
+        // Bars grow LEFT from the right edge (right-anchored, like TradingView VP)
+        // Sell portion (right, rust)
+        ctx.fillStyle = isPOC ? 'rgba(220,160,30,0.92)' : 'rgba(200,72,32,0.68)'
+        ctx.fillRect(right - sellW, yT + GAP, sellW, cellH - GAP * 2)
+        // Buy portion (left of sell, teal)
+        ctx.fillStyle = isPOC ? 'rgba(200,230,50,0.92)' : 'rgba(48,210,150,0.72)'
+        ctx.fillRect(right - barLen, yT + GAP, buyW, cellH - GAP * 2)
+      }
+    })
+  }
+}
+
+class VPPaneView {
+  constructor(private _d: VPData) {}
+  zOrder() { return 'top' as const }
+  renderer() { return new VPRenderer(this._d) }
+}
+
+class VolProfilePrimitive {
+  private _d: VPData | null = null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private _api: any = null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  attached(params: any) { this._api = params }
+  detached() { this._api = null }
+  update(d: VPData | null) { this._d = d; this._api?.requestUpdate() }
+  paneViews() { return this._d ? [new VPPaneView(this._d)] : [] }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function usePriceLine(
   seriesRef: React.RefObject<ISeriesApi<'Candlestick'> | null>,
   color: string, title: string, style: LineStyle = LineStyle.Dashed,
@@ -214,8 +291,7 @@ export default function PriceChart() {
   const lastDataRef       = useRef<Candle[]>([])
   const lastBucketRef     = useRef<number | null>(null)
   const lastIntervalRef   = useRef<string>(INTERVALS[0].label)
-  const vpvrCanvasRef     = useRef<HTMLCanvasElement>(null)
-  const vpvrRafRef        = useRef<number | undefined>(undefined)
+  const vpPrimRef         = useRef<VolProfilePrimitive | null>(null)
   const showVPVRRef       = useRef(true)
 
   // Tooltip refs (updated imperatively to avoid 60fps re-renders)
@@ -253,43 +329,13 @@ export default function PriceChart() {
   const slLine    = usePriceLine(candleRef, DOWN,  'SL')
   const entryLine = usePriceLine(candleRef, ENTRY, 'Entry', LineStyle.Solid)
 
-  // ── Volume Profile overlay ───────────────────────────────────────────────────
-  function scheduleVPVR() {
-    if (vpvrRafRef.current) return
-    vpvrRafRef.current = requestAnimationFrame(() => {
-      vpvrRafRef.current = undefined
-      drawVPVR()
-      // If chart wasn't sized yet on this frame, retry once more
-      if ((chartRef.current?.paneSize().width ?? 0) === 0) scheduleVPVR()
-    })
-  }
+  // ── Volume Profile — feeds data into the pane primitive ─────────────────────
+  function updateVP() {
+    const prim  = vpPrimRef.current
+    const chart = chartRef.current
+    if (!prim || !chart) return
 
-  function drawVPVR() {
-    const canvas = vpvrCanvasRef.current
-    const chart  = chartRef.current
-    const wrap   = wrapRef.current
-    if (!canvas || !chart || !wrap || !showVPVRRef.current) {
-      canvas?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height)
-      return
-    }
-
-    const dpr = Math.min(2, window.devicePixelRatio || 1)
-    const VW  = 60
-    const H   = wrap.clientHeight
-    if (H <= 0) return
-
-    // paneSize() can return 0 before first render — fall back to container width minus axis estimate
-    const paneW = chart.paneSize().width || Math.max(VW + 10, wrap.clientWidth - 72)
-    canvas.style.left = `${Math.max(0, paneW - VW)}px`
-
-    if (canvas.width !== Math.round(VW * dpr) || canvas.height !== Math.round(H * dpr)) {
-      canvas.width  = Math.round(VW * dpr)
-      canvas.height = Math.round(H * dpr)
-    }
-
-    const ctx = canvas.getContext('2d')!
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, VW, H)
+    if (!showVPVRRef.current) { prim.update(null); return }
 
     const data = lastDataRef.current
     if (!data.length) return
@@ -302,22 +348,14 @@ export default function PriceChart() {
 
     let lo = Infinity, hi = -Infinity
     for (let i = fromIdx; i <= toIdx; i++) {
-      lo = Math.min(lo, data[i]!.low)
-      hi = Math.max(hi, data[i]!.high)
+      lo = Math.min(lo, data[i]!.low); hi = Math.max(hi, data[i]!.high)
     }
     if (!isFinite(lo) || hi <= lo) return
 
-    // Mirror chart's scaleMargins: { top: 0.08, bottom: 0.22 }
-    const topOff = H * 0.08
-    const dataH  = H * (1 - 0.08 - 0.22)
-    const span   = hi - lo
-    const yOf    = (p: number) => topOff + dataH * (1 - (p - lo) / span)
-
-    const tick = vpStep(hi - lo)
-
+    const tick = vpStep(hi - lo, 22) // fewer buckets → taller bars
     const bkts = new Map<number, { buy: number; sell: number }>()
     for (let i = fromIdx; i <= toIdx; i++) {
-      const c  = data[i]!
+      const c = data[i]!
       const bi = Math.round((c.high + c.low) / 2 / tick)
       const b  = bkts.get(bi) ?? { buy: 0, sell: 0 }
       if (c.close >= c.open) b.buy += c.volume; else b.sell += c.volume
@@ -328,11 +366,12 @@ export default function PriceChart() {
     let maxB = 1, pocKey = -1, pocV = 0, totalVol = 0
     for (const [k, b] of bkts.entries()) {
       const t = b.buy + b.sell; totalVol += t
-      if (t > maxB) maxB = t
-      if (t > pocV) { pocV = t; pocKey = k }
+      if (t > maxB) maxB = t; if (t > pocV) { pocV = t; pocKey = k }
     }
 
-    // Value Area: price keys containing 70% of volume (sorted by volume desc)
+    prim.update({ bkts, lo, hi, maxB, pocKey, tick })
+
+    // POC / VAH / VAL price lines
     const sorted = [...bkts.entries()].sort((a, b) => (b[1].buy + b[1].sell) - (a[1].buy + a[1].sell))
     let accVol = 0; const vaKeys: number[] = []
     for (const [k, b] of sorted) {
@@ -341,40 +380,14 @@ export default function PriceChart() {
     }
     const vahKey = vaKeys.length ? Math.max(...vaKeys) : -1
     const valKey = vaKeys.length ? Math.min(...vaKeys) : -1
-
-    // Update POC / VAH / VAL price lines on the candle series
     const cs = candleRef.current
     if (cs) {
       if (pocLineRef.current) { cs.removePriceLine(pocLineRef.current); pocLineRef.current = null }
       if (vahLineRef.current) { cs.removePriceLine(vahLineRef.current); vahLineRef.current = null }
       if (valLineRef.current) { cs.removePriceLine(valLineRef.current); valLineRef.current = null }
-      if (pocKey >= 0) {
-        pocLineRef.current = cs.createPriceLine({ price: pocKey * tick + tick / 2, color: 'rgba(200,220,50,0.70)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'POC', axisLabelColor: 'rgba(200,220,50,0.85)', axisLabelTextColor: '#000' })
-      }
-      if (vahKey >= 0) {
-        vahLineRef.current = cs.createPriceLine({ price: vahKey * tick + tick, color: 'rgba(52,211,153,0.45)', lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: true, title: 'VAH', axisLabelColor: 'rgba(52,211,153,0.6)', axisLabelTextColor: '#000' })
-      }
-      if (valKey >= 0) {
-        valLineRef.current = cs.createPriceLine({ price: valKey * tick, color: 'rgba(200,70,30,0.45)', lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: true, title: 'VAL', axisLabelColor: 'rgba(200,70,30,0.6)', axisLabelTextColor: '#000' })
-      }
-    }
-
-    for (const [k, b] of bkts.entries()) {
-      const price  = k * tick
-      const yT     = yOf(price + tick)
-      const yB     = yOf(price)
-      const cellH  = Math.max(1, yB - yT)
-      if (yB < 0 || yT > H) continue
-      const total  = b.buy + b.sell
-      const barLen = (total / maxB) * (VW - 2)
-      const buyW   = (b.buy / total) * barLen
-      const isPOC  = k === pocKey
-
-      if (isPOC) { ctx.fillStyle = 'rgba(200,220,50,0.15)'; ctx.fillRect(0, yT + 0.5, VW, cellH - 1) }
-      ctx.fillStyle = isPOC ? 'rgba(200,220,50,0.90)' : 'rgba(52,211,153,0.58)'
-      ctx.fillRect(1, yT + 0.5, buyW, cellH - 1)
-      ctx.fillStyle = isPOC ? 'rgba(220,150,30,0.90)' : 'rgba(200,70,30,0.52)'
-      ctx.fillRect(1 + buyW, yT + 0.5, barLen - buyW, cellH - 1)
+      if (pocKey >= 0) pocLineRef.current = cs.createPriceLine({ price: pocKey * tick + tick / 2, color: 'rgba(200,220,50,0.70)', lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: 'POC', axisLabelColor: 'rgba(200,220,50,0.85)', axisLabelTextColor: '#000' })
+      if (vahKey >= 0) vahLineRef.current = cs.createPriceLine({ price: vahKey * tick + tick, color: 'rgba(52,211,153,0.45)', lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: true, title: 'VAH', axisLabelColor: 'rgba(52,211,153,0.6)', axisLabelTextColor: '#000' })
+      if (valKey >= 0) valLineRef.current = cs.createPriceLine({ price: valKey * tick, color: 'rgba(200,70,30,0.45)', lineWidth: 1, lineStyle: LineStyle.Dotted, axisLabelVisible: true, title: 'VAL', axisLabelColor: 'rgba(200,70,30,0.6)', axisLabelTextColor: '#000' })
     }
   }
 
@@ -459,11 +472,17 @@ export default function PriceChart() {
       tip.style.display = 'block'
     })
 
-    chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleVPVR)
+    // Attach volume profile primitive to the main pane
+    const vp = new VolProfilePrimitive()
+    chart.panes()[0]?.attachPrimitive(vp)
+    vpPrimRef.current = vp
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(updateVP)
 
     return () => {
-      chart.timeScale().unsubscribeVisibleLogicalRangeChange(scheduleVPVR)
-      if (vpvrRafRef.current) cancelAnimationFrame(vpvrRafRef.current)
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(updateVP)
+      chart.panes()[0]?.detachPrimitive(vp)
+      vpPrimRef.current = null
       chart.remove()
       chartRef.current = candleRef.current = volumeRef.current = maFastRef.current = maSlowRef.current = null
     }
@@ -478,20 +497,9 @@ export default function PriceChart() {
       rightPriceScale: { borderColor: colors.border },
       timeScale: { borderColor: colors.border },
     })
-    scheduleVPVR()
   }, [colors, showGrid])
 
-  useEffect(() => { scheduleVPVR() }, [showVPVR])
-
-  // Redraw VP on resize (also fires on mount once layout is known)
-  useEffect(() => {
-    const el = wrapRef.current
-    if (!el) return
-    const ro = new ResizeObserver(scheduleVPVR)
-    ro.observe(el)
-    return () => ro.disconnect()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  useEffect(() => { updateVP() }, [showVPVR])
 
   // ── Candle data + indicators ────────────────────────────────────────────────
   useEffect(() => {
@@ -527,7 +535,7 @@ export default function PriceChart() {
     lastIntervalRef.current = interval.label
     lastBucketRef.current   = latest.time as number
     setLast(latest)
-    scheduleVPVR()
+    updateVP()
   }, [autoFit, candles, interval, showMA, showVolume])
 
   // ── RSI pane toggle ─────────────────────────────────────────────────────────
@@ -716,12 +724,6 @@ export default function PriceChart() {
         ) : (
           <>
             <div ref={wrapRef} className="h-full w-full" />
-            {/* z-index 51: LW charts maxes out at 50 (topCanvas zIndex) */}
-            <canvas
-              ref={vpvrCanvasRef}
-              className="pointer-events-none absolute"
-              style={{ top: 0, bottom: 0, width: 60, zIndex: 51 }}
-            />
           </>
         )}
 

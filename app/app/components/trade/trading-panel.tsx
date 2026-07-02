@@ -5,13 +5,14 @@ import {
   motion,
   useMotionValue,
 } from 'framer-motion'
-import { IconChevronDown } from '@tabler/icons-react'
 import { useLevels } from '../../context/levels-context'
 import { type Side, useMarket } from '../../context/market-context'
+import { useSettings } from '../../context/settings-context'
 import { formatContractBalance, useWallet } from '../../context/wallet-context'
 import {
   buildDepositTx,
   buildOpenPositionTx,
+  crossMarginKey,
   randomCommitment,
   submitAndWait,
 } from '../../lib/contracts'
@@ -23,7 +24,7 @@ const MIN_LEV = 1
 const MAX_LEV = 50
 const STEPS = MAX_LEV - MIN_LEV
 const LABEL_MARKS = [1, 3, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
-const barH = (step: number) => 5 + (step / STEPS) * 27
+const barH = (step: number) => 10 + (step / STEPS) * 54
 
 function LeverageSlider({
   value,
@@ -133,7 +134,7 @@ function LeverageSlider({
       <div
         ref={trackRef}
         className="relative select-none"
-        style={{ height: 58, cursor: 'pointer' }}
+        style={{ height: 84, cursor: 'pointer' }}
         onPointerEnter={() => setShowHandle(true)}
         onPointerLeave={() => {
           if (!dragging.current) setShowHandle(false)
@@ -205,7 +206,7 @@ function LeverageSlider({
                 width: 1.5,
                 height: 5,
                 transform: 'translateX(-0.75px)',
-                backgroundColor: 'rgba(17,24,39,0.10)',
+                backgroundColor: 'var(--color-border-subtle)',
                 opacity: 0.4,
                 pointerEvents: 'none',
               }}
@@ -380,7 +381,9 @@ export default function TradingPanel() {
   const { symbol, mark } = useMarket()
   const levels = useLevels()
   const { connected, publicKey, balance, sign, refreshBalance } = useWallet()
+  const { orderPrivacy } = useSettings()
   const [side, setSide] = useState<Side>('long')
+  const [marginMode, setMarginMode] = useState<'isolated' | 'cross'>('isolated')
   const [orderType, setOrderType] = useState<'market' | 'limit' | 'stop'>('market')
   const [pctSelected, setPctSelected] = useState<number | null>(null)
   const [takeProfitEnabled, setTakeProfitEnabled] = useState(false)
@@ -437,6 +440,15 @@ export default function TradingPanel() {
       return
     }
 
+    if (orderPrivacy === 'private') {
+      toast.warning(
+        'Private orders not wired up yet',
+        'This build can’t generate the shielded-note proof from the trading panel. Switch to Public in Settings, or use the note flow directly against the contract.',
+        { duration: 7000 },
+      )
+      return
+    }
+
     if (orderType !== 'market') {
       const price = Number(limitPrice)
       if (!limitPrice || price <= 0 || Number.isNaN(price)) {
@@ -474,6 +486,8 @@ export default function TradingPanel() {
       const hintPrice = Math.round(mark * PRICE_SCALE)
       const tpUnits = tpInput ? Math.round(parseFloat(tpInput) * PRICE_SCALE) : 0
       const slUnits = slInput ? Math.round(parseFloat(slInput) * PRICE_SCALE) : 0
+      const portfolioKey =
+        marginMode === 'cross' ? crossMarginKey(publicKey) : undefined
 
       const openTx = await buildOpenPositionTx(publicKey, {
         commitment,
@@ -484,6 +498,7 @@ export default function TradingPanel() {
         collateral: collateralUnits,
         tpPrice: tpUnits,
         slPrice: slUnits,
+        portfolioKey,
       })
 
       toast.update(progressId, { description: 'Waiting for signature…', progress: 75 })
@@ -571,10 +586,16 @@ export default function TradingPanel() {
             )}
           </button>
         ))}
-        <div className="ml-auto flex items-center gap-1 text-[14px] text-text-tertiary hover:text-text-secondary">
-          Cross
-          <IconChevronDown size={12} stroke={2.5} />
-        </div>
+        <button
+          onClick={() => setMarginMode((m) => (m === 'isolated' ? 'cross' : 'isolated'))}
+          className={`ml-auto rounded-[5px] px-2 py-1 text-[12px] font-medium transition-colors ${
+            marginMode === 'cross'
+              ? 'bg-brand-violet/15 text-brand-violet'
+              : 'text-text-tertiary hover:text-text-secondary'
+          }`}
+        >
+          {marginMode === 'cross' ? 'Cross' : 'Isolated'}
+        </button>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 py-2">
@@ -713,6 +734,18 @@ export default function TradingPanel() {
           <SummaryRow label="Notional" value={formatUsd(notional)} />
           <SummaryRow label="Est. fee" value={formatUsd(fee)} />
           <SummaryRow label="Liq. price" value={formatUsd(liquidation)} />
+          <SummaryRow
+            label="Margin"
+            value={marginMode === 'cross' ? 'Cross' : 'Isolated'}
+          />
+          <div className="flex items-center justify-between">
+            <span>Privacy</span>
+            <span
+              className={orderPrivacy === 'private' ? 'text-brand-violet' : 'text-text-secondary'}
+            >
+              {orderPrivacy === 'private' ? 'Private (shielded)' : 'Public'}
+            </span>
+          </div>
         </div>
       </div>
 

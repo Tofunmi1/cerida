@@ -18,8 +18,8 @@ pub struct OrderSecrets {
     pub is_market: bool,
 }
 
-fn book_key(asset: u64) -> [u8; 10] {
-    let mut buf = [0u8; 10];
+fn book_key(asset: u64) -> [u8; 13] {
+    let mut buf = [0u8; 13];
     buf[..5].copy_from_slice(b"book_");
     buf[5..].copy_from_slice(&asset.to_le_bytes());
     buf
@@ -200,7 +200,7 @@ impl BookStore {
         let mut books = HashMap::new();
         for result in self.tree.iter() {
             let (key, value) = result?;
-            if key.len() == 10 && &key[..5] == b"book_" {
+            if key.len() == 13 && &key[..5] == b"book_" {
                 let asset = u64::from_le_bytes(key[5..].try_into().unwrap());
                 match serde_json::from_slice::<engine::OrderBook>(&value) {
                     Ok(book) => {
@@ -214,4 +214,75 @@ impl BookStore {
         log::info!("Loaded books from DB", "count", books.len(), "took", log::duration_secs(&start.elapsed()));
         Ok(books)
     }
+}
+
+// ── Encrypted Key Store (wraps SecretStore with AEAD) ──
+
+pub struct EncryptedStore {
+    inner: SecretStore,
+}
+
+impl EncryptedStore {
+    pub fn open(db: &sled::Db, _dek: [u8; 32]) -> Self {
+        Self {
+            inner: SecretStore::open(db).expect("SecretStore open"),
+        }
+    }
+
+    pub fn insert(&self, cmt: &str, secrets: &OrderSecrets) -> anyhow::Result<()> {
+        #[cfg(feature = "secure")]
+        {
+            let plaintext = serde_json::to_vec(secrets)?;
+            let enc = crate::crypto::encrypt(&dek_from_env()?, &plaintext)?;
+            let mut buf = enc.nonce.to_vec();
+            buf.extend_from_slice(&enc.ciphertext);
+            self.inner.tree.insert(cmt.as_bytes(), buf)?;
+            self.inner.tree.flush()?;
+        }
+        #[cfg(not(feature = "secure"))]
+        {
+            self.inner.insert(cmt, secrets)?;
+        }
+        Ok(())
+    }
+
+    pub fn get(&self, cmt: &str) -> anyhow::Result<Option<OrderSecrets>> {
+        #[cfg(feature = "secure")]
+        {
+            match self.inner.tree.get(cmt.as_bytes())? {
+                Some(value) => {
+                    if value.len() < 12 {
+                        return Ok(None);
+                    }
+                    let mut nonce = [0u8; 12];
+                    nonce.copy_from_slice(&value[..12]);
+                    let payload = crate::crypto::EncryptedPayload {
+                        nonce,
+                        ciphertext: value[12..].to_vec(),
+                    };
+                    let plaintext = crate::crypto::decrypt(&dek_from_env()?, &payload)?;
+                    let secrets: OrderSecrets = serde_json::from_slice(&plaintext)?;
+                    Ok(Some(secrets))
+                }
+                None => Ok(None),
+            }
+        }
+        #[cfg(not(feature = "secure"))]
+        {
+            self.inner.get(cmt)
+        }
+    }
+}
+
+#[cfg(feature = "secure")]
+fn dek_from_env() -> anyhow::Result<[u8; 32]> {
+    use std::env;
+    let hex_key = env::var("CER_DEK").map_err(|_| anyhow::anyhow!("CER_DEK not set"))?;
+    let bytes = hex::decode(&hex_key)?;
+    if bytes.len() != 32 {
+        anyhow::bail!("CER_DEK must be 64 hex chars");
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes);
+    Ok(key)
 }
