@@ -190,6 +190,8 @@ enum Command {
         #[arg(long, default_value = "1000000000")]
         match_size: u64,
     },
+    /// Deploy contracts + register 6 markets (GOLD/SPY/TSLA/BTC/ETH/SOL) on testnet
+    Deploy,
 }
 
 fn decimal_to_hex(s: &str) -> String {
@@ -403,6 +405,24 @@ fn main() -> Result<()> {
             stellar::verify_match(&ctx, &result.nullifier_a, &result.nullifier_b)?;
 
             eprintln!("\n━━━ E2E COMPLETE ({:.2}s) ━━━", global_start.elapsed().as_secs_f64());
+        }
+        Command::Deploy => {
+            eprintln!("━━━ Testnet Deployment ━━━");
+            let (orderbook_id, perp_id, source_pk, usdc_sac) = stellar::deploy_contracts(&wasm_dir)?;
+            eprintln!("  ✓ orderbook: {}", orderbook_id);
+            eprintln!("  ✓ perp-engine: {}", perp_id);
+            eprintln!("  ✓ source_pk: {}", source_pk);
+            eprintln!("  ✓ USDC SAC: {}", usdc_sac);
+
+            stellar::init_perp_engine(&perp_id, stellar::SOURCE, &usdc_sac)?;
+            eprintln!("  ✓ perp-engine initialized + default asset registered");
+
+            stellar::multi_market_setup(&perp_id)?;
+            eprintln!("  ✓ 6 markets registered (GOLD/SPY/TSLA/BTC/ETH/SOL)");
+
+            eprintln!("\n━━━ DEPLOY COMPLETE ━━━");
+            eprintln!("  Orderbook: {}", orderbook_id);
+            eprintln!("  PerpEngine: {}", perp_id);
         }
     }
 

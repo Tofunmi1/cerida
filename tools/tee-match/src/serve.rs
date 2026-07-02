@@ -10,7 +10,7 @@ use std::time::Instant;
 
 static NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
 struct Request {
     cmd: String,
     side: Option<u64>,
@@ -997,6 +997,102 @@ pub mod secure {
         };
 
         let resp = handle_init(&state.store, &state.keys_dir, &req);
+        Json(serde_json::json!(resp))
+    }
+
+    /// Helper: decrypt an encrypted request body and parse it into a Request.
+    /// Returns (dek_bytes, parsed_request).
+    fn decrypt_request(payload: &serde_json::Value) -> Result<([u8; 32], Request), String> {
+        let dek_hex = std::env::var("CER_DEK").map_err(|_| "CER_DEK not set".to_string())?;
+        let dek_bytes: [u8; 32] = hex::decode(&dek_hex)
+            .map_err(|_| "invalid CER_DEK hex".to_string())
+            .and_then(|v| v.try_into().map_err(|_| "CER_DEK must be 32 bytes".to_string()))?;
+
+        let encrypted_b64 = payload["encrypted"].as_str().ok_or("missing encrypted")?;
+        let encrypted = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encrypted_b64)
+            .map_err(|e| format!("b64: {e}"))?;
+        if encrypted.len() < 12 {
+            return Err("too short".to_string());
+        }
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&encrypted[..12]);
+        let ep = crypto::EncryptedPayload { nonce, ciphertext: encrypted[12..].to_vec() };
+        let plaintext = crypto::decrypt(&dek_bytes, &ep).map_err(|e| format!("decrypt: {e}"))?;
+        let req: Request = serde_json::from_slice(&plaintext).map_err(|e| format!("json: {e}"))?;
+        Ok((dek_bytes, req))
+    }
+
+    async fn handle_place_secure(
+        State(state): State<SecureState>,
+        Json(payload): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        let req = match decrypt_request(&payload) {
+            Ok((_, r)) => r,
+            Err(e) => return Json(serde_json::json!({"ok": false, "error": e})),
+        };
+        let resp = handle_place(&state.store, &state.book_store, &state.fills, &state.books, &state.keys_dir, &req);
+        Json(serde_json::json!(resp))
+    }
+
+    async fn handle_cancel_secure(
+        State(state): State<SecureState>,
+        Json(payload): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        let req = match decrypt_request(&payload) {
+            Ok((_, r)) => r,
+            Err(e) => return Json(serde_json::json!({"ok": false, "error": e})),
+        };
+        let resp = handle_cancel(&state.store, &state.book_store, &state.books, &state.keys_dir, &req);
+        Json(serde_json::json!(resp))
+    }
+
+    async fn handle_match_secure(
+        State(state): State<SecureState>,
+        Json(payload): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        let req = match decrypt_request(&payload) {
+            Ok((_, r)) => r,
+            Err(e) => return Json(serde_json::json!({"ok": false, "error": e})),
+        };
+        let resp = handle_match(&state.store, &state.keys_dir, &req);
+        Json(serde_json::json!(resp))
+    }
+
+    async fn handle_market_secure(
+        State(state): State<SecureState>,
+        Json(payload): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        let req = match decrypt_request(&payload) {
+            Ok((_, r)) => r,
+            Err(e) => return Json(serde_json::json!({"ok": false, "error": e})),
+        };
+        let resp = handle_market(&state.store, &state.book_store, &state.fills, &state.books, &state.keys_dir, &req);
+        Json(serde_json::json!(resp))
+    }
+
+    // Public endpoints (no encryption): get_market, set_mark_price
+    async fn handle_get_market_secure(
+        State(state): State<SecureState>,
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let req = Request {
+            cmd: "get_market".to_string(),
+            asset: params.get("asset").and_then(|v| v.parse().ok()),
+            ..Default::default() // rest of fields use defaults
+        };
+        let resp = handle_get_market(&state.books, &req);
+        Json(serde_json::json!(resp))
+    }
+
+    async fn handle_set_mark_price_secure(
+        State(state): State<SecureState>,
+        Json(payload): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        let req = match decrypt_request(&payload) {
+            Ok((_, r)) => r,
+            Err(e) => return Json(serde_json::json!({"ok": false, "error": e})),
+        };
+        let resp = handle_set_mark_price(&req);
         Json(serde_json::json!(resp))
     }
 }

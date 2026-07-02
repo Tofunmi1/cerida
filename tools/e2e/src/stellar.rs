@@ -517,6 +517,56 @@ pub fn deploy_contracts(wasm_dir: &Path) -> Result<(String, String, String, Stri
     Ok((orderbook_id, perp_id, source_pk, usdc_sac))
 }
 
+/// Register 6 markets: GOLD, SPY, TSLA, BTC, ETH, SOL.
+/// Each gets registered with default config and an initial oracle price.
+pub fn multi_market_setup(perp_id: &str) -> Result<()> {
+    use crate::soroban_rpc::{scval_address, scval_bytes32, scval_u64, scval_asset_config, SorobanRpc};
+    let rpc = SorobanRpc::new();
+    let admin_pk = source_pubkey()?;
+
+    let markets: &[(&str, u64, u64)] = &[
+        ("GOLD", 24000000000,  50),  // $2,400, 50x
+        ("SPY",  54000000000,  10),  // $540, 10x (equity)
+        ("TSLA", 24000000000,  10),  // $240, 10x (equity)
+        ("BTC",  6000000000000, 50), // $60,000, 50x
+        ("ETH",  300000000000,  50), // $3,000, 50x
+        ("SOL",  14000000000,  50),  // $140, 50x
+    ];
+
+    for (i, (name, price, max_lev)) in markets.iter().enumerate() {
+        let asset_hex = format!("{:0>64x}", i);
+        eprintln!("  [deploy] registering {name} (asset_id={i}, price={price}, max_lev={max_lev})…");
+
+        let config = scval_asset_config(*max_lev, 500, 1000, 100, 150, 50, true)?;
+        rpc.invoke_xdr(perp_id, SOURCE, "register_asset", vec![
+            scval_address(&admin_pk)?,
+            scval_bytes32(&asset_hex)?,
+            // Name as ScVal::Bytes (variable-length byte string)
+            {
+                let name_bytes: Vec<u8> = name.as_bytes().to_vec();
+                stellar_xdr::ScVal::Bytes(stellar_xdr::ScBytes(
+                    name_bytes.try_into().map_err(|_| anyhow::anyhow!("name too long"))?
+                ))
+            },
+            config,
+        ])?;
+
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        rpc.invoke_xdr(perp_id, SOURCE, "set_asset_price", vec![
+            scval_bytes32(&asset_hex)?,
+            scval_address(&admin_pk)?,
+            scval_u64(*price),
+        ])?;
+
+        eprintln!("  ✓ {name} registered + oracle set");
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+
+    eprintln!("  ✓ 6 markets registered");
+    Ok(())
+}
+
 
 /// Initialize perp-engine with admin and token (retries on contract-not-found).
 pub fn init_perp_engine(perp_id: &str, admin: &str, token: &str) -> Result<String> {

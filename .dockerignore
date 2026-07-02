@@ -1,0 +1,9 @@
+# Docker ignore
+target/
+**/target/
+**/.git/
+**/node_modules/
+**/test_snapshots/
+.DS_Store
+*.md
+*.wasm
