@@ -525,12 +525,12 @@ pub fn multi_market_setup(perp_id: &str) -> Result<()> {
     let admin_pk = source_pubkey()?;
 
     let markets: &[(&str, u64, u64)] = &[
-        ("GOLD", 24000000000,  50),  // $2,400, 50x
-        ("SPY",  54000000000,  10),  // $540, 10x (equity)
-        ("TSLA", 24000000000,  10),  // $240, 10x (equity)
-        ("BTC",  6000000000000, 50), // $60,000, 50x
-        ("ETH",  300000000000,  50), // $3,000, 50x
-        ("SOL",  14000000000,  50),  // $140, 50x
+        ("BTC",  6000000000000, 50),  // $60,000, 50x
+        ("GOLD", 24000000000,  50),   // $2,400, 50x
+        ("SPY",  54000000000,  10),   // $540, 10x (equity)
+        ("TSLA", 24000000000,  10),   // $240, 10x (equity)
+        ("AAPL", 20000000000,  10),   // $200, 10x (equity)
+        ("XRP",  250000000,    50),   // $2.50, 50x
     ];
 
     for (i, (name, price, max_lev)) in markets.iter().enumerate() {
