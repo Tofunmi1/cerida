@@ -4,7 +4,7 @@
 use soroban_sdk::{
     contract, contractimpl, contracttype,
     crypto::bn254::{Bn254Fr, Bn254G1Affine as G1Affine, Bn254G2Affine as G2Affine},
-    Address, BytesN, Env, Vec,
+    BytesN, Env, Vec,
 };
 use types::{Groth16Error, Groth16Proof, OrderMeta, OrderStatus, TimeInForce};
 
@@ -92,8 +92,8 @@ pub struct Orderbook;
 impl Orderbook {
     pub fn place_order(
         env: Env,
-        owner: Address,
         commitment: BytesN<32>,
+        portfolio_key: BytesN<32>,
         hint_price: u64,
         hint_side: u64,
         hint_size: u64,
@@ -101,10 +101,9 @@ impl Orderbook {
         revealed: u64,
         tif: TimeInForce,
         expiry_ledger: u64,
+        asset_id: BytesN<32>,
         proof: Groth16Proof,
     ) {
-        owner.require_auth();
-
         if tif == TimeInForce::GTD && expiry_ledger == 0 {
             panic!("Orderbook: GTD order requires expiry_ledger > 0");
         }
@@ -119,6 +118,7 @@ impl Orderbook {
 
         let mut pi: Vec<Bn254Fr> = Vec::new(&env);
         pi.push_back(Bn254Fr::from_bytes(commitment.clone()));
+        pi.push_back(Bn254Fr::from_bytes(portfolio_key));
 
         let vk = load_vk(&env, &VK_COMMIT_IC);
         match verify_groth16(&env, &vk, &proof, &pi) {
@@ -127,13 +127,12 @@ impl Orderbook {
         }
 
         let meta = OrderMeta {
-            owner: owner.clone(),
             hint_price,
             hint_side,
             hint_size,
             hint_leverage,
             revealed,
-            asset_id: BytesN::from_array(&env, &[0u8; 32]),
+            asset_id,
             status: OrderStatus::Open,
             created_at: env.ledger().sequence() as u64,
             tif,
@@ -149,7 +148,6 @@ impl Orderbook {
         env.events().publish(
             (soroban_sdk::symbol_short!("place"),),
             (
-                owner,
                 commitment,
                 hint_price,
                 hint_side,
@@ -163,13 +161,10 @@ impl Orderbook {
 
     pub fn cancel_order(
         env: Env,
-        owner: Address,
         commitment: BytesN<32>,
         nullifier: BytesN<32>,
         proof: Groth16Proof,
     ) {
-        owner.require_auth();
-
         let null_key = DataKey::Nullifier(nullifier.clone());
         if env.storage().persistent().has(&null_key) {
             panic!("Orderbook: nullifier already spent");
@@ -182,9 +177,6 @@ impl Orderbook {
             .get(&order_key)
             .unwrap_or_else(|| panic!("Orderbook: commitment not found"));
 
-        if meta.owner != owner {
-            panic!("Orderbook: unauthorized caller for cancel_order");
-        }
         if meta.status != OrderStatus::Open {
             panic!(
                 "Orderbook: order is not open (status={:?})",
@@ -217,7 +209,7 @@ impl Orderbook {
         #[allow(deprecated)]
         env.events().publish(
             (soroban_sdk::symbol_short!("cancel"),),
-            (owner, commitment, nullifier, meta.created_at),
+            (commitment, nullifier, meta.created_at),
         );
     }
 
@@ -291,7 +283,10 @@ extern crate std;
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+    use soroban_sdk::{
+        testutils::{Ledger, LedgerInfo},
+        Address,
+    };
 
     fn default_ledger() -> LedgerInfo {
         LedgerInfo {
@@ -317,13 +312,11 @@ mod test {
         env: &Env,
         cid: &Address,
         commitment: &BytesN<32>,
-        owner: &Address,
         tif: TimeInForce,
         expiry: u64,
     ) {
         env.as_contract(cid, || {
             let meta = OrderMeta {
-                owner: owner.clone(),
                 hint_price: 100,
                 hint_side: 0,
                 hint_size: 1000,
@@ -345,9 +338,8 @@ mod test {
     fn test_gtd_expire_order() {
         let (env, cid) = setup();
         let client = OrderbookClient::new(&env, &cid);
-        let owner = Address::generate(&env);
         let cmt = BytesN::from_array(&env, &[1u8; 32]);
-        insert_order(&env, &cid, &cmt, &owner, TimeInForce::GTD, 10);
+        insert_order(&env, &cid, &cmt, TimeInForce::GTD, 10);
 
         env.ledger().set(LedgerInfo {
             sequence_number: 11,
@@ -362,9 +354,8 @@ mod test {
     fn test_expire_order_before_expiry_reverts() {
         let (env, cid) = setup();
         let client = OrderbookClient::new(&env, &cid);
-        let owner = Address::generate(&env);
         let cmt = BytesN::from_array(&env, &[2u8; 32]);
-        insert_order(&env, &cid, &cmt, &owner, TimeInForce::GTD, 100);
+        insert_order(&env, &cid, &cmt, TimeInForce::GTD, 100);
 
         env.ledger().set(LedgerInfo {
             sequence_number: 50,
@@ -378,9 +369,8 @@ mod test {
     fn test_expire_non_gtd_order_reverts() {
         let (env, cid) = setup();
         let client = OrderbookClient::new(&env, &cid);
-        let owner = Address::generate(&env);
         let cmt = BytesN::from_array(&env, &[3u8; 32]);
-        insert_order(&env, &cid, &cmt, &owner, TimeInForce::GTC, 0);
+        insert_order(&env, &cid, &cmt, TimeInForce::GTC, 0);
 
         env.ledger().set(LedgerInfo {
             sequence_number: 999,
@@ -394,9 +384,8 @@ mod test {
     fn test_expire_already_expired_order_reverts() {
         let (env, cid) = setup();
         let client = OrderbookClient::new(&env, &cid);
-        let owner = Address::generate(&env);
         let cmt = BytesN::from_array(&env, &[4u8; 32]);
-        insert_order(&env, &cid, &cmt, &owner, TimeInForce::GTD, 5);
+        insert_order(&env, &cid, &cmt, TimeInForce::GTD, 5);
 
         env.ledger().set(LedgerInfo {
             sequence_number: 10,
@@ -418,17 +407,16 @@ mod test {
     fn test_get_tif_returns_correct_variant() {
         let (env, cid) = setup();
         let client = OrderbookClient::new(&env, &cid);
-        let owner = Address::generate(&env);
 
         let cmt_gtc = BytesN::from_array(&env, &[10u8; 32]);
         let cmt_fok = BytesN::from_array(&env, &[11u8; 32]);
         let cmt_ioc = BytesN::from_array(&env, &[12u8; 32]);
         let cmt_gtd = BytesN::from_array(&env, &[13u8; 32]);
 
-        insert_order(&env, &cid, &cmt_gtc, &owner, TimeInForce::GTC, 0);
-        insert_order(&env, &cid, &cmt_fok, &owner, TimeInForce::FOK, 0);
-        insert_order(&env, &cid, &cmt_ioc, &owner, TimeInForce::IOC, 0);
-        insert_order(&env, &cid, &cmt_gtd, &owner, TimeInForce::GTD, 50);
+        insert_order(&env, &cid, &cmt_gtc, TimeInForce::GTC, 0);
+        insert_order(&env, &cid, &cmt_fok, TimeInForce::FOK, 0);
+        insert_order(&env, &cid, &cmt_ioc, TimeInForce::IOC, 0);
+        insert_order(&env, &cid, &cmt_gtd, TimeInForce::GTD, 50);
 
         assert_eq!(client.get_tif(&cmt_gtc), Some(TimeInForce::GTC));
         assert_eq!(client.get_tif(&cmt_fok), Some(TimeInForce::FOK));

@@ -12,7 +12,15 @@ fn main() {
 
     let keys_fallback = || -> PathBuf {
         let m = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        fs::canonicalize(m.join("../../circuits/keys")).unwrap_or(m)
+        let candidate = m.join("../../circuits/keys");
+        fs::canonicalize(&candidate).unwrap_or_else(|e| {
+            panic!(
+                "build.rs: cannot find circuits/keys directory at `{}`: {e}\n\
+                 Run `cargo run -p rust-circuits -- setup` to generate VK files,\n\
+                 or set VK_COMMIT_JSON / VK_CANCEL_JSON / VK_MATCH_JSON / VK_NOTE_SPEND_JSON.",
+                candidate.display()
+            )
+        })
     };
 
     let resolve = |env_var: &str, filename: &str| -> String {
