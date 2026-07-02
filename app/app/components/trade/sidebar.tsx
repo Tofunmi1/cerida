@@ -6,6 +6,7 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconLayoutDashboard,
+  IconLock,
   IconSettings,
   IconShieldCheck,
 } from '@tabler/icons-react'
@@ -110,6 +111,13 @@ export default function Sidebar({
           active={active === 'Portfolio'}
           collapsed={collapsed}
           onClick={() => onActive('Portfolio')}
+        />
+        <NavButton
+          icon={<IconLock size={18} stroke={1.75} />}
+          label="Pool"
+          active={active === 'Pool'}
+          collapsed={collapsed}
+          onClick={() => onActive('Pool')}
         />
         <NavButton
           icon={<IconShieldCheck size={18} stroke={1.75} />}

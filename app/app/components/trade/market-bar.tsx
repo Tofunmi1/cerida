@@ -14,7 +14,7 @@ import {
   IconWallet,
   IconX,
 } from '@tabler/icons-react'
-import { MARKET_CATALOG, useMarket, type MarketDefinition } from '../../context/market-context'
+import { MARKET_CATALOG, symbolToSlug, useMarket, type MarketDefinition } from '../../context/market-context'
 import { THEMES, useTheme } from '../../context/theme-context'
 import { formatContractBalance, useWallet } from '../../context/wallet-context'
 import { formatCompactUsd, formatUsd } from './format'
@@ -24,12 +24,14 @@ export default function MarketBar({
   active,
   onActive,
   onOpenSettings,
+  onNavigate,
 }: {
   active: string
   onActive: (label: string) => void
   onOpenSettings: () => void
+  onNavigate: (path: string) => void
 }) {
-  const { symbol, setSymbol, mark, index, changePct, funding, openInterest, volume24h } = useMarket()
+  const { symbol, mark, index, changePct, funding, openInterest, volume24h } = useMarket()
   const { theme, setTheme } = useTheme()
   const [marketOpen, setMarketOpen] = useState(false)
   const [themeOpen, setThemeOpen] = useState(false)
@@ -158,9 +160,9 @@ export default function MarketBar({
           activeSymbol={symbol}
           onSelect={(next) => {
             const market = MARKET_CATALOG.find((item) => item.symbol === next)
-            setSymbol(next)
             setMarketOpen(false)
             toast.success('Market selected', `${market?.name ?? next} perpetual is now active.`, { duration: 3000 })
+            onNavigate(`/trade/${symbolToSlug(next)}`)
           }}
           onClose={() => setMarketOpen(false)}
         />

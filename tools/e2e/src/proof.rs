@@ -5,7 +5,13 @@ use anyhow::{Context, Result};
 use ark_bn254::{Bn254, Fr, Fq, Fq2, G1Affine, G2Affine};
 use ark_ff::{AdditiveGroup, Field, PrimeField};
 use ark_groth16::{Groth16, ProvingKey, prepare_verifying_key};
-use rust_circuits::{ProofOutput, load_pk, compute_note_commitment, compute_note_nullifier, compute_nullifier, fr_to_biguint, prove_cancel_with_pk};
+use rust_circuits::{
+    ProofOutput, load_pk, compute_note_commitment, compute_note_nullifier, compute_nullifier,
+    fr_to_biguint, prove_cancel_with_pk,
+    compute_leaf_hash, compute_pool_nullifier_hash, compute_merkle_path, compute_new_root,
+    compute_root_from_leaves, compute_empty_root, prove_shielded_insert, prove_shielded_withdraw,
+    circuits::shielded_insert::TREE_DEPTH,
+};
 
 pub type RawProof = ProofOutput;
 
@@ -88,6 +94,132 @@ fn parse_g2(hex: &str) -> G2Affine {
     let y_c1 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[128..192]).unwrap());
     let y_c0 = Fq::from_be_bytes_mod_order(&hex::decode(&hex[192..]).unwrap());
     G2Affine::new(Fq2::new(x_c0, x_c1), Fq2::new(y_c0, y_c1))
+}
+
+/// Returned by gen_pool_insert — everything the caller needs for pool.deposit.
+pub struct PoolInsertResult {
+    pub commitment_hex: String,
+    pub old_root_hex: String,
+    pub new_root_hex: String,
+    pub leaf_index: u64,
+    pub proof: RawProof,
+}
+
+/// Returned by gen_pool_withdraw — everything the caller needs for pool.withdraw.
+pub struct PoolWithdrawResult {
+    pub nullifier_hash_hex: String,
+    pub root_hex: String,
+    pub recipient_hex: String,
+    pub proof: RawProof,
+}
+
+/// Generate a ShieldedInsert proof for pool.deposit.
+/// `current_leaves` = hex-encoded leaf hashes already in the tree (empty for first deposit).
+/// `recipient_pk` is only used to derive the note commitment — pool uses secret+nullifier.
+pub fn gen_pool_insert(
+    keys_dir: &Path,
+    secret: u64,
+    nullifier: u64,
+    current_leaves: &[Fr],
+) -> Result<PoolInsertResult> {
+    let pk = load_pk(&pk_path(keys_dir, "shielded_insert"))
+        .with_context(|| "Failed to load shielded_insert.pk.bin")?;
+
+    let secret_fr = Fr::from(secret);
+    let nullifier_fr = Fr::from(nullifier);
+    let commitment = compute_leaf_hash(secret_fr, nullifier_fr);
+
+    let leaf_index = current_leaves.len() as u64;
+    let old_root = if current_leaves.is_empty() {
+        compute_empty_root()
+    } else {
+        compute_root_from_leaves(current_leaves)
+    };
+
+    let path = compute_merkle_path(current_leaves, leaf_index as usize);
+    let new_root = compute_new_root(commitment, leaf_index, &path);
+
+    let out = prove_shielded_insert(&pk, old_root, new_root, commitment, leaf_index, path)?;
+
+    // Local verification
+    let pvk = ark_groth16::prepare_verifying_key(&pk.vk);
+    let proof_ark = ark_groth16::Proof {
+        a: parse_g1(&out.proof.a).into(),
+        b: parse_g2(&out.proof.b).into(),
+        c: parse_g1(&out.proof.c).into(),
+    };
+    let pi = [old_root, new_root, commitment, Fr::from(leaf_index)];
+    assert!(
+        Groth16::<Bn254>::verify_proof(&pvk, &proof_ark, &pi).unwrap(),
+        "ShieldedInsert proof failed local verification"
+    );
+
+    Ok(PoolInsertResult {
+        commitment_hex: format!("{:0>64x}", fr_to_biguint(&commitment)),
+        old_root_hex: format!("{:0>64x}", fr_to_biguint(&old_root)),
+        new_root_hex: format!("{:0>64x}", fr_to_biguint(&new_root)),
+        leaf_index,
+        proof: out,
+    })
+}
+
+/// Generate a ShieldedWithdraw proof for pool.withdraw.
+/// `all_leaves` = all leaf hashes currently in the tree (commitment must be among them).
+/// `recipient_hex` = 32-byte hex that binds the proof to a recipient (sha256 of pubkey or similar).
+pub fn gen_pool_withdraw(
+    keys_dir: &Path,
+    secret: u64,
+    nullifier: u64,
+    all_leaves: &[Fr],
+    recipient_hex: &str,
+) -> Result<PoolWithdrawResult> {
+    let pk = load_pk(&pk_path(keys_dir, "shielded_withdraw"))
+        .with_context(|| "Failed to load shielded_withdraw.pk.bin")?;
+
+    let secret_fr = Fr::from(secret);
+    let nullifier_fr = Fr::from(nullifier);
+    let commitment = compute_leaf_hash(secret_fr, nullifier_fr);
+    let nullifier_hash = compute_pool_nullifier_hash(nullifier_fr);
+
+    let leaf_index = all_leaves
+        .iter()
+        .position(|&l| l == commitment)
+        .with_context(|| "commitment not found in leaf set")?;
+
+    let root = compute_root_from_leaves(all_leaves);
+    let path = compute_merkle_path(all_leaves, leaf_index);
+    let mut path_indices = [false; TREE_DEPTH];
+    for i in 0..TREE_DEPTH {
+        path_indices[i] = ((leaf_index >> i) & 1) == 1;
+    }
+
+    let recipient_bytes = hex::decode(recipient_hex.trim_start_matches("0x"))
+        .with_context(|| "invalid recipient hex")?;
+    let recipient_fr = Fr::from_be_bytes_mod_order(&recipient_bytes);
+
+    let out = prove_shielded_withdraw(
+        &pk, root, nullifier_hash, recipient_fr,
+        secret_fr, nullifier_fr, path, path_indices,
+    )?;
+
+    // Local verification
+    let pvk = ark_groth16::prepare_verifying_key(&pk.vk);
+    let proof_ark = ark_groth16::Proof {
+        a: parse_g1(&out.proof.a).into(),
+        b: parse_g2(&out.proof.b).into(),
+        c: parse_g1(&out.proof.c).into(),
+    };
+    assert!(
+        Groth16::<Bn254>::verify_proof(&pvk, &proof_ark, &[root, nullifier_hash, recipient_fr]).unwrap(),
+        "ShieldedWithdraw proof failed local verification"
+    );
+
+    Ok(PoolWithdrawResult {
+        nullifier_hash_hex: format!("{:0>64x}", fr_to_biguint(&nullifier_hash)),
+        root_hex: format!("{:0>64x}", fr_to_biguint(&root)),
+        recipient_hex: recipient_hex.trim_start_matches("0x").to_string(),
+        proof: out,
+    })
 }
 
 /// Generate a NoteSpend proof using amount=0 as sentinel for a settlement note.

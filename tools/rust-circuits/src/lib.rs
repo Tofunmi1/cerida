@@ -20,6 +20,8 @@ use circuits::cancel::OrderCancel;
 use circuits::commitment::OrderCommitment;
 use circuits::match_circuit::OrderMatch;
 use circuits::note_spend::NoteSpend;
+use circuits::shielded_insert::{ShieldedInsert, TREE_DEPTH};
+use circuits::shielded_withdraw::ShieldedWithdraw;
 use num_bigint::BigUint;
 use poseidon2::{poseidon2_hash_t3, poseidon2_hash_t4};
 
@@ -222,6 +224,251 @@ pub fn setup_all(
     )?;
 
     Ok([commit, cancel, r#match, note_spend])
+}
+
+/// Setup for the two shielded-pool circuits (independent trusted setup from the perp circuits).
+pub fn setup_pool(
+    rng: &mut impl rand::Rng,
+) -> Result<[(ProvingKey<Bn254>, VerifyingKey<Bn254>); 2], SynthesisError> {
+    let alpha = Fr::rand(rng);
+    let beta = Fr::rand(rng);
+    let gamma = Fr::ONE;
+    let delta = Fr::rand(rng);
+    let g1_gen = ark_bn254::G1Projective::rand(rng);
+    let g2_gen = ark_bn254::G2Projective::rand(rng);
+
+    let insert = gen_with_crs(
+        ShieldedInsert::dummy(),
+        alpha,
+        beta,
+        gamma,
+        delta,
+        g1_gen,
+        g2_gen,
+        rng,
+    )?;
+    let withdraw = gen_with_crs(
+        ShieldedWithdraw::dummy(),
+        alpha,
+        beta,
+        gamma,
+        delta,
+        g1_gen,
+        g2_gen,
+        rng,
+    )?;
+
+    Ok([insert, withdraw])
+}
+
+/// Zero subtree hashes for use as Merkle path siblings.
+/// zeros[i] = hash of an all-zero subtree at depth i (the sibling you'd use at level i in a path).
+/// zeros[0] = Fr::ZERO  (empty leaf)
+/// zeros[i] = Poseidon2(zeros[i-1], zeros[i-1], 32 + (i-1))
+pub fn compute_pool_zeros() -> [Fr; TREE_DEPTH] {
+    let mut zeros = [Fr::ZERO; TREE_DEPTH];
+    for i in 1..TREE_DEPTH {
+        let left = FpVar::Constant(zeros[i - 1]);
+        let right = FpVar::Constant(zeros[i - 1]);
+        zeros[i] = poseidon2_hash_t3(&left, &right, 32 + (i - 1) as u64)
+            .unwrap()
+            .value()
+            .unwrap();
+    }
+    zeros
+}
+
+/// Empty Merkle tree root (all leaves are Fr::ZERO).
+/// Iteratively hashes the zero subtrees bottom-up without allocating the full leaf set.
+pub fn compute_empty_root() -> Fr {
+    // zeros[0] = Fr::ZERO (empty leaf)
+    // zeros[i] = Poseidon(zeros[i-1], zeros[i-1], 32 + (i-1))  for i in 1..=TREE_DEPTH
+    let mut current = Fr::ZERO;
+    for level in 0..TREE_DEPTH {
+        let lv = FpVar::Constant(current);
+        let rv = FpVar::Constant(current);
+        current = poseidon2_hash_t3(&lv, &rv, 32 + level as u64)
+            .unwrap()
+            .value()
+            .unwrap();
+    }
+    current
+}
+
+/// Compute the Merkle root after inserting `commitment` at `leaf_index`,
+/// given the current sibling path `path_elements`.
+pub fn compute_new_root(commitment: Fr, leaf_index: u64, path_elements: &[Fr; TREE_DEPTH]) -> Fr {
+    let mut current = commitment;
+    for (i, sibling) in path_elements.iter().enumerate() {
+        let bit = (leaf_index >> i) & 1;
+        let (left, right) = if bit == 0 {
+            (current, *sibling)
+        } else {
+            (*sibling, current)
+        };
+        let lv = FpVar::Constant(left);
+        let rv = FpVar::Constant(right);
+        current = poseidon2_hash_t3(&lv, &rv, 32 + i as u64)
+            .unwrap()
+            .value()
+            .unwrap();
+    }
+    current
+}
+
+/// Compute the Merkle path (siblings) for a leaf at `leaf_index`.
+/// Uses a compact layer: only the subtree containing actual leaves + zeros for empty halves.
+pub fn compute_merkle_path(leaves: &[Fr], leaf_index: usize) -> [Fr; TREE_DEPTH] {
+    let zeros = compute_pool_zeros();
+
+    // Build a compact layer: leaves padded to next power-of-two (at least 2)
+    let n = leaves.len().next_power_of_two().clamp(2, 1 << TREE_DEPTH);
+    let mut layer: Vec<Fr> = (0..n)
+        .map(|i| {
+            if i < leaves.len() {
+                leaves[i]
+            } else {
+                Fr::ZERO
+            }
+        })
+        .collect();
+
+    let mut path = [Fr::ZERO; TREE_DEPTH];
+    let mut idx = leaf_index;
+
+    for level in 0..TREE_DEPTH {
+        let sibling_idx = idx ^ 1;
+        // If sibling is within our compact layer, use it; otherwise it's a zero subtree
+        path[level] = layer.get(sibling_idx).copied().unwrap_or(zeros[level]);
+
+        // Collapse layer one level up
+        let parent_len = layer.len().div_ceil(2);
+        let mut parent = Vec::with_capacity(parent_len);
+        for j in 0..parent_len {
+            let l = layer.get(2 * j).copied().unwrap_or(zeros[level]);
+            let r = layer.get(2 * j + 1).copied().unwrap_or(zeros[level]);
+            let lv = FpVar::Constant(l);
+            let rv = FpVar::Constant(r);
+            parent.push(
+                poseidon2_hash_t3(&lv, &rv, 32 + level as u64)
+                    .unwrap()
+                    .value()
+                    .unwrap(),
+            );
+        }
+        layer = parent;
+        idx >>= 1;
+    }
+    path
+}
+
+/// Build the Merkle root from a (possibly partial) leaf set.
+/// Empty slots are Fr::ZERO. Uses zeros[] to prune empty subtrees efficiently.
+pub fn compute_root_from_leaves(leaves: &[Fr]) -> Fr {
+    let zeros = compute_pool_zeros();
+    // Work with only as many leaves as needed (next power-of-two or at least 2)
+    let n = leaves.len().next_power_of_two().clamp(2, 1 << TREE_DEPTH);
+    let mut layer: Vec<Fr> = (0..n)
+        .map(|i| {
+            if i < leaves.len() {
+                leaves[i]
+            } else {
+                Fr::ZERO
+            }
+        })
+        .collect();
+
+    for level in 0..TREE_DEPTH {
+        if layer.len() <= 1 {
+            // rest of the path uses empty subtree hashes
+            let mut current = layer[0];
+            for l in level..TREE_DEPTH {
+                let sib = if l < TREE_DEPTH { zeros[l] } else { Fr::ZERO };
+                let lv = FpVar::Constant(current);
+                let rv = FpVar::Constant(sib);
+                current = poseidon2_hash_t3(&lv, &rv, 32 + l as u64)
+                    .unwrap()
+                    .value()
+                    .unwrap();
+            }
+            return current;
+        }
+        let parent_len = layer.len().div_ceil(2);
+        let mut parent = Vec::with_capacity(parent_len);
+        for j in 0..parent_len {
+            let l = layer.get(2 * j).copied().unwrap_or(zeros[level]);
+            let r = layer.get(2 * j + 1).copied().unwrap_or(zeros[level]);
+            let lv = FpVar::Constant(l);
+            let rv = FpVar::Constant(r);
+            parent.push(
+                poseidon2_hash_t3(&lv, &rv, 32 + level as u64)
+                    .unwrap()
+                    .value()
+                    .unwrap(),
+            );
+        }
+        layer = parent;
+    }
+    layer[0]
+}
+
+pub fn compute_leaf_hash(secret: Fr, nullifier: Fr) -> Fr {
+    let ps = FpVar::Constant(secret);
+    let pn = FpVar::Constant(nullifier);
+    poseidon2_hash_t3(&ps, &pn, 30).unwrap().value().unwrap()
+}
+
+pub fn compute_pool_nullifier_hash(nullifier: Fr) -> Fr {
+    let pn = FpVar::Constant(nullifier);
+    let zero = FpVar::Constant(Fr::ZERO);
+    poseidon2_hash_t3(&pn, &zero, 31).unwrap().value().unwrap()
+}
+
+pub fn prove_shielded_insert(
+    pk: &ProvingKey<Bn254>,
+    old_root: Fr,
+    new_root: Fr,
+    commitment: Fr,
+    leaf_index: u64,
+    path_elements: [Fr; TREE_DEPTH],
+) -> Result<ProofOutput, SynthesisError> {
+    let mut rng = rand::thread_rng();
+    let circuit = ShieldedInsert {
+        old_root,
+        new_root,
+        commitment,
+        leaf_index,
+        path_elements,
+    };
+    prove_with_pk(
+        pk,
+        circuit,
+        vec![old_root, new_root, commitment, Fr::from(leaf_index)],
+        &mut rng,
+    )
+}
+
+pub fn prove_shielded_withdraw(
+    pk: &ProvingKey<Bn254>,
+    root: Fr,
+    nullifier_hash: Fr,
+    recipient: Fr,
+    secret: Fr,
+    nullifier: Fr,
+    path_elements: [Fr; TREE_DEPTH],
+    path_indices: [bool; TREE_DEPTH],
+) -> Result<ProofOutput, SynthesisError> {
+    let mut rng = rand::thread_rng();
+    let circuit = ShieldedWithdraw {
+        root,
+        nullifier_hash,
+        recipient,
+        secret,
+        nullifier,
+        path_elements,
+        path_indices,
+    };
+    prove_with_pk(pk, circuit, vec![root, nullifier_hash, recipient], &mut rng)
 }
 
 pub fn load_pk(path: impl AsRef<std::path::Path>) -> std::io::Result<ProvingKey<Bn254>> {
@@ -1178,5 +1425,175 @@ mod tests {
         let cs = ConstraintSystem::new_ref();
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(!cs.is_satisfied().unwrap());
+    }
+
+    // ── Shielded pool tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_shielded_insert_empty_tree() {
+        use ark_relations::gr1cs::ConstraintSystem;
+
+        let secret = Fr::from(42u64);
+        let nullifier = Fr::from(99u64);
+        let commitment = compute_leaf_hash(secret, nullifier);
+
+        let old_root = compute_empty_root();
+        let path = compute_merkle_path(&[], 0);
+        let new_root = compute_new_root(commitment, 0, &path);
+
+        let circuit = circuits::shielded_insert::ShieldedInsert {
+            old_root,
+            new_root,
+            commitment,
+            leaf_index: 0,
+            path_elements: path,
+        };
+        let cs = ConstraintSystem::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn test_shielded_insert_wrong_new_root_unsatisfied() {
+        use ark_relations::gr1cs::ConstraintSystem;
+
+        let commitment = compute_leaf_hash(Fr::from(1u64), Fr::from(2u64));
+        let old_root = compute_empty_root();
+        let path = compute_merkle_path(&[], 0);
+        let real_new_root = compute_new_root(commitment, 0, &path);
+        let wrong_new_root = real_new_root + Fr::from(1u64);
+
+        let circuit = circuits::shielded_insert::ShieldedInsert {
+            old_root,
+            new_root: wrong_new_root,
+            commitment,
+            leaf_index: 0,
+            path_elements: path,
+        };
+        let cs = ConstraintSystem::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn test_shielded_withdraw_after_insert() {
+        use ark_relations::gr1cs::ConstraintSystem;
+
+        let secret = Fr::from(1234u64);
+        let nullifier = Fr::from(5678u64);
+        let commitment = compute_leaf_hash(secret, nullifier);
+        let nullifier_hash = compute_pool_nullifier_hash(nullifier);
+        let recipient = Fr::from(0xdeadbeefu64);
+
+        let leaves = vec![commitment];
+        let leaf_index = 0usize;
+        let root = compute_root_from_leaves(&leaves);
+        let path = compute_merkle_path(&leaves, leaf_index);
+        let mut path_indices = [false; TREE_DEPTH];
+        for i in 0..TREE_DEPTH {
+            path_indices[i] = ((leaf_index >> i) & 1) == 1;
+        }
+
+        let circuit = circuits::shielded_withdraw::ShieldedWithdraw {
+            root,
+            nullifier_hash,
+            recipient,
+            secret,
+            nullifier,
+            path_elements: path,
+            path_indices,
+        };
+        let cs = ConstraintSystem::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn test_shielded_withdraw_wrong_nullifier_unsatisfied() {
+        use ark_relations::gr1cs::ConstraintSystem;
+
+        let secret = Fr::from(1u64);
+        let nullifier = Fr::from(2u64);
+        let commitment = compute_leaf_hash(secret, nullifier);
+        let wrong_null_hash = Fr::from(999u64); // not Poseidon(nullifier, 0, 31)
+
+        let leaves = vec![commitment];
+        let root = compute_root_from_leaves(&leaves);
+        let path = compute_merkle_path(&leaves, 0);
+
+        let circuit = circuits::shielded_withdraw::ShieldedWithdraw {
+            root,
+            nullifier_hash: wrong_null_hash,
+            recipient: Fr::from(1u64),
+            secret,
+            nullifier,
+            path_elements: path,
+            path_indices: [false; TREE_DEPTH],
+        };
+        let cs = ConstraintSystem::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn test_shielded_insert_groth16() -> Result<(), SynthesisError> {
+        let rng = &mut ark_std::test_rng();
+        let commitment = compute_leaf_hash(Fr::from(7u64), Fr::from(13u64));
+        let old_root = compute_empty_root();
+        let path = compute_merkle_path(&[], 0);
+        let new_root = compute_new_root(commitment, 0, &path);
+
+        let dummy = circuits::shielded_insert::ShieldedInsert::dummy();
+        let pk = Groth16::<Bn254>::generate_random_parameters_with_reduction(dummy, rng)?;
+        let vk = pk.vk.clone();
+
+        let circuit = circuits::shielded_insert::ShieldedInsert {
+            old_root,
+            new_root,
+            commitment,
+            leaf_index: 0,
+            path_elements: path,
+        };
+        let proof = Groth16::<Bn254>::create_random_proof_with_reduction(circuit, &pk, rng)?;
+        let pvk = ark_groth16::prepare_verifying_key(&vk);
+        let public = [old_root, new_root, commitment, Fr::from(0u64)];
+        assert!(Groth16::<Bn254>::verify_proof(&pvk, &proof, &public)?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_shielded_withdraw_groth16() -> Result<(), SynthesisError> {
+        let rng = &mut ark_std::test_rng();
+        let secret = Fr::from(333u64);
+        let nullifier = Fr::from(444u64);
+        let commitment = compute_leaf_hash(secret, nullifier);
+        let nullifier_hash = compute_pool_nullifier_hash(nullifier);
+        let recipient = Fr::from(0xabcdu64);
+
+        let leaves = vec![commitment];
+        let root = compute_root_from_leaves(&leaves);
+        let path = compute_merkle_path(&leaves, 0);
+
+        let dummy = circuits::shielded_withdraw::ShieldedWithdraw::dummy();
+        let pk = Groth16::<Bn254>::generate_random_parameters_with_reduction(dummy, rng)?;
+        let vk = pk.vk.clone();
+
+        let circuit = circuits::shielded_withdraw::ShieldedWithdraw {
+            root,
+            nullifier_hash,
+            recipient,
+            secret,
+            nullifier,
+            path_elements: path,
+            path_indices: [false; TREE_DEPTH],
+        };
+        let proof = Groth16::<Bn254>::create_random_proof_with_reduction(circuit, &pk, rng)?;
+        let pvk = ark_groth16::prepare_verifying_key(&vk);
+        assert!(Groth16::<Bn254>::verify_proof(
+            &pvk,
+            &proof,
+            &[root, nullifier_hash, recipient]
+        )?);
+        Ok(())
     }
 }

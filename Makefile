@@ -4,7 +4,7 @@ CONTRACT_TARGET := $(ROOT)/contracts/target/wasm32v1-none/release
 
 .PHONY: all clean \
 	circuit-setup \
-	build-contracts build-orderbook build-perp-engine \
+	build-contracts build-orderbook build-perp-engine build-shielded-pool \
 	build-tools \
 	deploy deploy-orderbook deploy-perp-engine \
 	e2e ci-check hooks
@@ -36,7 +36,16 @@ build-perp-engine:
 	  -o $(ROOT)/target/wasm32v1-none/release/perp_engine.wasm
 	ls -la $(ROOT)/target/wasm32v1-none/release/perp_engine.wasm
 
-build-contracts: build-orderbook build-perp-engine
+build-shielded-pool:
+	VK_POOL_INSERT_JSON=$(CIRCUIT_KEYS)/shielded_insert_vk.json \
+	VK_POOL_WITHDRAW_JSON=$(CIRCUIT_KEYS)/shielded_withdraw_vk.json \
+	  cargo build --target wasm32v1-none --release -p shielded-pool
+	wasm-opt -Oz --strip-debug --strip-producers \
+	  $(ROOT)/target/wasm32v1-none/release/shielded_pool.wasm \
+	  -o $(ROOT)/target/wasm32v1-none/release/shielded_pool.wasm
+	ls -la $(ROOT)/target/wasm32v1-none/release/shielded_pool.wasm
+
+build-contracts: build-orderbook build-perp-engine build-shielded-pool
 
 # ======== Tools ========
 build-tools:
@@ -66,12 +75,17 @@ ci-check:
 	VK_CANCEL_JSON=$(CIRCUIT_KEYS)/order_cancel_vk.json \
 	VK_MATCH_JSON=$(CIRCUIT_KEYS)/order_match_vk.json \
 	VK_NOTE_SPEND_JSON=$(CIRCUIT_KEYS)/note_spend_vk.json \
+	VK_POOL_INSERT_JSON=$(CIRCUIT_KEYS)/shielded_insert_vk.json \
+	VK_POOL_WITHDRAW_JSON=$(CIRCUIT_KEYS)/shielded_withdraw_vk.json \
 	  cargo clippy --all-targets -- -D warnings
 	VK_COMMIT_JSON=$(CIRCUIT_KEYS)/order_commitment_vk.json \
 	VK_CANCEL_JSON=$(CIRCUIT_KEYS)/order_cancel_vk.json \
 	VK_MATCH_JSON=$(CIRCUIT_KEYS)/order_match_vk.json \
 	VK_NOTE_SPEND_JSON=$(CIRCUIT_KEYS)/note_spend_vk.json \
+	VK_POOL_INSERT_JSON=$(CIRCUIT_KEYS)/shielded_insert_vk.json \
+	VK_POOL_WITHDRAW_JSON=$(CIRCUIT_KEYS)/shielded_withdraw_vk.json \
 	  cargo test -p perp-engine -p orderbook -p types -p collateral
+	cargo test -p shielded-pool
 
 # ======== Git hooks ========
 hooks:

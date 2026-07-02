@@ -6,6 +6,7 @@ members = [
   "contracts/orderbook",
   "contracts/verifier-groth16",
   "contracts/perp-engine",
+  "contracts/shielded-pool",
   "crates/ultrahonk-soroban-verifier",
 ]
 exclude = [

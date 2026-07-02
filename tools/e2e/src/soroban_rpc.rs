@@ -561,6 +561,13 @@ pub fn scval_bytes32(hex: &str) -> Result<ScVal> {
 pub fn scval_u64(n: u64) -> ScVal { ScVal::U64(n) }
 pub fn scval_u32(n: u32) -> ScVal { ScVal::U32(n) }
 
+pub fn scval_u128(n: u128) -> ScVal {
+    ScVal::U128(UInt128Parts {
+        hi: (n >> 64) as u64,
+        lo: n as u64,
+    })
+}
+
 pub fn scval_tif(tif: &str) -> Result<ScVal> {
     let n = match tif {
         "GTC" => 0u32,

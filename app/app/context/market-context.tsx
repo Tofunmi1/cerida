@@ -49,6 +49,16 @@ export const MARKET_CATALOG: MarketDefinition[] = [
 
 const START_PRICE = Object.fromEntries(MARKET_CATALOG.map((market) => [market.symbol, market.basePrice]))
 
+export function symbolToSlug(symbol: string): string {
+  return symbol.replace('-PERP', '').toLowerCase()
+}
+
+export function slugToSymbol(slug: string): string {
+  const upper = slug.toUpperCase()
+  const match = MARKET_CATALOG.find((m) => m.symbol === `${upper}-PERP`)
+  return match ? match.symbol : 'BTC-PERP'
+}
+
 function seededNoise(seed: number) {
   const x = Math.sin(seed * 12.9898) * 43758.5453
   return x - Math.floor(x)
@@ -92,9 +102,9 @@ function makeCandles(base: number): Candle[] {
   return out
 }
 
-export function MarketProvider({ children }: { children: React.ReactNode }) {
-  const [symbol, setSymbol] = useState('BTC-PERP')
-  const [candles, setCandles] = useState(() => makeCandles(START_PRICE['BTC-PERP']!))
+export function MarketProvider({ children, initialSymbol = 'BTC-PERP' }: { children: React.ReactNode; initialSymbol?: string }) {
+  const [symbol, setSymbol] = useState(initialSymbol)
+  const [candles, setCandles] = useState(() => makeCandles(START_PRICE[initialSymbol] ?? START_PRICE['BTC-PERP']!))
 
   useEffect(() => {
     setCandles(makeCandles(START_PRICE[symbol] ?? 1000))

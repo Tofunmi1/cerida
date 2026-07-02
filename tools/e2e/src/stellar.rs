@@ -1104,3 +1104,215 @@ fn poll_tx(tx_hash: &str) -> Result<Option<String>> {
         _ => Ok(None),
     }
 }
+
+// ── Shielded Pool ─────────────────────────────────────────────────────────────
+
+/// Deploy and initialize the shielded-pool contract.
+/// `empty_root_hex` = output of `cargo run -p rust-circuits -- pool-zeros` (last line).
+pub fn deploy_shielded_pool(
+    wasm_dir: &Path,
+    token: &str,
+    denomination: u128,
+    empty_root_hex: &str,
+) -> Result<String> {
+    use crate::soroban_rpc::{scval_address, scval_bytes32, SorobanRpc};
+    let wasm = wasm_dir.join("shielded_pool.wasm");
+    eprintln!("  [pool] Deploying shielded-pool contract…");
+    let pool_id = deploy(&wasm)?;
+    eprintln!("  ✓ shielded-pool: {}", pool_id);
+
+    eprintln!("  [pool] Initializing (token={}, denom={})…", &token[..8], denomination);
+    let rpc = SorobanRpc::new();
+    rpc.invoke_xdr(&pool_id, SOURCE, "initialize", vec![
+        scval_address(token)?,
+        crate::soroban_rpc::scval_u128(denomination),
+        scval_bytes32(empty_root_hex)?,
+    ])?;
+    eprintln!("  ✓ shielded-pool initialized");
+    Ok(pool_id)
+}
+
+/// Call pool.deposit — transfers USDC from depositor into the pool.
+/// `commitment_hex`, `new_root_hex`, `proof_json` come from `proof::gen_pool_insert`.
+pub fn pool_deposit(
+    pool_id: &str,
+    depositor_identity: &str,
+    depositor_pk: &str,
+    commitment_hex: &str,
+    new_root_hex: &str,
+    proof_json: &str,
+) -> Result<()> {
+    use crate::soroban_rpc::{scval_address, scval_bytes32, scval_proof, SorobanRpc};
+    let rpc = SorobanRpc::new();
+    rpc.invoke_xdr(pool_id, depositor_identity, "deposit", vec![
+        scval_address(depositor_pk)?,
+        scval_bytes32(commitment_hex)?,
+        scval_bytes32(new_root_hex)?,
+        scval_proof(proof_json)?,
+    ])?;
+    eprintln!("  ✓ pool.deposit commitment={}", &commitment_hex[..16]);
+    Ok(())
+}
+
+/// Call pool.withdraw — sends USDC from the pool to recipient_addr.
+/// `root_hex`, `nullifier_hash_hex`, `recipient_hex`, `proof_json` come from `proof::gen_pool_withdraw`.
+/// `recipient_identity` is the Stellar identity (key name) that must sign.
+pub fn pool_withdraw(
+    pool_id: &str,
+    recipient_identity: &str,
+    recipient_pk: &str,
+    root_hex: &str,
+    nullifier_hash_hex: &str,
+    recipient_hex: &str,
+    proof_json: &str,
+) -> Result<()> {
+    use crate::soroban_rpc::{scval_address, scval_bytes32, scval_proof, SorobanRpc};
+    let rpc = SorobanRpc::new();
+    rpc.invoke_xdr(pool_id, recipient_identity, "withdraw", vec![
+        scval_bytes32(root_hex)?,
+        scval_bytes32(nullifier_hash_hex)?,
+        scval_bytes32(recipient_hex)?,
+        scval_address(recipient_pk)?,
+        scval_proof(proof_json)?,
+    ])?;
+    eprintln!("  ✓ pool.withdraw null_hash={}", &nullifier_hash_hex[..16]);
+    Ok(())
+}
+
+/// Full shielded trade flow: pool.deposit → pool.withdraw → perp.deposit_note → trade.
+///
+/// Demonstrates full address privacy:
+///   alice deposits USDC into the pool (visible on-chain, but commitment is opaque)
+///   alice withdraws to herself via ZK proof (breaks commitment↔address link)
+///   alice then trades normally via the perp engine
+///
+/// In production, the withdraw would go to a FRESH keypair to maximize privacy.
+/// For testing we reuse the same key to avoid XLM funding complexity.
+pub fn shielded_pool_e2e(
+    wasm_dir: &Path,
+    keys_dir: &Path,
+    denomination: u128,
+    pool_secret: u64,
+    pool_nullifier: u64,
+) -> Result<()> {
+    use crate::proof;
+    use sha2::{Digest, Sha256};
+    let t = Instant::now();
+
+    let alice = generate_keypair("pool-alice");
+    eprintln!("  [pool e2e] alice: {}", &alice.0[..8]);
+
+    // ── Deploy infrastructure ─────────────────────────────────────────────
+    eprintln!("\n[1/7] Deploy contracts…");
+    let usdc = deploy_usdc_sac()?;
+    let pool_wasm = wasm_dir.join("shielded_pool.wasm");
+    if !pool_wasm.exists() {
+        anyhow::bail!(
+            "shielded_pool.wasm not found at {}. Build with:\n  \
+             cargo build --target wasm32v1-none -p shielded-pool --release",
+            pool_wasm.display()
+        );
+    }
+
+    // Compute empty root off-chain
+    let empty_root = {
+        use rust_circuits::compute_empty_root;
+        use rust_circuits::fr_to_biguint;
+        use ark_ff::BigInteger;
+        let r = compute_empty_root();
+        let bytes = r.into_bigint().to_bytes_be();
+        hex::encode(&bytes)
+    };
+    eprintln!("  empty_root: {}…", &empty_root[..16]);
+
+    let pool_id = deploy_shielded_pool(wasm_dir, &usdc, denomination, &empty_root)?;
+
+    // Deploy perp engine for the trading leg
+    let pe_wasm = wasm_dir.join("perp_engine.wasm");
+    let perp_id = deploy(&pe_wasm)?;
+    eprintln!("  ✓ perp-engine: {}", perp_id);
+    init_perp_engine(&perp_id, SOURCE, &usdc)?;
+
+    // ── Fund alice ────────────────────────────────────────────────────────
+    eprintln!("\n[2/7] Fund alice with USDC…");
+    trust_usdc(&usdc, &alice.1, &alice.0)?;
+    mint_usdc(&usdc, &alice.0, denomination as i128)?;
+
+    // ── Pool deposit ──────────────────────────────────────────────────────
+    eprintln!("\n[3/7] pool.deposit (alice → pool, ZK insert proof)…");
+    let insert = proof::gen_pool_insert(keys_dir, pool_secret, pool_nullifier, &[])?;
+    eprintln!("  commitment: {}…", &insert.commitment_hex[..16]);
+    eprintln!("  new_root:   {}…", &insert.new_root_hex[..16]);
+
+    // Alice must trust USDC to interact with the pool (SAC requires trustline)
+    pool_deposit(
+        &pool_id, &alice.1, &alice.0,
+        &insert.commitment_hex, &insert.new_root_hex,
+        &serde_json::to_string(&insert.proof)?,
+    )?;
+    eprintln!("  ✓ ({:.1}s)", t.elapsed().as_secs_f64());
+
+    // ── Pool withdraw ─────────────────────────────────────────────────────
+    eprintln!("\n[4/7] pool.withdraw (ZK spend proof → alice)…");
+    // recipient_hex = sha256(alice pubkey bytes) — binds proof to alice's address
+    let recipient_hex = {
+        let pk_bytes = hex::decode(&alice.0).unwrap_or_else(|_| alice.0.as_bytes().to_vec());
+        let hash = Sha256::digest(&pk_bytes);
+        hex::encode(hash)
+    };
+
+    // Rebuild leaf set from the single committed leaf
+    use ark_ff::PrimeField;
+    let commitment_fr = ark_bn254::Fr::from_be_bytes_mod_order(
+        &hex::decode(&insert.commitment_hex).unwrap()
+    );
+    let all_leaves = vec![commitment_fr];
+
+    let withdraw_result = proof::gen_pool_withdraw(
+        keys_dir, pool_secret, pool_nullifier, &all_leaves, &recipient_hex,
+    )?;
+
+    pool_withdraw(
+        &pool_id, &alice.1, &alice.0,
+        &withdraw_result.root_hex, &withdraw_result.nullifier_hash_hex,
+        &recipient_hex, &serde_json::to_string(&withdraw_result.proof)?,
+    )?;
+    eprintln!("  ✓ USDC returned to alice ({:.1}s)", t.elapsed().as_secs_f64());
+
+    // ── Perp deposit_note ─────────────────────────────────────────────────
+    eprintln!("\n[5/7] perp.deposit_note (alice → perp engine)…");
+    let (note_cmt_hex, note_null_hex, note_proof) =
+        proof::gen_note_spend(keys_dir, denomination as u64, pool_secret)?;
+    perp_deposit_note(&perp_id, &alice.1, &alice.0, &note_cmt_hex, denomination as i128)?;
+    eprintln!("  ✓ note committed: {}… ({:.1}s)", &note_cmt_hex[..16], t.elapsed().as_secs_f64());
+
+    // ── Open position ──────────────────────────────────────────────────────
+    eprintln!("\n[6/7] perp.open_position_from_note…");
+    let pos_secret = pool_secret ^ 0xdeadbeef;
+    let commit_proof = proof::gen_commitment(
+        keys_dir, 0, 100_000, denomination as u64, 1, 0, 0, 42, pos_secret, false,
+    )?;
+    let pos_cmt_hex = dec_to_hex(&commit_proof.public_inputs[0]);
+    let portfolio_key_hex = dec_to_hex(&commit_proof.public_inputs[1]);
+    let liq_note = "0".repeat(64);
+
+    perp_open_position(
+        &perp_id, SOURCE,
+        &note_cmt_hex, &note_null_hex, &pos_cmt_hex,
+        100_000, 0, 1, denomination as u64, 0, 0, 0,
+        &liq_note, &portfolio_key_hex, DEFAULT_ASSET,
+        &serde_json::to_string(&note_proof)?,
+        &serde_json::to_string(&commit_proof)?,
+    )?;
+    eprintln!("  ✓ position open ({:.1}s)", t.elapsed().as_secs_f64());
+
+    eprintln!("\n[7/7] Done. Full shielded pool → perp flow in {:.1}s", t.elapsed().as_secs_f64());
+    eprintln!("  On-chain trace: alice addr visible for deposit + withdraw,");
+    eprintln!("  but pool breaks the link between USDC source and note commitment.");
+    Ok(())
+}
+
+fn dec_to_hex(decimal: &str) -> String {
+    let n: num_bigint::BigUint = decimal.parse().unwrap_or_default();
+    format!("{:0>64x}", n)
+}

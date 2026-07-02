@@ -1,10 +1,11 @@
 import { lazy, memo, Suspense, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useNavigate, useParams } from 'react-router'
 import ReactGridLayout, { type Layout, type LayoutItem } from 'react-grid-layout/legacy'
 import 'react-grid-layout/css/styles.css'
 import { IconPlus, IconX } from '@tabler/icons-react'
 import { LevelsProvider } from '../../context/levels-context'
-import { MarketProvider } from '../../context/market-context'
+import { MarketProvider, slugToSymbol } from '../../context/market-context'
 import { SettingsProvider } from '../../context/settings-context'
 import { ThemeProvider } from '../../context/theme-context'
 import { WalletProvider } from '../../context/wallet-context'
@@ -14,6 +15,7 @@ import MarketBar from '../../components/trade/market-bar'
 import Sidebar from '../../components/trade/sidebar'
 import PortfolioPage from '../../components/trade/portfolio-page'
 import SettingsModal from '../../components/trade/settings-modal'
+import ShieldedPoolModal from '../../components/trade/shielded-pool-modal'
 
 export const meta = () => [{ title: 'Cerida Perp' }]
 
@@ -305,9 +307,11 @@ function Widget({
 function TradeBoard({
   active,
   onActive,
+  onNavigate,
 }: {
   active: string
   onActive: (label: string) => void
+  onNavigate: (path: string) => void
 }) {
   const [items, setItems] = useState(INITIAL_ITEMS)
   const [layout, setLayout] = useState(INITIAL_LAYOUT)
@@ -366,9 +370,10 @@ function TradeBoard({
       <Sidebar active={active} onActive={onActive} />
       <div className="flex min-w-0 flex-1 flex-col">
         {active === 'Portfolio' && <PortfolioPage onClose={() => onActive('Perps')} />}
+        {active === 'Pool' && <ShieldedPoolModal onClose={() => onActive('Perps')} />}
         {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
         <div className="flex min-w-0 flex-1 flex-col">
-          <MarketBar active={active} onActive={onActive} onOpenSettings={() => setSettingsOpen(true)} />
+          <MarketBar active={active} onActive={onActive} onOpenSettings={() => setSettingsOpen(true)} onNavigate={onNavigate} />
           <div ref={ref} className="min-h-0 flex-1 overflow-auto">
             <ReactGridLayout
               layout={layout}
@@ -418,16 +423,20 @@ function TradeBoard({
 }
 
 export default function TradeRoute() {
+  const { asset } = useParams<{ asset: string }>()
+  const navigate = useNavigate()
   const [nav, setNav] = useState('Perps')
+
+  const initialSymbol = slugToSymbol(asset ?? 'btc')
 
   return (
     <ThemeProvider>
       <ToastProvider>
         <WalletProvider>
-          <MarketProvider>
+          <MarketProvider initialSymbol={initialSymbol} key={initialSymbol}>
             <SettingsProvider>
               <LevelsProvider>
-                <TradeBoard active={nav} onActive={setNav} />
+                <TradeBoard active={nav} onActive={setNav} onNavigate={navigate} />
                 <ToastContainer />
               </LevelsProvider>
             </SettingsProvider>

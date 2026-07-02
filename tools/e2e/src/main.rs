@@ -124,6 +124,18 @@ enum Command {
         #[arg(long, default_value = "0")]
         book_delay_ms: u64,
     },
+    /// Full shielded pool flow: pool.deposit → pool.withdraw → perp.deposit_note → open_position
+    ShieldedPool {
+        /// USDC denomination per pool slot (stroops)
+        #[arg(long, default_value = "1000000000")]
+        denomination: u128,
+        /// Secret scalar for the pool note
+        #[arg(long, default_value = "271828182")]
+        pool_secret: u64,
+        /// Nullifier scalar for the pool note
+        #[arg(long, default_value = "314159265")]
+        pool_nullifier: u64,
+    },
     /// Private deposit → shielded withdrawal: proves no on-chain address↔note link
     PrivateDeposit {
         /// Amount to deposit (in token stroops)
@@ -260,6 +272,12 @@ fn main() -> Result<()> {
                 &wasm_dir, &keys_dir,
                 amount, note_secret, order_secret, settle_secret,
             )?;
+            eprintln!("\n━━━ COMPLETE ({:.2}s) ━━━", global_start.elapsed().as_secs_f64());
+        }
+        Command::ShieldedPool { denomination, pool_secret, pool_nullifier } => {
+            eprintln!("━━━ ShieldedPool E2E ━━━");
+            eprintln!("  pool.deposit → pool.withdraw → perp.deposit_note → open_position");
+            stellar::shielded_pool_e2e(&wasm_dir, &keys_dir, denomination, pool_secret, pool_nullifier)?;
             eprintln!("\n━━━ COMPLETE ({:.2}s) ━━━", global_start.elapsed().as_secs_f64());
         }
         Command::PrivateDeposit { amount, secret } => {
