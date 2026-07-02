@@ -82,6 +82,18 @@ impl SecretStore {
             }
         }
     }
+
+    /// List all commitment hex strings stored in the DB.
+    pub fn list(&self) -> anyhow::Result<Vec<String>> {
+        let mut cmts = Vec::new();
+        for item in self.tree.iter() {
+            let (key, _) = item?;
+            if let Ok(s) = String::from_utf8(key.to_vec()) {
+                cmts.push(s);
+            }
+        }
+        Ok(cmts)
+    }
 }
 
 // ── Fill Audit Trail ──

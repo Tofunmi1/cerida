@@ -216,3 +216,44 @@ pub fn submit_mark_price(perp_id: &str, source: &str, price: u64) -> Result<()> 
     );
     Ok(())
 }
+
+pub fn submit_liquidate(perp_id: &str, commitment: &str) -> Result<()> {
+    let start = Instant::now();
+    let mut cmd = std::process::Command::new("stellar");
+    cmd.args([
+        "contract", "invoke",
+        "--id", perp_id,
+        "--source", SOURCE_IDENTITY,
+        "--network-passphrase", NETWORK_PASSPHRASE,
+        "--rpc-url", &rpc_url(),
+        "--",
+        "liquidate",
+        "--commitment", commitment,
+    ]);
+
+    log::debug!("Liquidating position",
+        "contract", &perp_id[..8],
+        "cmt", &commitment[..16]
+    );
+
+    let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar invoke liquidate: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("xdr processing error") || stderr.contains("Transaction hash is") {
+            log::info!("Liquidation submitted",
+                "contract", &perp_id[..8],
+                "cmt", &commitment[..16],
+                "took", log::duration_secs(&start.elapsed())
+            );
+            return Ok(());
+        }
+        anyhow::bail!("liquidate failed:\n{stderr}");
+    }
+
+    log::info!("Position liquidated on-chain",
+        "contract", &perp_id[..8],
+        "cmt", &commitment[..16],
+        "took", log::duration_secs(&start.elapsed())
+    );
+    Ok(())
+}

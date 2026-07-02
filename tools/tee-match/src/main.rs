@@ -1,5 +1,6 @@
 mod db;
 mod engine;
+mod liquidator;
 mod log;
 mod proof;
 mod serve;
@@ -76,6 +77,10 @@ enum Command {
         addr: String,
         #[arg(long)]
         db: PathBuf,
+        #[arg(long)]
+        perp_id: Option<String>,
+        #[arg(long, default_value = "300")]
+        liquidator_interval_secs: u64,
     },
     /// Run as a secure HTTP server with attestation + encryption
     #[cfg(feature = "secure")]
@@ -84,6 +89,10 @@ enum Command {
         addr: String,
         #[arg(long)]
         db: PathBuf,
+        #[arg(long)]
+        perp_id: Option<String>,
+        #[arg(long, default_value = "300")]
+        liquidator_interval_secs: u64,
     },
     /// Match two orders: verify, generate proof, submit on-chain
     Match {
@@ -163,25 +172,27 @@ fn main() -> Result<()> {
             );
         }
 
-        Command::Serve { addr, db } => {
+        Command::Serve { addr, db, perp_id, liquidator_interval_secs } => {
             log::info!("═══ TEE Match Server Launch ═══",
                 "listen_addr", &addr,
                 "db_path", format!("{}", db.display()),
-                "keys_dir", format!("{}", keys_dir.display())
+                "keys_dir", format!("{}", keys_dir.display()),
+                "liquidator", perp_id.is_some()
             );
-            serve::run(&addr, db, keys_dir.clone())?;
+            serve::run(&addr, db, keys_dir.clone(), perp_id, liquidator_interval_secs)?;
         }
 
         #[cfg(feature = "secure")]
-        Command::ServeSecure { addr, db } => {
+        Command::ServeSecure { addr, db, perp_id, liquidator_interval_secs } => {
             log::info!("═══ TEE Secure Server Launch ═══",
                 "listen_addr", &addr,
                 "db_path", format!("{}", db.display()),
-                "keys_dir", format!("{}", keys_dir.display())
+                "keys_dir", format!("{}", keys_dir.display()),
+                "liquidator", perp_id.is_some()
             );
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(serve::secure::run_secure(
-                &addr, db, keys_dir.clone(),
+                &addr, db, keys_dir.clone(), perp_id, liquidator_interval_secs,
             ))?;
         }
 

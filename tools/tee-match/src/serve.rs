@@ -94,7 +94,7 @@ struct LevelJson {
     orders: usize,
 }
 
-pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
+pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<String>, liquidator_interval_secs: u64) -> Result<()> {
     log::info!("═══ Starting TEE Match Server ═══",
         "version", env!("CARGO_PKG_VERSION"),
         "listen_addr", addr
@@ -127,6 +127,18 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf) -> Result<()> {
     let book_store = Arc::new(book_store);
     let fills = Arc::new(fills);
     let keys = Arc::new(keys_dir);
+
+    // Spawn liquidator if perp_id is configured
+    if let Some(ref perp) = perp_id {
+        let perp = perp.clone();
+        let liq_store = store.clone();
+        let interval = liquidator_interval_secs;
+        log::info!("Starting liquidator thread",
+            "perp_id", &perp[..12],
+            "interval_secs", interval
+        );
+        crate::liquidator::spawn(liq_store, perp, interval);
+    }
 
     for stream in listener.incoming() {
         let store = store.clone();
@@ -875,6 +887,8 @@ pub mod secure {
         addr: &str,
         db_path: PathBuf,
         keys_dir: PathBuf,
+        perp_id: Option<String>,
+        liquidator_interval_secs: u64,
     ) -> Result<()> {
         let sled_db = db::open_db(&db_path)?;
         let store = db::SecretStore::open(&sled_db)?;
@@ -882,8 +896,21 @@ pub mod secure {
         let books = book_store.load_all()?;
         let fills = db::FillLedger::open(&sled_db)?;
 
+        let store_arc = StdArc::new(store);
+
+        if let Some(ref perp) = perp_id {
+            let liq_store = store_arc.clone();
+            let perp = perp.clone();
+            let interval = liquidator_interval_secs;
+            log::info!("Starting liquidator thread",
+                "perp_id", &perp[..12],
+                "interval_secs", interval
+            );
+            crate::liquidator::spawn(liq_store, perp, interval);
+        }
+
         let state = SecureState {
-            store: StdArc::new(store),
+            store: store_arc,
             books: StdArc::new(RwLock::new(books)),
             book_store: StdArc::new(book_store),
             fills: StdArc::new(fills),
