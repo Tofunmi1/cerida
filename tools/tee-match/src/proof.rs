@@ -3,7 +3,7 @@ use crate::log;
 use anyhow::{Context, Result};
 use ark_bn254::Fr;
 use ark_ff::{AdditiveGroup, Field};
-use rust_circuits::{load_pk, prove_cancel_with_pk, prove_commitment_with_pk, prove_match_with_pk, ProofOutput};
+use rust_circuits::{compute_commitment, fr_to_biguint, load_pk, prove_cancel_with_pk, prove_commitment_with_pk, prove_match_with_pk, ProofOutput};
 use std::path::{Path, PathBuf};
 
 pub type MatchProof = ProofOutput;
@@ -70,4 +70,22 @@ pub fn gen_match_proof(
         "side_b", b.side, "price_b", b.price,
         "match_price", mp, "match_size", ms);
     Ok(out)
+}
+
+/// Fast commitment hash — Poseidon2 only, no Groth16 proof.
+/// Takes <1ms vs ~9s for full proof gen. Used by market maker
+/// to quickly pre-generate quote commitments.
+pub fn compute_commitment_hex(secrets: &OrderSecrets) -> String {
+    let is_market = if secrets.is_market { Fr::ONE } else { Fr::ZERO };
+    let cmt = compute_commitment(
+        Fr::from(secrets.side),
+        Fr::from(secrets.price),
+        Fr::from(secrets.size),
+        Fr::from(secrets.leverage),
+        Fr::from(secrets.asset),
+        is_market,
+        Fr::from(secrets.nonce),
+        Fr::from(secrets.secret),
+    );
+    format!("{:0>64x}", fr_to_biguint(&cmt))
 }

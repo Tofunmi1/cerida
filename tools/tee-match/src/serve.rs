@@ -202,6 +202,7 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<Stri
 
             let resp = match req.cmd.as_str() {
                 "init" => handle_init(&store, &keys, &req),
+                "fast-init" => handle_fast_init(&store, &req),
                 "commit-proof" => handle_commit_proof(&store, &keys, &req),
                 "match" => handle_match(&store, &keys, &req),
                 "place" => handle_place(&store, &book_store, &fills, &books, &keys, &req),
@@ -305,6 +306,37 @@ fn handle_init(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respon
         "commitment", log::hex_snippet(&cmt_hex, 12),
         "took", log::duration_secs(&start.elapsed())
     );
+
+    Response { ok: true, commitment: Some(cmt_hex), ..Default::default() }
+}
+
+fn handle_fast_init(store: &db::SecretStore, req: &Request) -> Response {
+    let start = Instant::now();
+    let raw_side = req.side.unwrap_or(0);
+    let is_market = raw_side >= 2;
+    let side = match raw_side { 0 | 3 => 0, _ => 1 };
+    let secrets = db::OrderSecrets {
+        side,
+        price: req.price.unwrap_or(0),
+        size: req.size.unwrap_or(0),
+        leverage: req.leverage.unwrap_or(1),
+        asset: req.asset.unwrap_or(0),
+        nonce: req.nonce.unwrap_or(0),
+        secret: req.secret.unwrap_or(0),
+        is_market,
+    };
+
+    let cmt_hex = proof::compute_commitment_hex(&secrets);
+    log::info!("Fast init: commitment computed (no proof)",
+        "cmt", log::hex_snippet(&cmt_hex, 12),
+        "side", secrets.side,
+        "price", secrets.price,
+        "took", log::duration_secs(&start.elapsed())
+    );
+
+    if let Err(e) = store.insert(&cmt_hex, &secrets) {
+        return err(e);
+    }
 
     Response { ok: true, commitment: Some(cmt_hex), ..Default::default() }
 }
@@ -588,42 +620,32 @@ fn handle_cancel(store: &db::SecretStore, book_store: &db::BookStore, books: &Rw
         Some(c) => c,
         None => return err("missing cmt"),
     };
-    let perp = match req.perp.as_ref() {
-        Some(p) => p,
-        None => return err("missing perp"),
-    };
-    let orderbook = match req.orderbook.as_ref() {
-        Some(o) => o,
-        None => return err("missing orderbook"),
-    };
-    let owner = match req.owner.as_ref() {
-        Some(o) => o,
-        None => return err("missing owner"),
-    };
-    let source = req.source.as_deref().unwrap_or("e2e");
 
     let secrets = match store.get(cmt) {
         Ok(Some(s)) => s,
         Ok(None) => return err(format!("secrets not found for {cmt}")),
         Err(e) => return err(format!("db error: {e}")),
     };
+    let asset = secrets.asset;
 
-    let out = match proof::gen_cancel_proof(keys, &secrets) {
-        Ok(o) => o,
-        Err(e) => return err(format!("cancel proof generation failed: {e}")),
-    };
+    // On-chain cancel (if perp/orderbook/owner are provided)
+    if let (Some(perp), Some(orderbook), Some(owner)) = (req.perp.as_ref(), req.orderbook.as_ref(), req.owner.as_ref()) {
+        let out = match proof::gen_cancel_proof(keys, &secrets) {
+            Ok(o) => o,
+            Err(e) => return err(format!("cancel proof generation failed: {e}")),
+        };
 
-    let nullifier = format!("{:0>64x}", out.public_inputs[0].parse::<num_bigint::BigUint>().unwrap());
+        let nullifier = format!("{:0>64x}", out.public_inputs[0].parse::<num_bigint::BigUint>().unwrap());
+        let source = req.source.as_deref().unwrap_or("e2e");
 
-    if let Err(e) = stellar::submit_cancel(orderbook, perp, owner, cmt, &nullifier, &out, source) {
-        log::error!("Cancel on-chain submission failed",
-            "cmt", &cmt[..16],
-            "err", e.to_string()
-        );
-        return err(format!("cancel on-chain submission failed: {e}"));
+        if let Err(e) = stellar::submit_cancel(orderbook, perp, owner, cmt, &nullifier, &out, source) {
+            log::error!("Cancel on-chain submission failed", "cmt", &cmt[..16], "err", e.to_string());
+            return err(format!("cancel on-chain submission failed: {e}"));
+        }
+        log::info!("Order cancelled on-chain", "cmt", &cmt[..16], "nullifier", &nullifier[..16]);
     }
 
-    let asset = secrets.asset;
+    // CLOB cancel (always)
     {
         let mut books = books.write().unwrap();
         if let Some(book) = books.get_mut(&asset) {
@@ -637,15 +659,8 @@ fn handle_cancel(store: &db::SecretStore, book_store: &db::BookStore, books: &Rw
         }
     }
 
-    log::info!("Order cancelled on-chain and CLOB",
-        "cmt", &cmt[..16],
-        "nullifier", &nullifier[..16]
-    );
-
-    Response {
-        ok: true,
-        ..Default::default()
-    }
+    log::info!("Order cancelled on CLOB", "cmt", &cmt[..16]);
+    Response { ok: true, ..Default::default() }
 }
 
 fn handle_market(store: &db::SecretStore, book_store: &db::BookStore, fills: &db::FillLedger, books: &RwLock<HashMap<u64, engine::OrderBook>>, keys: &PathBuf, req: &Request) -> Response {

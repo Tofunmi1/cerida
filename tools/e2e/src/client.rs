@@ -251,8 +251,13 @@ impl ServerClient {
 
     /// Get current market state from CLOB engine
     pub fn get_market(&self) -> Result<MarketResponse> {
+        self.get_market_asset(None)
+    }
+
+    pub fn get_market_asset(&self, asset_id: Option<u64>) -> Result<MarketResponse> {
         let req = Request {
             cmd: "get_market".to_string(),
+            asset: asset_id,
             ..Default::default()
         };
         let resp = self.send(&req)?;
@@ -278,6 +283,36 @@ impl ServerClient {
             orderbook: Some(orderbook.to_string()),
             owner: Some(owner.to_string()),
             source: Some(identity.to_string()),
+            ..Default::default()
+        };
+        self.send(&req)?;
+        Ok(())
+    }
+
+    /// Fast init — commitment hash only, no ZK proof (~1000x faster).
+    /// Used by market maker to pre-generate quote commitments.
+    pub fn fast_init(
+        &self,
+        side: u64, price: u64, size: u64, leverage: u64, asset: u64,
+        nonce: u64, secret: u64,
+    ) -> Result<String> {
+        let req = Request {
+            cmd: "fast-init".to_string(),
+            side: Some(side), price: Some(price), size: Some(size),
+            leverage: Some(leverage), asset: Some(asset),
+            nonce: Some(nonce), secret: Some(secret),
+            ..Default::default()
+        };
+        let resp = self.send(&req)?;
+        resp.commitment.ok_or_else(|| anyhow::anyhow!("no commitment in response"))
+    }
+
+    /// Cancel order from CLOB only (no on-chain submission).
+    /// For market maker quote maintenance.
+    pub fn cancel_order(&self, cmt: &str) -> Result<()> {
+        let req = Request {
+            cmd: "cancel".to_string(),
+            cmt: Some(cmt.to_string()),
             ..Default::default()
         };
         self.send(&req)?;

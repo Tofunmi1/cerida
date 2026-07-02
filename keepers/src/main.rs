@@ -3,6 +3,8 @@
 // Deployed separately from the TEE server.
 // ─────────────────────────────────────────────────────────────────
 
+mod market_maker;
+
 use anyhow::Result;
 use clap::Parser;
 use std::thread;
@@ -57,7 +59,21 @@ fn main() -> Result<()> {
     }
 
     if !cli.no_market_maker {
-        thread::spawn(move || mm_loop(&tee, Duration::from_secs(cli.mm_interval_secs)));
+        let tee_addr = tee.clone();
+        let interval = cli.mm_interval_secs;
+        let markets: Vec<market_maker::MarketConfig> = MARKETS.iter().enumerate().map(|(i, (_, price, lev))| {
+            market_maker::MarketConfig {
+                asset_id: (i + 1) as u64,
+                base_price: *price,
+                spread_bps: 100,        // 1% spread
+                depth_levels: 2,
+                size_per_level: 1_000_000,
+                leverage: *lev,
+                pool_size: 20,          // 40 commitments (20 bids + 20 asks)
+            }
+        }).collect();
+        let config = market_maker::MmConfig { tee_addr: tee_addr.clone(), markets };
+        thread::spawn(move || market_maker::run(config, interval));
     }
 
     if !cli.no_liquidator {
