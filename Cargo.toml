@@ -8,9 +8,10 @@ members = [
   "contracts/perp-engine",
   "contracts/shielded-pool",
   "crates/ultrahonk-soroban-verifier",
+  "tools/rust-circuits",
 ]
 exclude = [
   "examples",
   "tiny",
-  "tools",
+  "tools/e2e",
 ]

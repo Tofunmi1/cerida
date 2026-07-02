@@ -86,6 +86,7 @@ ci-check:
 	VK_POOL_WITHDRAW_JSON=$(CIRCUIT_KEYS)/shielded_withdraw_vk.json \
 	  cargo test -p perp-engine -p orderbook -p types -p collateral
 	cargo test -p shielded-pool
+	cargo test -p rust-circuits
 
 # ======== Git hooks ========
 hooks:
