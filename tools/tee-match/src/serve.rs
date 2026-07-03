@@ -369,7 +369,7 @@ fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
     };
 
     log::info!("Generating commitment proof for on-chain placement",
-        "commitment", log::hex_snippet(cmt, 12),
+        "commitment", log::hex_snippet(cmt, 12)
     );
 
     log::debug!("Looking up secrets in DB", "cmt", &cmt[..16]);
