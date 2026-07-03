@@ -2,12 +2,18 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
+      - '--no-cache'
       - '-f'
       - 'keepers/Dockerfile'
       - '-t'
       - 'us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/keepers:latest'
       - '.'
     timeout: '1800s'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/keepers:latest'
 
 images:
   - 'us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/keepers:latest'
