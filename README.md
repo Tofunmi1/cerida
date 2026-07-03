@@ -21,17 +21,40 @@
 
 ---
 
-## What is Cerida?
 
-Cerida is a privacy-preserving perpetuals DEX built on [Stellar Soroban](https://stellar.org/soroban). It combines three layers of technology to give traders institutional-grade privacy:
+---
 
-| Layer | Technology | What it does |
-| --- | --- | --- |
-| **ZK Proofs** | Groth16 (arkworks BN254) | Proves order validity, matching, and collateral spend on-chain without revealing private inputs |
-| **TEE** | GCP Confidential Space (AMD SEV-SNP) | Runs the matching engine inside an encrypted enclave. Inputs are encrypted to the TEE; the host operator sees nothing |
-| **Settlement** | Stellar Soroban (Protocol 26) | Verifies Groth16 proofs via BN254 host functions. Stores commitments, nullifiers, and positions |
+## Contents
 
-No position is ever stored in plaintext. No collateral amount is ever visible. The chain only ever sees commitment hashes, nullifiers, and proof verification results.
+- [What is Cerida?](#what-is-cerida)
+- [How It Works](#how-it-works)
+  - [Deposit](#1-deposit-shielded-notes)
+  - [Place an Order](#2-place-an-order--ordercommitment-proof)
+  - [Match](#3-match--ordermatch-proof)
+  - [Open Position](#4-open-position--note-spend)
+  - [Close / Withdraw](#5-close--withdraw)
+- [Trading Features](#trading-features)
+  - [Order types](#order-types)
+  - [Take Profit / Stop Loss](#take-profit--stop-loss-tpsl)
+  - [Leverage](#leverage)
+  - [Isolated vs Cross](#isolated-vs-cross-margin)
+  - [Liquidation](#liquidation)
+- [ZK Circuits](#zk-circuits)
+  - [R1CS primer](#what-r1cs-means-here)
+  - [Circuit overview](#circuit-overview)
+  - [Gadget library](#r1cs-gadget-library)
+  - [OrderMatch walkthrough](#ordermatch-constraint-walkthrough)
+  - [Cross-margin](#cross-margin-extension)
+- [TEE: Matching Engine](#tee-the-matching-engine)
+- [Live Markets](#live-markets)
+- [Keeper Infrastructure](#keeper-infrastructure)
+- [Hackathon Milestones](#hackathon-milestones)
+- [Architecture](#architecture-at-a-glance)
+- [Running Locally](#running-locally)
+- [Contracts](#contracts)
+- [Stack](#stack)
+
+---
 
 ---
 
