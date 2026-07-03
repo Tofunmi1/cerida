@@ -439,6 +439,14 @@ export default function TradingPanel() {
       return
     }
 
+    if (margin > balanceDollars) {
+      toast.warning(
+        'Insufficient balance',
+        `You need ${formatUsd(margin)} but only have ${formatUsd(balanceDollars)}. Open the Portfolio tab to deposit USDC.`,
+      )
+      return
+    }
+
     if (orderType !== 'market') {
       const price = Number(limitPrice)
       if (!limitPrice || price <= 0 || Number.isNaN(price)) {
