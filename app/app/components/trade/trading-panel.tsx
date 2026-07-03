@@ -14,6 +14,7 @@ import {
   buildDepositNoteTx,
   buildOpenPositionFromNoteTx,
   buildPlaceOrderTx,
+  buildTradeBundleTx,
   crossMarginKey,
   proofJsonToScVal,
   submitAndWait,
@@ -516,42 +517,69 @@ export default function TradingPanel() {
       const commitScVal = proofJsonToScVal(commitProofResult.proof)
       const noteScVal   = proofJsonToScVal(noteResult.proof)
 
-      // Soroban's simulator rejects multi-op transactions, so we send three
-      // separate signing prompts. The ops are independent at build-time
-      // (open_position reads deposit_note's note via on-chain storage, but
-      // noteCmt is known client-side), so we don't need inter-tx confirmation.
-      toast.update(progressId, { description: 'Sign 1/3 — place order…', progress: 45 })
-      const placeTx = await buildPlaceOrderTx(publicKey, {
-        commitment,
-        hintPrice,
-        hintSide: sideNum,
-        hintSize: 1_000_000_000,
-        hintLeverage: leverage,
-        portfolioKey,
-        proof: commitScVal,
-      })
-      await submitAndWait(await sign(placeTx.toXDR()))
+      // Attempt single-TX bundle (all 3 ops in one Soroban transaction).
+      // Within a single TX, deposit_note's storage write is visible to
+      // open_position_from_note, so the bundle is semantically valid.
+      // Fall back to 3 separate TXs if the node rejects multi-op simulation.
+      toast.update(progressId, { description: 'Building transaction…', progress: 40 })
+      let openTxHash: string
+      let usedBundle = false
+      try {
+        const bundleTx = await buildTradeBundleTx(publicKey, {
+          commitment,
+          hintPrice,
+          hintSide: sideNum,
+          hintSize: 1_000_000_000,
+          hintLeverage: leverage,
+          portfolioKey,
+          noteCmt: noteResult.note_cmt,
+          noteNull: noteResult.note_null,
+          noteAmount: collateralUnits,
+          tpPrice: tpUnits,
+          slPrice: slUnits,
+          noteProof: noteScVal,
+          commitProof: commitScVal,
+        })
+        toast.update(progressId, { description: 'Sign transaction…', progress: 55 })
+        openTxHash = await submitAndWait(await sign(bundleTx.toXDR()))
+        usedBundle = true
+      } catch (bundleErr) {
+        console.warn('Bundle TX failed, falling back to 3 separate TXs:', bundleErr)
 
-      toast.update(progressId, { description: 'Sign 2/3 — deposit collateral…', progress: 62 })
-      const depositTx = await buildDepositNoteTx(publicKey, noteResult.note_cmt, collateralUnits)
-      await submitAndWait(await sign(depositTx.toXDR()))
+        toast.update(progressId, { description: 'Sign 1/3 — place order…', progress: 45 })
+        const placeTx = await buildPlaceOrderTx(publicKey, {
+          commitment,
+          hintPrice,
+          hintSide: sideNum,
+          hintSize: 1_000_000_000,
+          hintLeverage: leverage,
+          portfolioKey,
+          proof: commitScVal,
+        })
+        await submitAndWait(await sign(placeTx.toXDR()))
 
-      toast.update(progressId, { description: 'Sign 3/3 — open position…', progress: 80 })
-      const openTx = await buildOpenPositionFromNoteTx(publicKey, {
-        noteCmt: noteResult.note_cmt,
-        noteNull: noteResult.note_null,
-        commitment,
-        hintPrice,
-        side: sideNum,
-        leverage,
-        size: 1_000_000_000,
-        tpPrice: tpUnits,
-        slPrice: slUnits,
-        portfolioKey,
-        noteProof: noteScVal,
-        commitProof: commitScVal,
-      })
-      const openTxHash = await submitAndWait(await sign(openTx.toXDR()))
+        toast.update(progressId, { description: 'Sign 2/3 — deposit collateral…', progress: 62 })
+        const depositTx = await buildDepositNoteTx(publicKey, noteResult.note_cmt, collateralUnits)
+        await submitAndWait(await sign(depositTx.toXDR()))
+
+        toast.update(progressId, { description: 'Sign 3/3 — open position…', progress: 80 })
+        const openTx = await buildOpenPositionFromNoteTx(publicKey, {
+          noteCmt: noteResult.note_cmt,
+          noteNull: noteResult.note_null,
+          commitment,
+          hintPrice,
+          side: sideNum,
+          leverage,
+          size: 1_000_000_000,
+          tpPrice: tpUnits,
+          slPrice: slUnits,
+          portfolioKey,
+          noteProof: noteScVal,
+          commitProof: commitScVal,
+        })
+        openTxHash = await submitAndWait(await sign(openTx.toXDR()))
+      }
+      console.log('position opened, bundle=', usedBundle, 'hash=', openTxHash)
 
       positionsStore.add({ commitment, symbol, side: sideNum, leverage, openedAt: Date.now() })
       levels.setEntry(mark)

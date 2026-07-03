@@ -540,44 +540,24 @@ export default function OrderBook() {
 
 function OrderBookTooltip({ tooltip, mark }: { tooltip: Tooltip; mark: number }) {
   const { price, size, cumulative, side, x, y } = tooltip
-  const notional = price * size
-  const PRICE_SCALE = 1e7
-  const notionalUsd = notional / PRICE_SCALE
   const distFromMid = Math.abs(price - mark) / mark * 100
-
-  // Flip tooltip left/right based on canvas x position
   const flipLeft = x > 120
+  const accent = side === 'ask' ? '#f59e44' : '#34d399'
 
   return (
     <div
-      className="pointer-events-none absolute z-20 rounded-[6px] border border-border-subtle bg-surface-card px-2.5 py-1.5 shadow-lg"
+      className="pointer-events-none absolute z-20 rounded-[5px] border border-border-subtle bg-surface-card px-2 py-1 shadow-lg"
       style={{
-        top: Math.max(0, y - 4),
-        ...(flipLeft ? { right: 4 } : { left: x + 12 }),
-        minWidth: 140,
+        top: Math.max(0, y + 1),
+        ...(flipLeft ? { right: 4 } : { left: x + 10 }),
       }}
     >
-      <div className={`mb-1 text-[10px] font-semibold uppercase tracking-widest ${side === 'ask' ? 'text-bearish-red' : 'text-bullish-green'}`}>
-        {side === 'ask' ? 'Ask' : 'Bid'}
+      <div className="flex items-center gap-2.5">
+        <span className="text-[9px] font-semibold" style={{ color: accent }}>{fmtPrice(price)}</span>
+        <span className="text-[9px] text-text-quaternary">{fmtSize(size)}</span>
+        <span className="text-[9px] text-text-quaternary">∑{fmtSize(cumulative)}</span>
+        <span className="text-[9px] text-text-quaternary">{distFromMid.toFixed(2)}%</span>
       </div>
-      <TooltipRow label="Price" value={fmtPrice(price)} accent={side === 'ask' ? '#f59e44' : '#34d399'} />
-      <TooltipRow label="Qty" value={fmtSize(size)} />
-      <TooltipRow label="Total" value={fmtSize(cumulative)} />
-      <TooltipRow label="Notional" value={`$${notionalUsd >= 1000 ? `${(notionalUsd / 1000).toFixed(1)}k` : notionalUsd.toFixed(0)}`} />
-      <div className="mt-1.5 border-t border-border-subtle pt-1 text-[9px] text-text-quaternary">
-        {distFromMid.toFixed(2)}% from mid · click to fill
-      </div>
-    </div>
-  )
-}
-
-function TooltipRow({ label, value, accent }: { label: string; value: string; accent?: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="text-[10px] text-text-quaternary">{label}</span>
-      <span className="text-[10px] font-medium" style={accent ? { color: accent } : undefined}>
-        {value}
-      </span>
     </div>
   )
 }
