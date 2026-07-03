@@ -367,14 +367,9 @@ fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
         Some(c) => c,
         None => return err("missing cmt"),
     };
-    let out_path = match req.out.as_ref() {
-        Some(p) => p,
-        None => return err("missing out path"),
-    };
 
     log::info!("Generating commitment proof for on-chain placement",
         "commitment", log::hex_snippet(cmt, 12),
-        "out_path", format!("{}", out_path.display())
     );
 
     log::debug!("Looking up secrets in DB", "cmt", &cmt[..16]);
