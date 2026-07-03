@@ -6,7 +6,6 @@ import { AlbedoModule } from '@creit.tech/stellar-wallets-kit/modules/albedo'
 import { RabetModule } from '@creit.tech/stellar-wallets-kit/modules/rabet'
 import { LobstrModule } from '@creit.tech/stellar-wallets-kit/modules/lobstr'
 import { HanaModule } from '@creit.tech/stellar-wallets-kit/modules/hana'
-import { getBalance } from '../lib/contracts'
 import { toast } from '../components/toast/toast-context'
 import { useTheme } from './theme-context'
 
@@ -104,17 +103,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   }, [theme])
 
   const refreshBalance = useCallback(async () => {
-    if (!publicKey) return
-    setBalanceLoading(true)
-    try {
-      const bal = await getBalance(publicKey)
-      setBalance(bal)
-    } catch {
-      // RPC hiccup — keep last known balance
-    } finally {
-      setBalanceLoading(false)
-    }
-  }, [publicKey])
+    // Note-based: balance tracked locally, not on-chain
+    setBalance(0n)
+    setBalanceLoading(false)
+  }, [])
 
   // The kit fires STATE_UPDATED immediately with the resumed session (if any),
   // and again whenever the address or network changes — covers reconnects,

@@ -7,12 +7,12 @@ import {
 } from 'framer-motion'
 import { useLevels } from '../../context/levels-context'
 import { type Side, useMarket } from '../../context/market-context'
-import { useSettings } from '../../context/settings-context'
-import { formatContractBalance, useWallet } from '../../context/wallet-context'
+import { useWallet } from '../../context/wallet-context'
 import {
-  buildDepositTx,
-  buildOpenPositionTx,
+  buildDepositNoteTx,
+  buildOpenPositionFromNoteTx,
   crossMarginKey,
+  generateNote,
   randomCommitment,
   submitAndWait,
 } from '../../lib/contracts'
@@ -378,10 +378,9 @@ function PriceInput({
 const PRICE_SCALE = 1e7
 
 export default function TradingPanel() {
+  const { connected, publicKey, sign } = useWallet()
   const { symbol, mark } = useMarket()
   const levels = useLevels()
-  const { connected, publicKey, balance, sign, refreshBalance } = useWallet()
-  const { orderPrivacy } = useSettings()
   const [side, setSide] = useState<Side>('long')
   const [marginMode, setMarginMode] = useState<'isolated' | 'cross'>('isolated')
   const [orderType, setOrderType] = useState<'market' | 'limit' | 'stop'>('market')
@@ -394,8 +393,8 @@ export default function TradingPanel() {
   const [slInput, setSlInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  // balance is in contract units (7 decimals) — convert to display dollars
-  const balanceDollars = Number(balance) / PRICE_SCALE
+  // Note-based collateral: balance tracked off-chain via note store.
+  const balanceDollars = 0
 
   const margin = Number(amount) || 0
   const notional = margin * leverage
@@ -440,15 +439,6 @@ export default function TradingPanel() {
       return
     }
 
-    if (orderPrivacy === 'private') {
-      toast.warning(
-        'Private orders not wired up yet',
-        'This build can’t generate the shielded-note proof from the trading panel. Switch to Public in Settings, or use the note flow directly against the contract.',
-        { duration: 7000 },
-      )
-      return
-    }
-
     if (orderType !== 'market') {
       const price = Number(limitPrice)
       if (!limitPrice || price <= 0 || Number.isNaN(price)) {
@@ -468,20 +458,20 @@ export default function TradingPanel() {
     )
 
     try {
-      // collateral in contract units (7 decimals)
       const collateralUnits = BigInt(Math.round(margin * PRICE_SCALE))
 
-      // If wallet balance is insufficient, deposit first
-      if (balance < collateralUnits) {
-        toast.update(progressId, { description: 'Depositing collateral…', progress: 30 })
-        const depositTx = await buildDepositTx(publicKey, collateralUnits - balance)
-        const signedDeposit = await sign(depositTx.toXDR())
-        await submitAndWait(signedDeposit)
-        await refreshBalance()
-      }
+      // Step 1: Generate a shielded note for collateral
+      toast.update(progressId, { description: 'Generating shielded note…', progress: 25 })
+      const note = generateNote()
 
-      toast.update(progressId, { description: 'Opening position…', progress: 60 })
+      // Step 2: Deposit collateral as a note
+      toast.update(progressId, { description: 'Depositing collateral…', progress: 40 })
+      const depositTx = await buildDepositNoteTx(publicKey, note.commitment, collateralUnits)
+      const signedDeposit = await sign(depositTx.toXDR())
+      await submitAndWait(signedDeposit)
 
+      // Step 3: Generate order commitment + open position from note
+      toast.update(progressId, { description: 'Opening position…', progress: 65 })
       const commitment = randomCommitment()
       const hintPrice = Math.round(mark * PRICE_SCALE)
       const tpUnits = tpInput ? Math.round(parseFloat(tpInput) * PRICE_SCALE) : 0
@@ -489,13 +479,14 @@ export default function TradingPanel() {
       const portfolioKey =
         marginMode === 'cross' ? crossMarginKey(publicKey) : undefined
 
-      const openTx = await buildOpenPositionTx(publicKey, {
+      const openTx = await buildOpenPositionFromNoteTx(publicKey, {
+        noteCmt: note.commitment,
+        noteNull: note.nullifier,
         commitment,
         hintPrice,
         side: side === 'long' ? 0 : 1,
         leverage,
         size: 1_000_000_000,
-        collateral: collateralUnits,
         tpPrice: tpUnits,
         slPrice: slUnits,
         portfolioKey,
@@ -516,7 +507,6 @@ export default function TradingPanel() {
       })
 
       levels.setEntry(mark)
-      await refreshBalance()
 
       toast.update(progressId, {
         type: 'success',
@@ -604,7 +594,7 @@ export default function TradingPanel() {
           <span className="text-[13px] text-text-tertiary">
             Bal.{' '}
             <span className="text-text-secondary">
-              {connected ? `$${formatContractBalance(balance)}` : '—'}
+              {connected ? '$0.00' : '—'}
             </span>
           </span>
         </div>
@@ -740,11 +730,7 @@ export default function TradingPanel() {
           />
           <div className="flex items-center justify-between">
             <span>Privacy</span>
-            <span
-              className={orderPrivacy === 'private' ? 'text-brand-violet' : 'text-text-secondary'}
-            >
-              {orderPrivacy === 'private' ? 'Private (shielded)' : 'Public'}
-            </span>
+            <span className="text-brand-violet">Private (shielded)</span>
           </div>
         </div>
       </div>

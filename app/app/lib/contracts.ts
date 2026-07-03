@@ -18,6 +18,7 @@ export const RPC_URL =
 export const CONTRACT_IDS = {
   perpEngine: import.meta.env.VITE_PERP_ENGINE_ID as string,
   orderbook: import.meta.env.VITE_ORDERBOOK_ID as string,
+  collateralToken: import.meta.env.VITE_COLLATERAL_TOKEN_ID as string,
 } as const
 
 export const rpc = new SorobanRpc.Server(RPC_URL)
@@ -43,6 +44,8 @@ function bytes32ToScVal(hex: string): xdr.ScVal {
 
 // TimeInForce enum values matching the contract
 export const TIF = { GTC: 0, IOC: 1, FOK: 2, GTD: 3 } as const
+
+export const DEFAULT_ASSET = '0000000000000000000000000000000000000000000000000000000000000000'
 
 // ── transaction builder ───────────────────────────────────────────────────────
 
@@ -71,44 +74,27 @@ export async function buildTx(
   return SorobanRpc.assembleTransaction(tx, simResult).build()
 }
 
-// ── contract calls ────────────────────────────────────────────────────────────
+// ── Note generation (client-side, for deposit) ────────────────────────────────
+// Note: commitment is random bytes for now. Real ZK commitment would use
+// Poseidon2 hash from the circuits. The contract stores the note by commitment
+// and verifies ownership via ZK proof on spend.
 
-export async function getBalance(userAddress: string): Promise<bigint> {
-  try {
-    const account = await rpc.getAccount(userAddress)
-    const contract = new Contract(CONTRACT_IDS.perpEngine)
-    const tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: NETWORK_PASSPHRASE,
-    })
-      .addOperation(contract.call('get_balance', addressToScVal(userAddress)))
-      .setTimeout(30)
-      .build()
-
-    const result = await rpc.simulateTransaction(tx)
-    if (SorobanRpc.Api.isSimulationSuccess(result) && result.result?.retval) {
-      return scValToNative(result.result.retval) as bigint
-    }
-  } catch {
-    // account may not exist on testnet yet
-  }
-  return 0n
-}
-
-export async function buildDepositTx(sourcePublicKey: string, amount: bigint) {
-  return buildTx(sourcePublicKey, CONTRACT_IDS.perpEngine, 'deposit', [
-    addressToScVal(sourcePublicKey),
-    i128ToScVal(amount),
-  ])
-}
-
-/** Generate a random 32-byte hex commitment for a new position */
-export function randomCommitment(): string {
+export function generateNote(): { secret: string; commitment: string; nullifier: string } {
   const bytes = new Uint8Array(32)
   crypto.getRandomValues(bytes)
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
+  const commitment = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+
+  crypto.getRandomValues(bytes)
+  const nullifier = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+
+  crypto.getRandomValues(bytes)
+  const secret = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+
+  return { secret, commitment, nullifier }
+}
+
+export function randomCommitment(): string {
+  return generateNote().commitment
 }
 
 // Soroban contracttype unit enum variants encode as Map { VariantName: Void }
@@ -121,30 +107,15 @@ function enumToScVal(variant: string): xdr.ScVal {
   ])
 }
 
-// Groth16Proof contracttype encodes as Map { a: Bytes(64), b: Bytes(128), c: Bytes(64) }.
-// Zero bytes are a placeholder — will fail on-chain until WASM proof generation is wired.
+// Groth16Proof: placeholder zero proof (will fail on-chain until WASM prover is wired)
 function zeroProof(): xdr.ScVal {
   return xdr.ScVal.scvMap([
-    new xdr.ScMapEntry({
-      key: xdr.ScVal.scvSymbol('a'),
-      val: xdr.ScVal.scvBytes(Buffer.alloc(64)),
-    }),
-    new xdr.ScMapEntry({
-      key: xdr.ScVal.scvSymbol('b'),
-      val: xdr.ScVal.scvBytes(Buffer.alloc(128)),
-    }),
-    new xdr.ScMapEntry({
-      key: xdr.ScVal.scvSymbol('c'),
-      val: xdr.ScVal.scvBytes(Buffer.alloc(64)),
-    }),
+    new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('a'), val: xdr.ScVal.scvBytes(Buffer.alloc(64)) }),
+    new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('b'), val: xdr.ScVal.scvBytes(Buffer.alloc(128)) }),
+    new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol('c'), val: xdr.ScVal.scvBytes(Buffer.alloc(64)) }),
   ])
 }
 
-/**
- * Returns a stable 32-byte cross-margin key for the given wallet address,
- * persisted in localStorage. All positions opened with cross-margin from this
- * wallet will share this key as their on-chain portfolio group tag.
- */
 export function crossMarginKey(walletAddress: string): string {
   const storageKey = `cerida-cross-key-${walletAddress}`
   const existing = localStorage.getItem(storageKey)
@@ -156,14 +127,15 @@ export function crossMarginKey(walletAddress: string): string {
   return key
 }
 
+// ── Position Meta ─────────────────────────────────────────────────────────────
+
 export interface PositionMeta {
-  owner: string
   collateral: bigint
   entryPrice: bigint
   matchedPrice: bigint
-  side: bigint      // 0=long, 1=short
+  side: bigint
   leverage: bigint
-  status: bigint    // 0=Open, 1=Matched, 2=Closed, 3=Cancelled
+  status: bigint
   createdAt: bigint
   matchId: bigint
   fundingAtOpen: bigint
@@ -172,12 +144,13 @@ export interface PositionMeta {
   slPrice: bigint
   effectiveCollateral: bigint
   partialLiqDone: boolean
-  fromNote: boolean
+  marginMode: bigint
+  assetId: string
 }
 
 export async function getPosition(commitment: string): Promise<PositionMeta | null> {
   try {
-    const account = await rpc.getAccount('GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN') // dummy public key for simulation
+    const account = await rpc.getAccount('GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN')
     const contract = new Contract(CONTRACT_IDS.perpEngine)
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -194,7 +167,6 @@ export async function getPosition(commitment: string): Promise<PositionMeta | nu
     if (!raw) return null
 
     return {
-      owner: raw.owner,
       collateral: BigInt(raw.collateral),
       entryPrice: BigInt(raw.entry_price),
       matchedPrice: BigInt(raw.matched_price),
@@ -209,50 +181,186 @@ export async function getPosition(commitment: string): Promise<PositionMeta | nu
       slPrice: BigInt(raw.sl_price),
       effectiveCollateral: BigInt(raw.effective_collateral),
       partialLiqDone: raw.partial_liq_done,
-      fromNote: raw.from_note,
+      marginMode: BigInt(raw.margin_mode),
+      assetId: raw.asset_id ?? '0000000000000000000000000000000000000000000000000000000000000000',
     }
   } catch {
     return null
   }
 }
 
-export async function buildOpenPositionTx(
+// ── Note APIs ─────────────────────────────────────────────────────────────────
+
+/** Deposit collateral as a shielded note. No ZK proof needed — only when spending. */
+export async function buildDepositNoteTx(
+  sourcePublicKey: string,
+  noteCommitment: string,
+  amount: bigint,
+) {
+  return buildTx(sourcePublicKey, CONTRACT_IDS.perpEngine, 'deposit_note', [
+    addressToScVal(sourcePublicKey),
+    bytes32ToScVal(noteCommitment),
+    i128ToScVal(amount),
+  ])
+}
+
+/** Withdraw from a shielded note to a recipient. Requires a valid NoteSpend proof. */
+export async function buildWithdrawNoteTx(
+  sourcePublicKey: string,
+  noteCmt: string,
+  noteNull: string,
+  recipientPk: string,
+  noteProof?: xdr.ScVal,
+) {
+  return buildTx(sourcePublicKey, CONTRACT_IDS.perpEngine, 'withdraw_note', [
+    bytes32ToScVal(noteCmt),
+    bytes32ToScVal(noteNull),
+    addressToScVal(recipientPk),
+    noteProof ?? zeroProof(),
+  ])
+}
+
+/** Query a note balance by commitment. Returns amount in stroops or null. */
+export async function getNoteBalance(noteCommitment: string): Promise<bigint | null> {
+  try {
+    const account = await rpc.getAccount('GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN')
+    const contract = new Contract(CONTRACT_IDS.perpEngine)
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call('get_note', bytes32ToScVal(noteCommitment)))
+      .setTimeout(30)
+      .build()
+
+    const result = await rpc.simulateTransaction(tx)
+    if (!SorobanRpc.Api.isSimulationSuccess(result) || !result.result?.retval) return null
+    return scValToNative(result.result.retval) as bigint
+  } catch {
+    return null
+  }
+}
+
+// ── Position APIs ─────────────────────────────────────────────────────────────
+
+/** Open a position from a shielded note. Requires NoteSpend + OrderCommitment proofs. */
+export async function buildOpenPositionFromNoteTx(
   sourcePublicKey: string,
   opts: {
+    noteCmt: string
+    noteNull: string
     commitment: string
     hintPrice: number
     side: 0 | 1
     leverage: number
     size: number
-    collateral: bigint
     tpPrice?: number
     slPrice?: number
-    /** 64-char hex; zeros (default) = isolated margin. Non-zero = cross-margin group tag. */
+    assetId?: string
     portfolioKey?: string
+    noteProof?: xdr.ScVal
+    commitProof?: xdr.ScVal
   },
 ) {
   const zeroNote = bytes32ToScVal('0'.repeat(64))
-  const portfolioKey = bytes32ToScVal(opts.portfolioKey ?? '0'.repeat(64))
+  const pk = bytes32ToScVal(opts.portfolioKey ?? '0'.repeat(64))
+  const aid = bytes32ToScVal(opts.assetId ?? DEFAULT_ASSET)
 
-  return buildTx(sourcePublicKey, CONTRACT_IDS.perpEngine, 'open_position', [
-    addressToScVal(sourcePublicKey),  // owner
-    bytes32ToScVal(opts.commitment),   // commitment
-    i128ToScVal(opts.collateral),      // collateral
-    u64ToScVal(opts.hintPrice),        // hint_price
-    u64ToScVal(opts.side),             // hint_side
-    u64ToScVal(opts.leverage),         // hint_leverage
-    u64ToScVal(opts.size),             // hint_size
-    enumToScVal('GTC'),                // tif
-    u64ToScVal(0),                     // expiry_ledger
-    u64ToScVal(opts.tpPrice ?? 0),     // tp_price
-    u64ToScVal(opts.slPrice ?? 0),     // sl_price
-    zeroNote,                          // liquidation_recipient_note
-    portfolioKey,                      // portfolio_key
-    zeroProof(),                       // proof (placeholder — needs WASM prover)
+  return buildTx(sourcePublicKey, CONTRACT_IDS.perpEngine, 'open_position_from_note', [
+    bytes32ToScVal(opts.noteCmt),
+    bytes32ToScVal(opts.noteNull),
+    bytes32ToScVal(opts.commitment),
+    u64ToScVal(opts.hintPrice),
+    u64ToScVal(opts.side),
+    u64ToScVal(opts.leverage),
+    u64ToScVal(opts.size),
+    enumToScVal('GTC'),
+    u64ToScVal(0),
+    u64ToScVal(opts.tpPrice ?? 0),
+    u64ToScVal(opts.slPrice ?? 0),
+    zeroNote,
+    pk,
+    aid,
+    opts.noteProof ?? zeroProof(),
+    opts.commitProof ?? zeroProof(),
   ])
 }
 
-/** Submit a signed XDR transaction and wait for confirmation */
+// ── Order APIs ────────────────────────────────────────────────────────────────
+
+/** Place an order in the orderbook. Requires an OrderCommitment proof. */
+export async function buildPlaceOrderTx(
+  sourcePublicKey: string,
+  opts: {
+    commitment: string
+    hintPrice: number
+    hintSide: number
+    hintSize: number
+    hintLeverage: number
+    revealed?: number
+    tif?: number
+    expiryLedger?: number
+    assetId?: string
+    portfolioKey?: string
+    proof?: xdr.ScVal
+  },
+) {
+  const pk = bytes32ToScVal(opts.portfolioKey ?? '0'.repeat(64))
+  const aid = bytes32ToScVal(opts.assetId ?? DEFAULT_ASSET)
+  return buildTx(sourcePublicKey, CONTRACT_IDS.orderbook, 'place_order', [
+    bytes32ToScVal(opts.commitment),
+    pk,
+    u64ToScVal(opts.hintPrice),
+    u64ToScVal(opts.hintSide),
+    u64ToScVal(opts.hintSize),
+    u64ToScVal(opts.hintLeverage),
+    u64ToScVal(opts.revealed ?? 15),
+    enumToScVal('GTC'),
+    u64ToScVal(opts.expiryLedger ?? 0),
+    aid,
+    opts.proof ?? zeroProof(),
+  ])
+}
+
+/** Cancel an order in the orderbook. Requires an OrderCancel proof. */
+export async function buildCancelOrderTx(
+  sourcePublicKey: string,
+  commitment: string,
+  nullifier: string,
+  proof?: xdr.ScVal,
+) {
+  return buildTx(sourcePublicKey, CONTRACT_IDS.orderbook, 'cancel_order', [
+    bytes32ToScVal(commitment),
+    bytes32ToScVal(nullifier),
+    proof ?? zeroProof(),
+  ])
+}
+
+// ── List assets ──────────────────────────────────────────────────────────────
+
+/** Get list of registered asset IDs from the perp engine. */
+export async function listAssets(): Promise<string[][] | null> {
+  try {
+    const account = await rpc.getAccount('GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN')
+    const contract = new Contract(CONTRACT_IDS.perpEngine)
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call('list_assets'))
+      .setTimeout(30)
+      .build()
+
+    const result = await rpc.simulateTransaction(tx)
+    if (!SorobanRpc.Api.isSimulationSuccess(result) || !result.result?.retval) return null
+    return scValToNative(result.result.retval) as string[][]
+  } catch {
+    return null
+  }
+}
+
+// ── Submit ────────────────────────────────────────────────────────────────────
+
 export async function submitAndWait(signedXdr: string) {
   const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE)
   const sendResult = await rpc.sendTransaction(tx)

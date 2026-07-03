@@ -1,205 +1,455 @@
+import { useEffect } from 'react'
 import { Link } from 'react-router'
-import { MARKET_CATALOG } from '../context/market-context'
-import { symbolToSlug } from '../context/market-context'
+import { MARKET_CATALOG, symbolToSlug } from '../context/market-context'
 
 export const meta = () => [
   { title: 'Cerida — On-Chain Perpetuals' },
-  { name: 'description', content: 'Trade perpetual futures on any asset, on-chain. Powered by ZK proofs on Stellar.' },
+  { name: 'description', content: 'Perpetual futures on any asset, settled on-chain with zero-knowledge proofs.' },
 ]
+
+const PILLS = ['7 Markets', 'Up to 50× Leverage', 'ZK-Verified', 'Non-Custodial']
 
 const STATS = [
-  { label: 'Open Interest', value: '$24.8M' },
-  { label: '24h Volume', value: '$183.4M' },
-  { label: 'Markets', value: '7' },
-  { label: 'Max Leverage', value: '50×' },
+  { v: '$183M',  l: '24h Volume' },
+  { v: '$24.8M', l: 'Open Interest' },
+  { v: '7',      l: 'Markets' },
+  { v: '50×',    l: 'Max Leverage' },
 ]
 
-const FEATURES = [
-  {
-    title: 'ZK-Verified Matching',
-    body: 'Every trade is matched off-chain and verified on-chain with a zero-knowledge proof. No trust required.',
-  },
-  {
-    title: 'Real-World Assets',
-    body: 'Trade perpetuals on equities, commodities, and crypto from a single unified interface.',
-  },
-  {
-    title: 'Non-Custodial',
-    body: 'Your keys, your funds. Collateral lives in smart contracts you can audit. Connect Freighter and go.',
-  },
-]
+
+const D = 'rgba(255,255,255,0.45)'   // dim text
+const B = 'rgba(255,255,255,0.08)'   // border
 
 export default function HomePage() {
+  useEffect(() => {
+    const els = document.querySelectorAll('[data-reveal]')
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (e.isIntersecting) {
+            e.target.classList.add('in')
+            io.unobserve(e.target)
+          }
+        })
+      },
+      { threshold: 0.12 },
+    )
+    els.forEach((el) => io.observe(el))
+    return () => io.disconnect()
+  }, [])
+
   return (
-    <div className="min-h-screen bg-page text-text-primary">
-      {/* Nav */}
-      <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center border-b border-border-subtle bg-page/80 px-6 backdrop-blur-md">
-        <Link to="/" className="flex items-center gap-2">
-          <img src="/apple-touch-icon.png" alt="Cerida" className="h-7 w-7 rounded-[6px] object-cover" />
-          <span className="text-[15px] font-semibold text-text-primary">cerida</span>
+    <div style={{ background: '#fff', minHeight: '100vh', padding: '20px', fontFamily: 'var(--font-sans, ui-monospace, monospace)', position: 'relative' }}>
+
+
+    <div style={{ background: '#0c0c14', color: '#fff', borderRadius: 24, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.10)', boxShadow: '0 0 0 1px rgba(0,0,0,1)', minHeight: 'calc(100vh - 40px)' }}>
+      <style>{`
+        .ch-link:hover { color: #fff !important; }
+        .ch-mkt:hover  { border-color: rgba(128,125,254,0.35) !important; background: rgba(128,125,254,0.06) !important; transform: translateY(-2px); }
+
+        @keyframes fade-up {
+          from { opacity: 0; transform: translateY(16px); }
+          to   { opacity: 1; transform: none; }
+        }
+        .hero-stagger > * { animation: fade-up 0.7s ease both; }
+        .hero-stagger > *:nth-child(2) { animation-delay: 0.1s; }
+        .hero-stagger > *:nth-child(3) { animation-delay: 0.2s; }
+        .hero-stagger > *:nth-child(4) { animation-delay: 0.3s; }
+        .hero-shot { animation: fade-up 0.9s ease 0.35s both; }
+
+        [data-reveal] { opacity: 0; transform: translateY(20px); transition: opacity 0.65s ease, transform 0.65s ease; }
+        [data-reveal].in { opacity: 1; transform: none; }
+
+        @keyframes dash-flow { to { stroke-dashoffset: -504; } }
+        .dashflow { animation: dash-flow 42s linear infinite; }
+
+        @keyframes live-pulse {
+          0%   { box-shadow: 0 0 0 0 rgba(52,211,153,0.45); }
+          70%  { box-shadow: 0 0 0 6px rgba(52,211,153,0); }
+          100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+        }
+        .live-dot { animation: live-pulse 2.4s ease-out infinite; }
+
+        .cta-btn { transition: transform 0.18s ease, box-shadow 0.18s ease !important; }
+        .cta-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(255,255,255,0.12); }
+        .cta-btn:active { transform: translateY(0); }
+
+        @media (prefers-reduced-motion: reduce) {
+          .hero-stagger > *, .hero-shot, .dashflow, .live-dot { animation: none !important; }
+          [data-reveal] { opacity: 1; transform: none; transition: none; }
+        }
+      `}</style>
+
+      {/* ── NAV ─────────────────────────────────────────────────────────── */}
+      <header style={{ display: 'flex', alignItems: 'center', height: 60, padding: '0 32px', borderBottom: `1px solid ${B}` }}>
+        <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: 9, textDecoration: 'none', flexShrink: 0 }}>
+          <img src="/apple-touch-icon.png" alt="Cerida" style={{ height: 61, width: 61, borderRadius: 15, objectFit: 'cover' }} />
+          <span style={{ fontSize: 16, fontWeight: 700, color: '#fff', letterSpacing: '0.02em' }}>cerida</span>
         </Link>
-        <nav className="ml-8 hidden items-center gap-6 text-[13px] text-text-tertiary sm:flex">
-          <a href="#markets" className="transition-colors hover:text-text-primary">Markets</a>
-          <a href="#features" className="transition-colors hover:text-text-primary">Features</a>
-          <a
-            href="https://docs.cerida.xyz"
-            target="_blank"
-            rel="noreferrer"
-            className="transition-colors hover:text-text-primary"
-          >
-            Docs
-          </a>
+
+        <nav style={{ display: 'flex', alignItems: 'center', gap: 4, margin: '0 auto' }}>
+          {[['#markets','Markets'],['#features','Features'],['#docs','Docs']].map(([h, l]) => (
+            <a key={l} href={h} className="ch-link"
+              style={{ padding: '6px 14px', fontSize: 13, color: D, textDecoration: 'none', borderRadius: 8, transition: 'color 0.15s' }}>
+              {l}
+            </a>
+          ))}
         </nav>
-        <div className="ml-auto flex items-center gap-3">
-          <Link
-            to="/trade/btc"
-            className="rounded-[8px] bg-brand-violet px-4 py-1.5 text-[13px] font-semibold text-white transition-opacity hover:opacity-90"
-          >
-            Launch App
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <Link to="/trade/btc" className="ch-link"
+            style={{ fontSize: 13, color: D, textDecoration: 'none', padding: '6px 12px', transition: 'color 0.15s' }}>
+            Log in
+          </Link>
+          <Link to="/trade/btc" style={{
+            fontSize: 13, fontWeight: 700, color: '#0c0c14', background: '#fff',
+            textDecoration: 'none', padding: '8px 20px', borderRadius: 9999,
+            transition: 'opacity 0.15s',
+          }}>
+            Sign up
           </Link>
         </div>
       </header>
 
-      {/* Hero */}
-      <section className="relative flex min-h-screen flex-col items-center justify-center px-6 pt-14 text-center">
-        {/* Glow */}
-        <div
-          className="pointer-events-none absolute left-1/2 top-1/3 h-[480px] w-[480px] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-20 blur-[120px]"
-          style={{ background: 'radial-gradient(circle, #807dfe 0%, transparent 70%)' }}
-        />
+      {/* ── HERO ────────────────────────────────────────────────────────── */}
+      <section style={{ position: 'relative', overflow: 'hidden', minHeight: 'calc(100vh - 100px)', display: 'flex', flexDirection: 'column' }}>
+        {/* Text block */}
+        <div className="hero-stagger" style={{ padding: '40px 48px 0', maxWidth: 800 }}>
+          <div style={{ marginBottom: 18, display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+            <style>{`
+              @keyframes mascot-blink {
+                0%, 90%, 100% { transform: scaleY(1); }
+                95%           { transform: scaleY(0.08); }
+              }
+              @keyframes mascot-bob {
+                0%,100% { transform: translateY(0px); }
+                50%      { transform: translateY(-3px); }
+              }
+            `}</style>
 
-        <div className="relative max-w-3xl">
-          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-brand-violet/30 bg-brand-violet/10 px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-brand-violet">
-            <span className="h-1.5 w-1.5 rounded-full bg-brand-violet" />
-            Testnet Live on Stellar
-          </div>
-
-          <h1 className="text-[52px] font-extrabold leading-[1.08] tracking-tight text-text-primary sm:text-[68px]">
-            Trade Anything.
-            <br />
-            <span style={{ background: 'linear-gradient(135deg, #807dfe 0%, #34d399 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-              On-Chain.
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase',
+              color: '#34d399', background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)',
+              borderRadius: 9999, padding: '5px 12px',
+            }}>
+              <span className="live-dot" style={{ width: 6, height: 6, borderRadius: '50%', background: '#34d399', display: 'inline-block' }} />
+              Live on Stellar Testnet
             </span>
+
+            {/* Mascot beside the badge */}
+            <div style={{ pointerEvents: 'none', lineHeight: 0 }}>
+              <svg width="32" height="42" viewBox="0 0 9 13" style={{ imageRendering: 'pixelated', display: 'block', animation: 'mascot-bob 2.2s ease-in-out infinite' }} fill="none">
+                {/* antenna */}
+                <rect x="4" y="0" width="1" height="2" fill="#a5a3ff"/>
+                <rect x="3" y="0" width="3" height="1" fill="#34d399"/>
+                {/* head */}
+                <rect x="2" y="2" width="5" height="4" fill="#807dfe"/>
+                {/* eye whites */}
+                <rect x="3" y="3" width="1" height="1" fill="#fff"/>
+                <rect x="5" y="3" width="1" height="1" fill="#fff"/>
+                {/* pupils — blink by scaleY */}
+                <g style={{ transformOrigin: '3.5px 3.5px', animation: 'mascot-blink 3.5s ease-in-out infinite' }}>
+                  <rect x="3.1" y="3.1" width="0.8" height="0.8" fill="#1a1a2e"/>
+                </g>
+                <g style={{ transformOrigin: '5.5px 3.5px', animation: 'mascot-blink 3.5s ease-in-out infinite' }}>
+                  <rect x="5.1" y="3.1" width="0.8" height="0.8" fill="#1a1a2e"/>
+                </g>
+                {/* mouth smile */}
+                <rect x="3" y="5" width="3" height="0.5" fill="#4340c4"/>
+                <rect x="3" y="5.5" width="0.8" height="0.5" fill="#4340c4"/>
+                <rect x="5.2" y="5.5" width="0.8" height="0.5" fill="#4340c4"/>
+                {/* body */}
+                <rect x="2" y="6" width="5" height="3" fill="#6366f1"/>
+                <rect x="3" y="6.8" width="3" height="1.5" fill="#807dfe"/>
+                <rect x="4" y="7.1" width="1" height="0.9" fill="#34d399"/>
+                {/* arms */}
+                <rect x="1" y="6" width="1" height="2.5" fill="#6366f1"/>
+                <rect x="7" y="6" width="1" height="2.5" fill="#6366f1"/>
+                {/* legs */}
+                <rect x="2" y="9" width="2" height="2.5" fill="#4340c4"/>
+                <rect x="5" y="9" width="2" height="2.5" fill="#4340c4"/>
+                {/* feet */}
+                <rect x="1.5" y="11.5" width="2.5" height="1" fill="#2d2a8f"/>
+                <rect x="5" y="11.5" width="2.5" height="1" fill="#2d2a8f"/>
+              </svg>
+            </div>
+          </div>
+          <h1 style={{ fontSize: 'clamp(32px, 4.5vw, 60px)', fontWeight: 800, lineHeight: 1.08, letterSpacing: '-0.03em', margin: '0 0 24px' }}>
+            Trade any asset,<br />any time, on-chain.
           </h1>
 
-          <p className="mx-auto mt-6 max-w-xl text-[16px] leading-relaxed text-text-tertiary">
-            Perpetual futures on crypto and real-world assets, settled with zero-knowledge proofs. No counterparty risk. No compromises.
-          </p>
-
-          <div className="mt-10 flex flex-col items-center gap-4 sm:flex-row sm:justify-center">
-            <Link
-              to="/trade/btc"
-              className="inline-flex items-center gap-2 rounded-[10px] px-7 py-3.5 text-[14px] font-bold text-white shadow-lg transition-transform hover:scale-[1.02] active:scale-[0.99]"
-              style={{ background: 'linear-gradient(135deg, #807dfe 0%, #6366f1 100%)' }}
-            >
-              Start Trading
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M2.5 7h9M7.5 3l4 4-4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </Link>
-            <a
-              href="#markets"
-              className="inline-flex items-center gap-2 rounded-[10px] border border-border-default px-7 py-3.5 text-[14px] font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
-            >
-              View Markets
-            </a>
-          </div>
-        </div>
-
-        {/* Stats bar */}
-        <div className="relative mt-20 flex w-full max-w-2xl flex-wrap justify-center gap-x-10 gap-y-4 border-t border-border-subtle pt-8">
-          {STATS.map((s) => (
-            <div key={s.label} className="flex flex-col items-center gap-1">
-              <span className="text-[22px] font-bold tabular-nums text-text-primary">{s.value}</span>
-              <span className="text-[11px] uppercase tracking-widest text-text-quaternary">{s.label}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* Markets */}
-      <section id="markets" className="mx-auto max-w-5xl px-6 py-24">
-        <h2 className="mb-2 text-center text-[11px] uppercase tracking-widest text-text-quaternary">Markets</h2>
-        <p className="mb-10 text-center text-[28px] font-bold text-text-primary">Trade Any Asset</p>
-
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {MARKET_CATALOG.map((market) => (
-            <Link
-              key={market.symbol}
-              to={`/trade/${symbolToSlug(market.symbol)}`}
-              className="group flex items-center gap-4 rounded-[10px] border border-border-subtle bg-surface-primary p-4 transition-all hover:border-border-default hover:bg-surface-hover"
-            >
-              <span
-                className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-[14px] font-bold text-white"
-                style={{ backgroundColor: market.color }}
-              >
-                {market.icon}
+          {/* Feature pills */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 40 }}>
+            {PILLS.map((p) => (
+              <span key={p} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 7,
+                fontSize: 13, color: D,
+              }}>
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <circle cx="7" cy="7" r="6" stroke="rgba(255,255,255,0.2)" strokeWidth="1.25" />
+                  <path d="M4.5 7l2 2 3-3" stroke="rgba(255,255,255,0.5)" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                {p}
               </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-[14px] font-bold text-text-primary">{market.name}</span>
-                  <span className="rounded-[4px] bg-surface-card px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-text-quaternary">
-                    {market.category}
-                  </span>
-                </div>
-                <div className="mt-0.5 text-[12px] text-text-tertiary">{market.symbol}</div>
-              </div>
-              <div className="shrink-0 text-right">
-                <div className="text-[13px] font-semibold tabular-nums text-text-primary">
-                  ${market.basePrice.toLocaleString('en-US', { maximumFractionDigits: 2 })}
-                </div>
-                <div className="mt-0.5 text-[11px] font-medium text-bullish-green">Perp</div>
-              </div>
-            </Link>
-          ))}
-        </div>
-      </section>
-
-      {/* Features */}
-      <section id="features" className="border-t border-border-subtle bg-surface-primary py-24">
-        <div className="mx-auto max-w-5xl px-6">
-          <h2 className="mb-2 text-center text-[11px] uppercase tracking-widest text-text-quaternary">Why Cerida</h2>
-          <p className="mb-14 text-center text-[28px] font-bold text-text-primary">Built Different</p>
-          <div className="grid gap-6 sm:grid-cols-3">
-            {FEATURES.map((f) => (
-              <div key={f.title} className="rounded-[10px] border border-border-subtle bg-page p-6">
-                <h3 className="mb-3 text-[15px] font-semibold text-text-primary">{f.title}</h3>
-                <p className="text-[13px] leading-relaxed text-text-tertiary">{f.body}</p>
-              </div>
             ))}
           </div>
-        </div>
-      </section>
 
-      {/* CTA */}
-      <section className="relative overflow-hidden py-28 text-center">
-        <div
-          className="pointer-events-none absolute left-1/2 top-1/2 h-[400px] w-[700px] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-15 blur-[100px]"
-          style={{ background: 'radial-gradient(ellipse, #807dfe 0%, transparent 70%)' }}
-        />
-        <div className="relative mx-auto max-w-lg px-6">
-          <p className="mb-3 text-[32px] font-extrabold text-text-primary">Ready to trade?</p>
-          <p className="mb-8 text-[14px] text-text-tertiary">Connect your Freighter wallet and start in under a minute.</p>
-          <Link
-            to="/trade/btc"
-            className="inline-flex items-center gap-2 rounded-[10px] px-8 py-3.5 text-[15px] font-bold text-white transition-transform hover:scale-[1.02]"
-            style={{ background: 'linear-gradient(135deg, #807dfe 0%, #6366f1 100%)' }}
-          >
-            Open Trading App
+          {/* CTA */}
+          <Link to="/trade/btc" className="cta-btn" style={{
+            display: 'inline-flex', alignItems: 'center', gap: 10,
+            padding: '16px 32px', borderRadius: 9999,
+            fontSize: 15, fontWeight: 700, color: '#0c0c14',
+            background: '#fff', textDecoration: 'none',
+          }}>
+            Start trading
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
           </Link>
         </div>
+
+        {/* Screenshot pinned to bottom */}
+        <div className="hero-shot" style={{ marginTop: 'auto', padding: '60px 48px 0', position: 'relative' }}>
+          <div style={{
+            borderRadius: '14px 14px 0 0', overflow: 'hidden',
+            border: `1px solid ${B}`, borderBottom: 'none',
+            boxShadow: '0 -8px 40px rgba(0,0,0,0.5)',
+            position: 'relative',
+          }}>
+            {/* Chrome bar */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 14px', background: '#111118', borderBottom: `1px solid ${B}` }}>
+              <div style={{ display: 'flex', gap: 5 }}>
+                {['#ff5f57','#febc2e','#28c840'].map((c) => (
+                  <div key={c} style={{ width: 9, height: 9, borderRadius: '50%', background: c, opacity: 0.65 }} />
+                ))}
+              </div>
+              <div style={{ flex: 1, marginLeft: 8, height: 20, borderRadius: 5, background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', padding: '0 9px' }}>
+                <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.22)' }}>app.cerida.xyz/trade/btc</span>
+              </div>
+            </div>
+
+            <div style={{ position: 'relative' }}>
+              <img src="/preview_dark.png" alt="Cerida trading interface" style={{ width: '100%', display: 'block' }} />
+              <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.28)', pointerEvents: 'none' }} />
+              {/* Bottom fade into next section */}
+              <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '45%', background: 'linear-gradient(to top, #0c0c14 0%, transparent 100%)', pointerEvents: 'none' }} />
+            </div>
+          </div>
+        </div>
       </section>
 
-      {/* Footer */}
-      <footer className="border-t border-border-subtle px-6 py-8">
-        <div className="mx-auto flex max-w-5xl items-center justify-between">
-          <div className="flex items-center gap-2">
-            <img src="/apple-touch-icon.png" alt="Cerida" className="h-5 w-5 rounded-[4px] object-cover" />
-            <span className="text-[13px] font-semibold text-text-tertiary">cerida</span>
+      {/* ── STATS ───────────────────────────────────────────────────────── */}
+      <section data-reveal style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', borderTop: `1px solid ${B}`, borderBottom: `1px solid ${B}` }}>
+        {STATS.map((s, i) => (
+          <div key={s.l} style={{
+            flex: '1 1 150px', display: 'flex', flexDirection: 'column', alignItems: 'center',
+            padding: '28px 20px',
+            borderRight: i < STATS.length - 1 ? `1px solid ${B}` : 'none',
+          }}>
+            <span style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-0.02em' }}>{s.v}</span>
+            <span style={{ fontSize: 11, color: D, marginTop: 5, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{s.l}</span>
           </div>
-          <p className="text-[12px] text-text-quaternary">© 2026 Cerida. Testnet only. Not financial advice.</p>
+        ))}
+      </section>
+
+      {/* ── MARKETS ─────────────────────────────────────────────────────── */}
+      <section id="markets" data-reveal style={{ padding: '80px 48px', maxWidth: 1100, margin: '0 auto' }}>
+        <p style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: D, marginBottom: 8 }}>Markets</p>
+        <h2 style={{ fontSize: 'clamp(22px, 3vw, 34px)', fontWeight: 800, margin: '0 0 40px', letterSpacing: '-0.02em' }}>Trade Any Asset</h2>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 8 }}>
+          {MARKET_CATALOG.map((m) => (
+            <Link key={m.symbol} to={`/trade/${symbolToSlug(m.symbol)}`} className="ch-mkt"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px',
+                border: `1px solid ${B}`, borderRadius: 12,
+                textDecoration: 'none', color: '#fff',
+                transition: 'border-color 0.15s, background 0.15s, transform 0.18s',
+              }}
+            >
+              <span style={{ width: 38, height: 38, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 800, color: '#fff', background: m.color }}>{m.icon}</span>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>{m.name}</span>
+                  <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', padding: '2px 5px', borderRadius: 3, background: 'rgba(255,255,255,0.07)', color: D }}>{m.category}</span>
+                </div>
+                <div style={{ fontSize: 11, color: D, marginTop: 2 }}>{m.symbol}</div>
+              </div>
+              <div style={{ flexShrink: 0, textAlign: 'right' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>${m.basePrice.toLocaleString('en-US', { maximumFractionDigits: 2 })}</div>
+                <div style={{ fontSize: 11, color: '#34d399', marginTop: 2, fontWeight: 600 }}>Perp</div>
+              </div>
+            </Link>
+          ))}
         </div>
+      </section>
+
+      {/* ── FEATURES ────────────────────────────────────────────────────── */}
+      <section id="features" style={{ background: '#f7f7f9', padding: '80px 48px' }}>
+        <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+          <p style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#9ca3af', marginBottom: 8 }}>Why Cerida</p>
+          <h2 style={{ fontSize: 'clamp(22px, 3vw, 34px)', fontWeight: 800, margin: '0 0 64px', letterSpacing: '-0.02em', color: '#0c0c14' }}>Built Different</h2>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+
+            {/* ══ Row 1: ZK Privacy ══ */}
+            <div data-reveal style={{ display: 'flex', gap: 64, alignItems: 'center', padding: '56px 0', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
+              <div style={{ flex: '0 0 42%' }}>
+                <span style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#9ca3af', display: 'block', marginBottom: 14 }}>01 — Privacy</span>
+                <h3 style={{ fontSize: 26, fontWeight: 800, margin: '0 0 16px', letterSpacing: '-0.02em', lineHeight: 1.2, color: '#0c0c14' }}>Zero-Knowledge Positions</h3>
+                <p style={{ fontSize: 14, lineHeight: 1.8, color: '#6b7280', margin: 0 }}>Every position is a Poseidon2 commitment on Stellar. Your wallet address never appears on-chain. Prove ownership with a ZK nullifier — open, close, and settle completely anonymously.</p>
+              </div>
+              <div style={{ flex: 1, background: '#fff', border: '1px solid rgba(0,0,0,0.07)', borderRadius: 18, padding: '40px 48px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                <svg width="100%" height="110" viewBox="0 0 380 110" fill="none">
+                  {/* wallet */}
+                  <rect x="0" y="20" width="100" height="70" rx="12" fill="rgba(0,0,0,0.03)" stroke="rgba(0,0,0,0.15)" strokeWidth="1.5"/>
+                  <rect x="14" y="36" width="26" height="20" rx="4" fill="rgba(0,0,0,0.08)" stroke="rgba(0,0,0,0.2)" strokeWidth="1"/>
+                  <rect x="12" y="31" width="8" height="8" rx="2" fill="rgba(0,0,0,0.2)"/>
+                  <rect x="22" y="31" width="8" height="8" rx="2" fill="rgba(0,0,0,0.2)"/>
+                  <text x="74" y="51" textAnchor="middle" fill="rgba(0,0,0,0.3)" fontSize="9" fontFamily="monospace">WALLET</text>
+                  <text x="74" y="68" textAnchor="middle" fill="rgba(0,0,0,0.55)" fontSize="9" fontFamily="monospace">0x742d...f3a1</text>
+                  {/* arrow */}
+                  <line className="dashflow" x1="103" y1="55" x2="146" y2="55" stroke="rgba(0,0,0,0.2)" strokeWidth="1.5" strokeDasharray="5 4"/>
+                  <polygon points="144,51 152,55 144,59" fill="rgba(0,0,0,0.35)"/>
+                  {/* shield — violet accent */}
+                  <path d="M190 12 L224 23 L224 57 C224 71 207 79 190 84 C173 79 156 71 156 57 L156 23 Z" fill="rgba(128,125,254,0.08)" stroke="#807dfe" strokeWidth="2"/>
+                  <rect x="179" y="44" width="22" height="16" rx="3" fill="#807dfe" opacity="0.85"/>
+                  <path d="M183 44 L183 39 C183 34 201 34 201 39 L201 44" stroke="#807dfe" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+                  <circle cx="190" cy="52" r="2.5" fill="#fff"/>
+                  {/* arrow */}
+                  <line className="dashflow" x1="228" y1="55" x2="272" y2="55" stroke="rgba(0,0,0,0.2)" strokeWidth="1.5" strokeDasharray="5 4"/>
+                  <polygon points="270,51 278,55 270,59" fill="rgba(0,0,0,0.35)"/>
+                  {/* commitment */}
+                  <rect x="280" y="20" width="100" height="70" rx="12" fill="rgba(0,0,0,0.03)" stroke="rgba(0,0,0,0.15)" strokeWidth="1.5"/>
+                  <text x="330" y="46" textAnchor="middle" fill="rgba(0,0,0,0.3)" fontSize="9" fontFamily="monospace">COMMITMENT</text>
+                  <text x="330" y="62" textAnchor="middle" fill="rgba(0,0,0,0.6)" fontSize="9" fontFamily="monospace">0xf8a2c3d1...</text>
+                  <text x="330" y="75" textAnchor="middle" fill="rgba(0,0,0,0.3)" fontSize="8" fontFamily="monospace">nullifier: 0x4a...</text>
+                </svg>
+              </div>
+            </div>
+
+            {/* ══ Row 2: Shielded Pool ══ */}
+            <div data-reveal style={{ display: 'flex', gap: 64, alignItems: 'center', padding: '56px 0', borderTop: '1px solid rgba(0,0,0,0.08)', flexDirection: 'row-reverse' }}>
+              <div style={{ flex: '0 0 42%' }}>
+                <span style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#9ca3af', display: 'block', marginBottom: 14 }}>02 — Anonymity</span>
+                <h3 style={{ fontSize: 26, fontWeight: 800, margin: '0 0 16px', letterSpacing: '-0.02em', lineHeight: 1.2, color: '#0c0c14' }}>Shielded Pool</h3>
+                <p style={{ fontSize: 14, lineHeight: 1.8, color: '#6b7280', margin: 0 }}>Deposit collateral anonymously via Merkle-tree notes. Withdraw to any address. The on-chain link between your deposit and your trades is cryptographically severed — every time.</p>
+              </div>
+              <div style={{ flex: 1, background: '#fff', border: '1px solid rgba(0,0,0,0.07)', borderRadius: 18, padding: '40px 48px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                <svg width="240" height="120" viewBox="0 0 240 120" fill="none">
+                  <circle cx="40" cy="18" r="14" fill="rgba(0,0,0,0.04)" stroke="rgba(0,0,0,0.2)" strokeWidth="1.5"/>
+                  <text x="40" y="23" textAnchor="middle" fill="rgba(0,0,0,0.4)" fontSize="12" fontWeight="700">$</text>
+                  <circle cx="120" cy="10" r="14" fill="rgba(0,0,0,0.04)" stroke="rgba(0,0,0,0.2)" strokeWidth="1.5"/>
+                  <text x="120" y="15" textAnchor="middle" fill="rgba(0,0,0,0.4)" fontSize="12" fontWeight="700">$</text>
+                  <circle cx="200" cy="18" r="14" fill="rgba(0,0,0,0.04)" stroke="rgba(0,0,0,0.2)" strokeWidth="1.5"/>
+                  <text x="200" y="23" textAnchor="middle" fill="rgba(0,0,0,0.4)" fontSize="12" fontWeight="700">$</text>
+                  <line className="dashflow" x1="40" y1="33" x2="90" y2="58" stroke="rgba(0,0,0,0.15)" strokeWidth="1.2" strokeDasharray="3 3"/>
+                  <line className="dashflow" x1="120" y1="25" x2="120" y2="58" stroke="rgba(0,0,0,0.15)" strokeWidth="1.2" strokeDasharray="3 3"/>
+                  <line className="dashflow" x1="200" y1="33" x2="150" y2="58" stroke="rgba(0,0,0,0.15)" strokeWidth="1.2" strokeDasharray="3 3"/>
+                  {/* pool — violet accent */}
+                  <ellipse cx="120" cy="68" rx="44" ry="13" fill="rgba(128,125,254,0.07)" stroke="#807dfe" strokeWidth="1.5"/>
+                  <ellipse cx="120" cy="68" rx="26" ry="7" fill="rgba(128,125,254,0.1)" stroke="rgba(128,125,254,0.4)" strokeWidth="1"/>
+                  <text x="120" y="71" textAnchor="middle" fill="#807dfe" fontSize="7.5" fontWeight="700" fontFamily="monospace">POOL</text>
+                  <line x1="120" y1="81" x2="120" y2="97" stroke="rgba(0,0,0,0.2)" strokeWidth="1.5" strokeDasharray="3 3"/>
+                  <polygon points="115,94 120,104 125,94" fill="rgba(0,0,0,0.3)"/>
+                  <text x="154" y="72" fill="rgba(0,0,0,0.25)" fontSize="8" fontFamily="monospace">anon</text>
+                </svg>
+              </div>
+            </div>
+
+            {/* ══ Row 3: TEE Matching ══ */}
+            <div data-reveal style={{ display: 'flex', gap: 64, alignItems: 'center', padding: '56px 0', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
+              <div style={{ flex: '0 0 42%' }}>
+                <span style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#9ca3af', display: 'block', marginBottom: 14 }}>03 — Fairness</span>
+                <h3 style={{ fontSize: 26, fontWeight: 800, margin: '0 0 16px', letterSpacing: '-0.02em', lineHeight: 1.2, color: '#0c0c14' }}>TEE Fair Matching</h3>
+                <p style={{ fontSize: 14, lineHeight: 1.8, color: '#6b7280', margin: 0 }}>Orders are matched inside a Trusted Execution Environment — a hardware-sealed enclave nobody can tamper with. An attestation token proves the keeper saw only what it was supposed to. Verified on-chain with a Groth16 proof.</p>
+              </div>
+              <div style={{ flex: 1, background: '#fff', border: '1px solid rgba(0,0,0,0.07)', borderRadius: 18, padding: '40px 48px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                <svg width="300" height="110" viewBox="0 0 300 110" fill="none">
+                  <rect x="0" y="22" width="72" height="28" rx="8" fill="rgba(0,0,0,0.03)" stroke="rgba(0,0,0,0.15)" strokeWidth="1.2"/>
+                  <text x="36" y="34" textAnchor="middle" fill="rgba(0,0,0,0.45)" fontSize="8" fontFamily="monospace" fontWeight="700">Order A</text>
+                  <text x="36" y="45" textAnchor="middle" fill="rgba(0,0,0,0.28)" fontSize="7">BUY 0.5 BTC</text>
+                  <rect x="0" y="62" width="72" height="28" rx="8" fill="rgba(0,0,0,0.03)" stroke="rgba(0,0,0,0.15)" strokeWidth="1.2"/>
+                  <text x="36" y="74" textAnchor="middle" fill="rgba(0,0,0,0.45)" fontSize="8" fontFamily="monospace" fontWeight="700">Order B</text>
+                  <text x="36" y="85" textAnchor="middle" fill="rgba(0,0,0,0.28)" fontSize="7">SELL 0.5 BTC</text>
+                  <line x1="74" y1="36" x2="108" y2="52" stroke="rgba(0,0,0,0.18)" strokeWidth="1.2" strokeDasharray="4 3"/>
+                  <line x1="74" y1="76" x2="108" y2="60" stroke="rgba(0,0,0,0.18)" strokeWidth="1.2" strokeDasharray="4 3"/>
+                  {/* chip — violet accent */}
+                  <rect x="110" y="30" width="80" height="52" rx="10" fill="rgba(128,125,254,0.06)" stroke="#807dfe" strokeWidth="2"/>
+                  {[0,1,2,3].map(i => <line key={i} x1={118+i*15} y1="36" x2={118+i*15} y2="78" stroke="rgba(128,125,254,0.12)" strokeWidth="0.7"/>)}
+                  {[0,1,2].map(i => <line key={i} x1="115" y1={41+i*13} x2="185" y2={41+i*13} stroke="rgba(128,125,254,0.12)" strokeWidth="0.7"/>)}
+                  <text x="150" y="59" textAnchor="middle" fill="#807dfe" fontSize="10" fontWeight="800">TEE</text>
+                  {[0,1,2].map(i => <rect key={i} x={120+i*18} y="23" width="6" height="7" fill="rgba(128,125,254,0.45)" rx="1"/>)}
+                  {[0,1,2].map(i => <rect key={i} x={120+i*18} y="82" width="6" height="7" fill="rgba(128,125,254,0.45)" rx="1"/>)}
+                  <line x1="192" y1="56" x2="222" y2="56" stroke="rgba(0,0,0,0.18)" strokeWidth="1.5" strokeDasharray="4 3"/>
+                  <polygon points="220,52 228,56 220,60" fill="rgba(0,0,0,0.3)"/>
+                  <rect x="230" y="36" width="42" height="42" rx="8" fill="rgba(0,0,0,0.03)" stroke="rgba(0,0,0,0.15)" strokeWidth="1.5"/>
+                  <text x="251" y="60" textAnchor="middle" fill="rgba(0,0,0,0.55)" fontSize="18">✓</text>
+                  <text x="251" y="72" textAnchor="middle" fill="rgba(0,0,0,0.3)" fontSize="6.5" fontFamily="monospace">PROOF</text>
+                </svg>
+              </div>
+            </div>
+
+            {/* ══ Row 4: Markets + Orders ══ */}
+            <div data-reveal style={{ display: 'flex', gap: 64, alignItems: 'center', padding: '56px 0', borderTop: '1px solid rgba(0,0,0,0.08)', flexDirection: 'row-reverse' }}>
+              <div style={{ flex: '0 0 42%' }}>
+                <span style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#9ca3af', display: 'block', marginBottom: 14 }}>04 — Markets</span>
+                <h3 style={{ fontSize: 26, fontWeight: 800, margin: '0 0 16px', letterSpacing: '-0.02em', lineHeight: 1.2, color: '#0c0c14' }}>Any Asset, Any Order</h3>
+                <p style={{ fontSize: 14, lineHeight: 1.8, color: '#6b7280', margin: '0 0 24px' }}>Trade BTC, ETH, SOL alongside SpaceX, Tesla, Gold and Oil — all with unified margin. GTC, IOC, FOK, GTD order types. Keeper-executed TP/SL at oracle prices. Up to 50× leverage with isolated or cross-margin modes.</p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+                  {['GTC', 'IOC', 'FOK', 'GTD', 'TP / SL', '50× Lev', 'Cross', 'Isolated'].map(t => (
+                    <span key={t} style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', padding: '4px 10px', borderRadius: 6, background: 'rgba(0,0,0,0.05)', border: '1px solid rgba(0,0,0,0.1)', color: '#374151' }}>{t}</span>
+                  ))}
+                </div>
+              </div>
+              <div style={{ flex: 1, background: '#fff', border: '1px solid rgba(0,0,0,0.07)', borderRadius: 18, padding: '28px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                {[
+                  { label: 'BTC',    sub: 'PERP', icon: '₿'  },
+                  { label: 'ETH',    sub: 'PERP', icon: 'Ξ'  },
+                  { label: 'XRP',    sub: 'PERP', icon: '✕'  },
+                  { label: 'SPACEX', sub: 'RWA',  icon: '↑'  },
+                  { label: 'TSLA',   sub: 'RWA',  icon: 'T'  },
+                  { label: 'GOLD',   sub: 'RWA',  icon: 'Au' },
+                ].map(m => (
+                  <div key={m.label} style={{ border: '1px solid rgba(0,0,0,0.08)', borderRadius: 10, padding: '16px 12px', background: 'rgba(0,0,0,0.02)', textAlign: 'center' }}>
+                    <div style={{ fontSize: 18, marginBottom: 6, color: 'rgba(0,0,0,0.4)', fontWeight: 700 }}>{m.icon}</div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#1a1a2e' }}>{m.label}</div>
+                    <div style={{ fontSize: 9, color: '#9ca3af', letterSpacing: '0.06em', marginTop: 3 }}>{m.sub}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      {/* ── FINAL CTA ───────────────────────────────────────────────────── */}
+      <section data-reveal style={{ padding: '100px 48px', borderTop: `1px solid ${B}` }}>
+        <h2 style={{ fontSize: 'clamp(28px, 4vw, 52px)', fontWeight: 800, margin: '0 0 16px', letterSpacing: '-0.025em', maxWidth: 600 }}>Ready to trade?</h2>
+        <p style={{ fontSize: 15, color: D, margin: '0 0 36px', lineHeight: 1.65, maxWidth: 440 }}>Connect your Freighter wallet and open your first position in under a minute.</p>
+        <Link to="/trade/btc" className="cta-btn" style={{
+          display: 'inline-flex', alignItems: 'center', gap: 10,
+          padding: '16px 32px', borderRadius: 9999,
+          fontSize: 15, fontWeight: 700, color: '#0c0c14',
+          background: '#fff', textDecoration: 'none',
+        }}>
+          Open Trading App
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </Link>
+      </section>
+
+      {/* ── FOOTER ──────────────────────────────────────────────────────── */}
+      <footer style={{ borderTop: `1px solid ${B}`, padding: '20px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <img src="/apple-touch-icon.png" alt="Cerida" style={{ height: 18, width: 18, borderRadius: 4, objectFit: 'cover' }} />
+          <span style={{ fontSize: 13, fontWeight: 600, color: D }}>cerida</span>
+        </div>
+        <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.22)', margin: 0 }}>© 2026 Cerida. Testnet only — not financial advice.</p>
       </footer>
+    </div>
     </div>
   )
 }
