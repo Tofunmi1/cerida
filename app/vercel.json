@@ -4,7 +4,7 @@
   "outputDirectory": "build/client",
   "framework": null,
   "rewrites": [
-    { "source": "/tee/:path*", "destination": "http://35.255.76.255:9721/:path*" },
+    { "source": "/tee/:path*", "destination": "http://35.239.237.64:9721/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
