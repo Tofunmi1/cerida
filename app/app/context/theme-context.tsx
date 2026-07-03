@@ -36,9 +36,9 @@ const ThemeContext = createContext<ThemeContextValue | undefined>(undefined)
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<ThemeMode>(() => {
-    if (typeof window === 'undefined') return 'gruvbox'
+    if (typeof window === 'undefined') return 'dark'
     const stored = localStorage.getItem('cerida-theme') as ThemeMode | null
-    return stored && THEMES.some((item) => item.id === stored) ? stored : 'gruvbox'
+    return stored && THEMES.some((item) => item.id === stored) ? stored : 'dark'
   })
 
   useEffect(() => {
