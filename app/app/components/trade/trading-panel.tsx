@@ -16,6 +16,7 @@ import {
   randomCommitment,
   submitAndWait,
 } from '../../lib/contracts'
+import { tee } from '../../lib/tee-client'
 import { positionsStore } from '../../lib/positions-store'
 import { formatUsd } from './format'
 import { toast } from '../toast/toast-context'
@@ -470,14 +471,30 @@ export default function TradingPanel() {
       const signedDeposit = await sign(depositTx.toXDR())
       await submitAndWait(signedDeposit)
 
-      // Step 3: Generate order commitment + open position from note
       toast.update(progressId, { description: 'Opening position…', progress: 65 })
-      const commitment = randomCommitment()
       const hintPrice = Math.round(mark * PRICE_SCALE)
       const tpUnits = tpInput ? Math.round(parseFloat(tpInput) * PRICE_SCALE) : 0
       const slUnits = slInput ? Math.round(parseFloat(slInput) * PRICE_SCALE) : 0
       const portfolioKey =
         marginMode === 'cross' ? crossMarginKey(publicKey) : undefined
+
+      // Get order commitment (try TEE server, fall back to random)
+      let commitment: string
+      try {
+        const secret = Math.floor(Math.random() * 1e12)
+        const nonce = Math.floor(Math.random() * 1e12)
+        const result = await tee.fastInit({
+          side: side === 'long' ? 0 : 1,
+          price: hintPrice,
+          size: 1_000_000_000,
+          leverage,
+          nonce,
+          secret,
+        })
+        commitment = result.commitment
+      } catch {
+        commitment = randomCommitment()
+      }
 
       const openTx = await buildOpenPositionFromNoteTx(publicKey, {
         noteCmt: note.commitment,
