@@ -81,6 +81,8 @@ enum Command {
         perp_id: Option<String>,
         #[arg(long, default_value = "300")]
         liquidator_interval_secs: u64,
+        #[arg(long)]
+        http_port: Option<u16>,
     },
     /// Run as a secure HTTP server with attestation + encryption
     #[cfg(feature = "secure")]
@@ -172,14 +174,14 @@ fn main() -> Result<()> {
             );
         }
 
-        Command::Serve { addr, db, perp_id, liquidator_interval_secs } => {
+        Command::Serve { addr, db, perp_id, liquidator_interval_secs, http_port } => {
             log::info!("═══ TEE Match Server Launch ═══",
                 "listen_addr", &addr,
                 "db_path", format!("{}", db.display()),
                 "keys_dir", format!("{}", keys_dir.display()),
                 "liquidator", perp_id.is_some()
             );
-            serve::run(&addr, db, keys_dir.clone(), perp_id, liquidator_interval_secs)?;
+            serve::run(&addr, db, keys_dir.clone(), perp_id, liquidator_interval_secs, http_port)?;
         }
 
         #[cfg(feature = "secure")]

@@ -38,6 +38,8 @@ struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     commitment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    proof: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     match_price: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     match_size: Option<String>,
@@ -94,7 +96,7 @@ struct LevelJson {
     orders: usize,
 }
 
-pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<String>, liquidator_interval_secs: u64) -> Result<()> {
+pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<String>, liquidator_interval_secs: u64, http_port: Option<u16>) -> Result<()> {
     log::info!("═══ Starting TEE Match Server ═══",
         "version", env!("CARGO_PKG_VERSION"),
         "listen_addr", addr
@@ -138,6 +140,24 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<Stri
             "interval_secs", interval
         );
         crate::liquidator::spawn(liq_store, perp, interval);
+    }
+
+    // Spawn HTTP server if http_port is set (for frontend access)
+    #[cfg(feature = "secure")]
+    if let Some(port) = http_port {
+        let http_store = store.clone();
+        let http_books = books.clone();
+        let http_book_store = book_store.clone();
+        let http_fills = fills.clone();
+        let http_keys = keys.clone();
+        let http_addr = format!("0.0.0.0:{port}");
+        log::info!("Starting HTTP server", "addr", &http_addr);
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                http::run_http(&http_addr, http_store, http_books, http_book_store, http_fills, http_keys).await.unwrap();
+            });
+        });
     }
 
     for stream in listener.incoming() {
@@ -385,27 +405,31 @@ fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
     };
 
     let proof_json = serde_json::json!({"a": result.proof.a, "b": result.proof.b, "c": result.proof.c});
-    match std::fs::write(out_path, serde_json::to_string(&proof_json).unwrap()) {
-        Ok(_) => {
-            let meta = std::fs::metadata(out_path).ok();
-            log::info!("Commitment proof written to disk",
+
+    // Always return proof in response for frontend use
+    let proof_str = serde_json::to_string(&proof_json).unwrap();
+
+    // Also write to disk if out path provided
+    if let Some(out_path) = req.out.as_ref() {
+        match std::fs::write(out_path, &proof_str) {
+            Ok(_) => log::info!("Commitment proof written to disk",
                 "path", format!("{}", out_path.display()),
-                "size", log::bytes_label(meta.map(|m| m.len() as usize).unwrap_or(0)),
-                "proof_a_size", result.proof.a.len() / 2,
-                "proof_b_size", result.proof.b.len() / 2,
-                "took", log::duration_secs(&start.elapsed())
-            );
-        }
-        Err(e) => {
-            log::error!("Failed to write proof file",
+                "size", log::bytes_label(proof_str.len())
+            ),
+            Err(e) => log::error!("Failed to write proof file",
                 "path", format!("{}", out_path.display()),
                 "err", e.to_string()
-            );
-            return err(e);
+            ),
         }
     }
 
-    Response { ok: true, ..Default::default() }
+    log::info!("Commitment proof generated",
+        "cmt", log::hex_snippet(cmt, 12),
+        "proof_size", proof_str.len(),
+        "took", log::duration_secs(&start.elapsed())
+    );
+
+    Response { ok: true, proof: Some(proof_str), ..Default::default() }
 }
 
 fn handle_match(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Response {
@@ -1136,5 +1160,119 @@ pub mod secure {
         };
         let resp = handle_set_mark_price(&req);
         Json(serde_json::json!(resp))
+    }
+}
+
+// ── HTTP Server (no encryption, for frontend/demo access) ──────────
+// Exposes the same commands as TCP via HTTP POST /<cmd> endpoints.
+// No attestation or encryption — TLS is terminated by the LB/proxy.
+// Only compiled with the `secure` feature (same deps as attestation).
+
+#[cfg(feature = "secure")]
+pub mod http {
+    use super::*;
+    use axum::{
+        extract::{Path, State},
+        routing::{get, post},
+        Json, Router,
+    };
+    use std::sync::Arc as StdArc;
+
+    #[derive(Clone)]
+    pub struct HttpState {
+        pub store: StdArc<db::SecretStore>,
+        pub books: StdArc<RwLock<HashMap<u64, engine::OrderBook>>>,
+        pub book_store: StdArc<db::BookStore>,
+        pub fills: StdArc<db::FillLedger>,
+        pub keys_dir: PathBuf,
+    }
+
+    pub async fn run_http(
+        addr: &str,
+        store: StdArc<db::SecretStore>,
+        books: StdArc<RwLock<HashMap<u64, engine::OrderBook>>>,
+        book_store: StdArc<db::BookStore>,
+        fills: StdArc<db::FillLedger>,
+        keys_dir: StdArc<PathBuf>,
+    ) -> Result<()> {
+        let state = HttpState {
+            store: store.clone(),
+            books: books.clone(),
+            book_store: book_store.clone(),
+            fills: fills.clone(),
+            keys_dir: (*keys_dir).clone(),
+        };
+
+        let app = Router::new()
+            .route("/init", post(handle_http_init))
+            .route("/fast-init", post(handle_http_fast_init))
+            .route("/commit-proof", post(handle_http_commit_proof))
+            .route("/place", post(handle_http_place))
+            .route("/cancel", post(handle_http_cancel))
+            .route("/match", post(handle_http_match))
+            .route("/market", post(handle_http_market))
+            .route("/get-market", get(handle_http_get_market))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        log::info!("HTTP server listening", "addr", addr);
+        axum::serve(listener, app).await?;
+        Ok(())
+    }
+
+    async fn handle_http_init(
+        State(state): State<HttpState>,
+        Json(req): Json<Request>,
+    ) -> Json<serde_json::Value> {
+        Json(serde_json::json!(handle_init(&state.store, &state.keys_dir, &req)))
+    }
+
+    async fn handle_http_fast_init(
+        State(state): State<HttpState>,
+        Json(req): Json<Request>,
+    ) -> Json<serde_json::Value> {
+        Json(serde_json::json!(handle_fast_init(&state.store, &req)))
+    }
+
+    async fn handle_http_commit_proof(
+        State(state): State<HttpState>,
+        Json(req): Json<Request>,
+    ) -> Json<serde_json::Value> {
+        Json(serde_json::json!(handle_commit_proof(&state.store, &state.keys_dir, &req)))
+    }
+
+    async fn handle_http_place(
+        State(state): State<HttpState>,
+        Json(req): Json<Request>,
+    ) -> Json<serde_json::Value> {
+        Json(serde_json::json!(handle_place(&state.store, &state.book_store, &state.fills, &state.books, &state.keys_dir, &req)))
+    }
+
+    async fn handle_http_cancel(
+        State(state): State<HttpState>,
+        Json(req): Json<Request>,
+    ) -> Json<serde_json::Value> {
+        Json(serde_json::json!(handle_cancel(&state.store, &state.book_store, &state.books, &state.keys_dir, &req)))
+    }
+
+    async fn handle_http_match(
+        State(state): State<HttpState>,
+        Json(req): Json<Request>,
+    ) -> Json<serde_json::Value> {
+        Json(serde_json::json!(handle_match(&state.store, &state.keys_dir, &req)))
+    }
+
+    async fn handle_http_market(
+        State(state): State<HttpState>,
+        Json(req): Json<Request>,
+    ) -> Json<serde_json::Value> {
+        Json(serde_json::json!(handle_market(&state.store, &state.book_store, &state.fills, &state.books, &state.keys_dir, &req)))
+    }
+
+    async fn handle_http_get_market(
+        State(state): State<HttpState>,
+    ) -> Json<serde_json::Value> {
+        let req = Request { cmd: "get_market".to_string(), ..Default::default() };
+        Json(serde_json::json!(handle_get_market(&state.books, &req)))
     }
 }

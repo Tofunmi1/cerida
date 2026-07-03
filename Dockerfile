@@ -1,58 +1,49 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1
 #
-# GCP Confidential Space TEE image for tee-match.
-# Builds the secure Rust server and ships a minimal runtime image.
+# TEE Match Server — GCP Confidential Space
 #
-# Build:
-#   docker build -f Dockerfile -t tee-match-tee .
-# Run:
-#   docker run --rm -p 9721:9721 \
-#     -e CER_DEK=<hex> \
-#     -v $(pwd)/circuits/keys:/keys \
-#     -v tee-db:/data \
-#     tee-match-tee
+# Runs the tee-match server with attestation, encryption, and ZK proving.
+# TLS is terminated by GCP Load Balancer — app listens on plain HTTP.
+#
+# Build: docker build -f infra/Dockerfile -t tee-match .
+# Run locally: docker run -p 9721:9721 -e CER_DEK=<hex> tee-match
 
-FROM rust:1.85-slim-bookworm AS builder
+# ── Stage 1: Build ─────────────────────────────────────────────
+FROM rust:1.88-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-	build-essential \
-	ca-certificates \
-	libssl-dev \
-	pkg-config \
-	&& rm -rf /var/lib/apt/lists/*
+    pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspace
+WORKDIR /build
 
-COPY tools/tee-match/Cargo.toml tools/tee-match/Cargo.toml
-COPY tools/rust-circuits/Cargo.toml tools/rust-circuits/Cargo.toml
+COPY tools/tee-match/Cargo.toml tools/tee-match/
 COPY tools/tee-match/src/ tools/tee-match/src/
+COPY tools/rust-circuits/Cargo.toml tools/rust-circuits/
 COPY tools/rust-circuits/src/ tools/rust-circuits/src/
 
-RUN cargo build --release --features secure --manifest-path tools/tee-match/Cargo.toml
+RUN cargo build --release --features secure \
+    --manifest-path tools/tee-match/Cargo.toml
 
-FROM debian:bookworm-slim AS runtime
+# ── Stage 2: Runtime ───────────────────────────────────────────
+FROM debian:bookworm-slim AS release
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-	ca-certificates \
-	&& rm -rf /var/lib/apt/lists/*
+    ca-certificates && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -r tee && useradd -r -g tee -m -d /home/tee tee
+RUN groupadd -r tee && useradd -r -g tee tee
 
-WORKDIR /app
+COPY --from=builder /build/tools/tee-match/target/release/tee-match /usr/local/bin/tee-match
 
-COPY --from=builder /workspace/tools/tee-match/target/release/tee-match /usr/local/bin/tee-match
+COPY circuits/keys/ /keys/
 
-RUN mkdir -p /keys /data && chown -R tee:tee /keys /data /app
+RUN chown -R tee:tee /keys
 
 USER tee
-
+EXPOSE 9720
 EXPOSE 9721
 
-ENV RUST_LOG=info
-ENV CER_DEK=
-
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-	CMD tee-match --help > /dev/null || exit 1
+    CMD tee-match --help > /dev/null || exit 1
 
-ENTRYPOINT ["tee-match"]
-CMD ["--keys-dir", "/keys", "ServeSecure", "--addr", "0.0.0.0:9721", "--db", "/data/tee-db"]
+ENTRYPOINT ["tee-match", "--keys-dir", "/keys"]
+CMD ["serve", "--addr", "0.0.0.0:9720", "--db", "/keys/tee-db", "--http-port", "9721"]
