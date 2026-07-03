@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Keepers: Oracle + Market Maker
 # Separate GCP instance from the TEE server
-FROM rust:1.88-slim-bookworm AS builder
+FROM rust:1.89-slim-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
