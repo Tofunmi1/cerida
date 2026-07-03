@@ -9,6 +9,15 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// Extract a u64 from a Soroban ScVal debug string like `U64(3900000000)`.
+fn parse_u64_from_scval(s: &str) -> u64 {
+    s.split(|c: char| !c.is_ascii_digit())
+        .filter(|seg| !seg.is_empty())
+        .last()
+        .and_then(|seg| seg.parse().ok())
+        .unwrap_or(0)
+}
+
 fn resolve_path(p: &Path) -> PathBuf {
     let base = std::env::current_dir().unwrap_or_else(|_| {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -208,6 +217,45 @@ enum Command {
     },
     /// Deploy contracts + register 6 markets (GOLD/SPY/TSLA/BTC/ETH/SOL) on testnet
     Deploy,
+
+    /// Install new perp-engine WASM and upgrade the live contract in-place.
+    /// Preserves all storage (positions, commitments). Requires protocol admin key.
+    Upgrade {
+        /// Contract ID of the live perp-engine to upgrade
+        #[arg(long)]
+        perp_id: String,
+    },
+
+    /// Reset per-asset oracle config + TWAP samples so the deviation guard is bypassed.
+    /// Use after fixing inflated base prices so the oracle keeper can push correct prices.
+    ResetOracle {
+        #[arg(long)]
+        perp_id: String,
+        /// Comma-separated asset IDs to reset (e.g. "1,2,3,4,5,6")
+        #[arg(long, default_value = "1,2,3,4,5,6")]
+        asset_ids: String,
+    },
+
+    /// Diagnose oracle state for all markets: print stored TWAP and current config.
+    DiagnoseOracle {
+        #[arg(long)]
+        perp_id: String,
+    },
+
+    /// Step oracle price down gradually to work around the 50% TWAP deviation guard.
+    StepDown {
+        #[arg(long)]
+        perp_id: String,
+        /// Asset ID to step down (numeric)
+        #[arg(long)]
+        asset_id: u64,
+        /// Target price in 7-decimal scale (1e7 = $1)
+        #[arg(long)]
+        target: u64,
+        /// Max steps before giving up
+        #[arg(long, default_value = "30")]
+        max_steps: u32,
+    },
 }
 
 fn decimal_to_hex(s: &str) -> String {
@@ -452,6 +500,160 @@ fn main() -> Result<()> {
             eprintln!("\n━━━ DEPLOY COMPLETE ━━━");
             eprintln!("  Orderbook: {}", orderbook_id);
             eprintln!("  PerpEngine: {}", perp_id);
+        }
+
+        Command::Upgrade { perp_id } => {
+            use e2e::soroban_rpc::{scval_bytes32, SorobanRpc};
+            eprintln!("━━━ Upgrade perp-engine ━━━");
+            let wasm_path = wasm_dir.join("perp_engine.wasm");
+            eprintln!("  installing WASM from {:?}...", wasm_path);
+            let wasm_hash = e2e::soroban_rpc::install_wasm_via_rpc(
+                &std::fs::read(&wasm_path)?,
+                stellar::SOURCE,
+            )?;
+            eprintln!("  ✓ WASM installed, hash: {}", &wasm_hash);
+            let admin_pk = stellar::source_pubkey()?;
+            let rpc = SorobanRpc::new();
+            rpc.invoke_xdr(&perp_id, stellar::SOURCE, "upgrade", vec![
+                e2e::soroban_rpc::scval_address(&admin_pk)?,
+                scval_bytes32(&wasm_hash)?,
+            ])?;
+            eprintln!("  ✓ contract upgraded to new WASM");
+        }
+
+        Command::ResetOracle { perp_id, asset_ids } => {
+            use e2e::soroban_rpc::{scval_address, scval_bytes32, SorobanRpc};
+            let admin_pk = stellar::source_pubkey()?;
+            let rpc = SorobanRpc::new();
+            for id_str in asset_ids.split(',') {
+                let id: u64 = id_str.trim().parse()?;
+                let asset_hex = format!("{:0>64x}", id);
+                eprintln!("  resetting oracle for asset {}...", id);
+                rpc.invoke_xdr(&perp_id, stellar::SOURCE, "reset_asset_oracle", vec![
+                    scval_address(&admin_pk)?,
+                    scval_bytes32(&asset_hex)?,
+                ])?;
+                eprintln!("  ✓ asset {} oracle reset", id);
+            }
+        }
+
+        Command::DiagnoseOracle { perp_id } => {
+            use e2e::soroban_rpc::SorobanRpc;
+            let rpc = SorobanRpc::new();
+            let names = ["BTC", "TSLA", "XLM", "XRP", "SPACEX", "OIL", "GOLD"];
+            eprintln!("━━━ Oracle diagnosis for {} ━━━", &perp_id[..8]);
+            for id in 0u64..7 {
+                let asset_hex = format!("{:0>64x}", id);
+                match rpc.invoke_view_xdr(&perp_id, stellar::SOURCE, "get_asset_twap", vec![
+                    e2e::soroban_rpc::scval_bytes32(&asset_hex)?,
+                ]) {
+                    Ok(result) => {
+                        let twap = parse_u64_from_scval(&result);
+                        eprintln!("  asset {} ({}): twap={} (${:.4})", id, names[id as usize], twap, twap as f64 / 1e7);
+                    }
+                    Err(e) => eprintln!("  asset {}: ERROR = {}", id, e),
+                }
+            }
+        }
+
+        Command::StepDown { perp_id, asset_id, target, max_steps } => {
+            use e2e::soroban_rpc::{scval_address, scval_bytes32, scval_u64, SorobanRpc};
+            // TWAP_WINDOW from contract — 8 samples in ring buffer
+            const RING: u64 = 8;
+            let admin_pk = stellar::source_pubkey()?;
+            let rpc = SorobanRpc::new();
+            let asset_hex = format!("{:0>64x}", asset_id);
+            eprintln!("━━━ StepDown asset {} → target={} ━━━", asset_id, target);
+
+            for step in 0..max_steps {
+                // Read current TWAP via simulation (no TX)
+                let twap_result = rpc.invoke_view_xdr(&perp_id, stellar::SOURCE, "get_asset_twap", vec![
+                    scval_bytes32(&asset_hex)?,
+                ])?;
+                let twap = parse_u64_from_scval(&twap_result);
+                eprintln!("  step {}: twap={} (${:.4}), target={} (${:.4})", step, twap, twap as f64/1e7, target, target as f64/1e7);
+
+                if twap == 0 {
+                    eprintln!("  twap=0, setting target directly");
+                    rpc.invoke_xdr(&perp_id, stellar::SOURCE, "set_asset_price", vec![
+                        scval_bytes32(&asset_hex)?,
+                        scval_address(&admin_pk)?,
+                        scval_u64(target),
+                    ])?;
+                    eprintln!("  ✓ done");
+                    break;
+                }
+
+                let dev = target.abs_diff(twap);
+                let within_limit = dev == 0 || dev * 10_000 / twap <= 4900;
+                if within_limit {
+                    eprintln!("  within deviation — setting target directly");
+                    rpc.invoke_xdr(&perp_id, stellar::SOURCE, "set_asset_price", vec![
+                        scval_bytes32(&asset_hex)?,
+                        scval_address(&admin_pk)?,
+                        scval_u64(target),
+                    ])?;
+                    // Fill remaining ring buffer slots with target so TWAP converges fast
+                    for fill in 1..RING {
+                        eprintln!("  filling ring slot {}/{}", fill + 1, RING);
+                        let mut retries = 3u32;
+                        loop {
+                            match rpc.invoke_xdr(&perp_id, stellar::SOURCE, "set_asset_price", vec![
+                                scval_bytes32(&asset_hex)?,
+                                scval_address(&admin_pk)?,
+                                scval_u64(target),
+                            ]) {
+                                Ok(_) => break,
+                                Err(e) if retries > 0 && {
+                                    let s = e.to_string();
+                                    s.contains("BAD_SEQ") || s.contains("TRY_AGAIN") || s.contains("sendTransaction: ERROR:")
+                                } => {
+                                    eprintln!("    transient error ({}), retrying in 5s…", e);
+                                    std::thread::sleep(std::time::Duration::from_secs(5));
+                                    retries -= 1;
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+                    }
+                    eprintln!("  ✓ done — TWAP ring filled with target");
+                    break;
+                }
+
+                // Step toward target using max allowed step (50% deviation limit).
+                // Then fill the entire ring buffer (RING calls) with this step price so the
+                // TWAP equals step_price after this batch, not just after many single steps.
+                let step_price = if target < twap {
+                    twap / 2  // 50% of twap, exactly at deviation limit
+                } else {
+                    twap + twap / 2  // 150% of twap
+                };
+                eprintln!("  stepping to {} (${:.4}), filling {} ring slots", step_price, step_price as f64/1e7, RING);
+                for slot in 0..RING {
+                    eprintln!("    slot {}/{}", slot + 1, RING);
+                    // Retry once on txBAD_SEQ (sequence race on rapid submissions)
+                    let mut retries = 3u32;
+                    loop {
+                        match rpc.invoke_xdr(&perp_id, stellar::SOURCE, "set_asset_price", vec![
+                            scval_bytes32(&asset_hex)?,
+                            scval_address(&admin_pk)?,
+                            scval_u64(step_price),
+                        ]) {
+                            Ok(_) => break,
+                            Err(e) if retries > 0 && {
+                                let s = e.to_string();
+                                s.contains("BAD_SEQ") || s.contains("TRY_AGAIN") || s.contains("sendTransaction: ERROR:")
+                            } => {
+                                eprintln!("    transient error ({}), retrying in 5s…", e);
+                                std::thread::sleep(std::time::Duration::from_secs(5));
+                                retries -= 1;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+                eprintln!("  batch done — TWAP should now ≈ {}", step_price);
+            }
         }
     }
 

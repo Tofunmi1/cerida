@@ -1351,6 +1351,39 @@ impl PerpEngine {
             .unwrap_or(0)
     }
 
+    /// Reset per-asset oracle config and all TWAP ring-buffer samples (protocol admin only).
+    /// Use this to clear a stale TWAP so the next set_asset_price succeeds without
+    /// the deviation guard rejecting it.
+    pub fn reset_asset_oracle(env: Env, admin: Address, asset_id: BytesN<32>) {
+        admin.require_auth();
+        let cfg = Self::config(&env);
+        if cfg.admin != admin {
+            panic!("PerpEngine: only protocol admin can reset oracle");
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AssetOracle(asset_id.clone()));
+        for i in 0..TWAP_WINDOW {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::AssetTwapSample(asset_id.clone(), i));
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AssetTwapHead(asset_id.clone()));
+    }
+
+    /// Upgrade the contract WASM in-place (protocol admin only).
+    /// Preserves all contract storage — positions, commitments, oracle configs.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        admin.require_auth();
+        let cfg = Self::config(&env);
+        if cfg.admin != admin {
+            panic!("PerpEngine: only protocol admin can upgrade");
+        }
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
     /// Initialize oracle by setting the oracle admin (called once after initialize).
     /// Oracle admin is separate from the protocol admin.
     pub fn set_oracle_admin(env: Env, admin: Address, oracle_admin: Address, heartbeat: u64) {
