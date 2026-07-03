@@ -97,7 +97,7 @@ gcloud compute instances create tee-match-vm \
   --project="$PROJECT" \
   --zone="$ZONE" \
   --machine-type=n2d-standard-2 \
-  --confidential-compute-type=SEV_SNP \
+  --confidential-compute-type=SEV \
   --maintenance-policy=TERMINATE \
   --shielded-secure-boot \
   --image-project=confidential-space-images \
