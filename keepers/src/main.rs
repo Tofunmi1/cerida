@@ -33,7 +33,7 @@ static MARKETS: &[Market] = &[
         symbol: "BTC-PERP",
         asset_id: 0,
         pyth_id: "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
-        base_price: 6_100_000_000_000,  // $61,000
+        base_price: 610_000_000_000,    // $61,000
         category: market_maker::Category::Crypto,
         base_size: 100_000,
         leverage: 50,
@@ -41,8 +41,8 @@ static MARKETS: &[Market] = &[
     Market {
         symbol: "XRP-PERP",
         asset_id: 1,
-        pyth_id: "ec5d399846a9209f3fe5881d70aae9268c94339ff9a0ae1c6aebcb7f40e78acd",
-        base_price: 5_200_000,          // $0.52
+        pyth_id: "ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8",
+        base_price: 11_200_000,         // $1.12
         category: market_maker::Category::Crypto,
         base_size: 50_000_000,
         leverage: 20,
@@ -60,7 +60,7 @@ static MARKETS: &[Market] = &[
         symbol: "SPACEX-PERP",
         asset_id: 3,
         pyth_id: "",   // no public Pyth feed — uses base_price
-        base_price: 35_000_000_000,     // $350
+        base_price: 3_500_000_000,      // $350
         category: market_maker::Category::Rwa,
         base_size: 1_000_000,
         leverage: 10,
@@ -69,7 +69,7 @@ static MARKETS: &[Market] = &[
         symbol: "TSLA-PERP",
         asset_id: 4,
         pyth_id: "16dad506d7db8da01c87581c87ca897a012a153557d4d578c3b9c9e1bc0632f1",
-        base_price: 39_000_000_000,     // $390
+        base_price: 3_900_000_000,      // $390
         category: market_maker::Category::Rwa,
         base_size: 1_000_000,
         leverage: 10,
@@ -77,8 +77,8 @@ static MARKETS: &[Market] = &[
     Market {
         symbol: "OIL-PERP",
         asset_id: 5,
-        pyth_id: "fe650f0367d4a7ef9815a593ea15d36593f0643aaaf0149bb04be67ab851decd",
-        base_price: 7_000_000_000,      // $70
+        pyth_id: "925ca92ff005ae943c158e3563f59698ce7e75c5a8c8dd43303a0a154887b3e6",
+        base_price: 700_000_000,        // $70
         category: market_maker::Category::Rwa,
         base_size: 5_000_000,
         leverage: 10,
@@ -87,7 +87,7 @@ static MARKETS: &[Market] = &[
         symbol: "GOLD-PERP",
         asset_id: 6,
         pyth_id: "765d2ba906dbc32ca17cc11f5310a89e9ee1f6420508c63861f2f8ba4ee34bb2",
-        base_price: 417_900_000_000,    // $4,179
+        base_price: 41_790_000_000,     // $4,179
         category: market_maker::Category::Rwa,
         base_size: 100_000,
         leverage: 20,

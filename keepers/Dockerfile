@@ -1,6 +1,5 @@
 # syntax=docker/dockerfile:1
 # Keepers: Oracle + Market Maker
-# Separate GCP instance from the TEE server
 FROM rust:1.89-slim-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
@@ -16,7 +15,18 @@ COPY keepers/src/ keepers/src/
 RUN cargo build --release --manifest-path keepers/Cargo.toml
 
 FROM debian:bookworm-slim AS release
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+
+# Install stellar CLI (same version as tee-match)
+RUN curl -fsSL \
+    https://github.com/stellar/stellar-cli/releases/download/v22.2.0/stellar-cli-22.2.0-x86_64-unknown-linux-gnu.tar.gz \
+    | tar -xz -C /usr/local/bin/ stellar
+
 COPY --from=builder /build/keepers/target/release/keepers /usr/local/bin/keepers
-ENTRYPOINT ["keepers"]
+
+# Entrypoint script: writes ORACLE_SECRET to stellar identity file before starting keepers
+COPY keepers/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 CMD []

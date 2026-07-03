@@ -3,8 +3,8 @@ import { useMarket } from '../../context/market-context'
 import type { OrderBookLevel } from '../../lib/tee-client'
 
 // Pixel constants
-const ROW_H = 15
-const HEAT_W = 12
+const ROW_H = 20
+const HEAT_W = 10
 const PW = 70
 const SW = 50
 const FONT = '11px "Berkeley Mono", ui-monospace, monospace'
@@ -22,7 +22,6 @@ const BID_STOPS: [number, number, number, number][] = [
   [60, 210, 150, 0.62],
 ]
 const WHALE_FILL = 'rgba(222,226,62,0.78)'
-const TICK_COLOR = 'rgba(0,0,0,0.5)'
 const ASK_STROKE = '#e0a838'
 const BID_STROKE = '#34d399'
 
@@ -33,6 +32,7 @@ type RowData = {
   key: string
   whale: boolean
   ticks: number[]
+  heatRatio: number
 }
 
 type AnimEntry = { barCur: number; barTgt: number; stepCur: number; stepTgt: number }
@@ -74,19 +74,14 @@ function buildSeededRows(base: number, dir: 1 | -1, count: number): RowData[] {
   return display.map((row, i) => {
     const rawIndex = dir === 1 ? count - 1 - i : i
     const whale = row.size >= whaleCutoff
-    const tickCount = whale
-      ? 3 + Math.floor(rand(row.seed + 3) * 3)
-      : row.size > maxSize * 0.18
-        ? 1 + Math.floor(rand(row.seed + 4) * 2)
-        : 0
-    const ticks = Array.from({ length: tickCount }, (_, t) => rand(row.seed + 10 + t))
     return {
       price: row.price,
       size: row.size,
       cumulative: cums[rawIndex]!,
       key: row.price.toFixed(4),
       whale,
-      ticks,
+      ticks: [],
+      heatRatio: maxSize > 0 ? row.size / maxSize : 0,
     }
   })
 }
@@ -97,21 +92,25 @@ function levelsToRows(levels: OrderBookLevel[], reverse: boolean): RowData[] {
   let cum = 0
   const withCum = levels.map((l) => ({ ...l, cumulative: (cum += l.size) }))
   const display = reverse ? [...withCum].reverse() : withCum
-  const maxSize = Math.max(...levels.map((l) => l.size))
-  const whaleCutoff = maxSize * 0.55
+  const sizes = levels.map((l) => l.size)
+  const maxSize = Math.max(...sizes)
+  const minSize = Math.min(...sizes)
+  const range = maxSize - minSize
+  // Range-normalize so gradient has contrast even with uniform market-maker sizes.
+  // Only flag as whale if a row is truly a standout outlier (top 10% of range).
+  const whaleCutoff = range > maxSize * 0.1 ? minSize + range * 0.90 : Infinity
   let idx = 0
   return display.map((l) => {
-    const seed = Math.round(l.price * 100)
     const whale = l.size >= whaleCutoff
-    const tickCount = whale ? 3 : l.size > maxSize * 0.18 ? 1 : 0
-    const ticks = Array.from({ length: tickCount }, (_, t) => rand(seed + 10 + t))
+    const heatRatio = range > 0 ? (l.size - minSize) / range : 0.5
     return {
       price: l.price / PRICE_SCALE,
       size: l.size,
       cumulative: l.cumulative,
       key: String(l.price),
       whale,
-      ticks,
+      ticks: [],
+      heatRatio,
       _idx: idx++,
     }
   })
@@ -190,7 +189,7 @@ export default function OrderBook() {
     const { w, h } = dimsRef.current
     if (w <= 0 || h <= 0) return
 
-    const rowsPerSide = Math.max(6, Math.floor(h / ROW_H / 2))
+    const rowsPerSide = Math.max(6, Math.min(14, Math.floor(h / ROW_H / 2)))
     const mid = markRef.current
     const base = dynamicTick(mid) * Math.round(mid / dynamicTick(mid))
 
@@ -219,7 +218,7 @@ export default function OrderBook() {
     const seen = new Set<string>()
     const setTarget = (row: RowData) => {
       seen.add(row.key)
-      const barTgt  = maxSize > 0 ? (row.size / maxSize) * barW : 0
+      const barTgt  = row.heatRatio * barW
       const stepTgt = maxCum > 0  ? (row.cumulative / maxCum) * barW : 0
       const ex = m.get(row.key)
       if (ex) {
@@ -279,21 +278,12 @@ export default function OrderBook() {
       const barWidth = barWFor(row)
       const stops = side === 'ask' ? ASK_STOPS : BID_STOPS
 
-      const heatRatio = maxSize > 0 ? row.size / maxSize : 0
-      ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, heatRatio)
+      ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, row.heatRatio)
       ctx.fillRect(0, y, HEAT_W, ROW_H)
 
       const cumRatio = maxCum > 0 ? row.cumulative / maxCum : 0
-      ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, cumRatio)
+      ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, row.heatRatio)
       ctx.fillRect(barX, y, barWidth, ROW_H)
-
-      if (row.ticks.length) {
-        ctx.fillStyle = TICK_COLOR
-        for (const t of row.ticks) {
-          const tx = barX + 3 + t * Math.max(0, barWidth - 6)
-          ctx.fillRect(tx, y + 2, 1, ROW_H - 4)
-        }
-      }
 
       ctx.font = FONT
       ctx.textBaseline = 'middle'

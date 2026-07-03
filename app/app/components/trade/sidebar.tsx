@@ -22,18 +22,21 @@ function NavButton({
   active = false,
   collapsed,
   onClick,
+  href,
 }: {
   icon: React.ReactNode
   label: string
   active?: boolean
   collapsed: boolean
   onClick?: () => void
+  href?: string
 }) {
+  const Tag = href ? 'a' : 'button'
   return (
-    <button
-      onClick={onClick}
+    <Tag
+      {...(href ? { href, target: '_blank', rel: 'noopener noreferrer' } : { onClick })}
       title={collapsed ? label : undefined}
-      className={`mx-2 flex items-center gap-3 rounded-[6px] px-2 py-2.5 text-[13px] font-medium transition-colors ${
+      className={`mx-2 flex items-center gap-3 rounded-[6px] px-2 py-2.5 text-[13px] font-medium transition-colors no-underline ${
         active
           ? 'bg-surface-card text-text-primary'
           : 'text-text-secondary hover:bg-surface-card/60 hover:text-text-primary'
@@ -41,7 +44,7 @@ function NavButton({
     >
       <span className="shrink-0">{icon}</span>
       {!collapsed && <span className="truncate">{label}</span>}
-    </button>
+    </Tag>
   )
 }
 
@@ -52,7 +55,7 @@ export default function Sidebar({
   active: string
   onActive: (label: string) => void
 }) {
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
 
   useEffect(() => {
     const stored = localStorage.getItem('perp-sidebar-collapsed')
@@ -122,9 +125,8 @@ export default function Sidebar({
         <NavButton
           icon={<IconShieldCheck size={18} stroke={1.75} />}
           label="Risk"
-          active={active === 'Risk'}
           collapsed={collapsed}
-          onClick={() => onActive('Risk')}
+          href="https://github.com/Tofunmi1/cerida/blob/main/audit/readme.md"
         />
 
         <Divider />
@@ -132,9 +134,8 @@ export default function Sidebar({
         <NavButton
           icon={<IconBook size={18} stroke={1.75} />}
           label="Docs"
-          active={active === 'Docs'}
           collapsed={collapsed}
-          onClick={() => onActive('Docs')}
+          href="https://github.com/Tofunmi1/cerida"
         />
         <NavButton
           icon={<IconSettings size={18} stroke={1.75} />}
