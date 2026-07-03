@@ -7,6 +7,7 @@ import {
 } from 'framer-motion'
 import { useLevels } from '../../context/levels-context'
 import { type Side, useMarket } from '../../context/market-context'
+import { useNav } from '../../context/nav-context'
 import { useWallet } from '../../context/wallet-context'
 import {
   buildDepositNoteTx,
@@ -381,6 +382,7 @@ const PRICE_SCALE = 1e7
 export default function TradingPanel() {
   const { connected, publicKey, sign, balance, refreshBalance } = useWallet()
   const { symbol, mark } = useMarket()
+  const { openPortfolio } = useNav()
   const levels = useLevels()
   const [side, setSide] = useState<Side>('long')
   const [marginMode, setMarginMode] = useState<'isolated' | 'cross'>('isolated')
@@ -439,10 +441,16 @@ export default function TradingPanel() {
       return
     }
 
+    if (balanceDollars <= 0) {
+      openPortfolio()
+      return
+    }
+
     if (margin > balanceDollars) {
+      openPortfolio()
       toast.warning(
         'Insufficient balance',
-        `You need ${formatUsd(margin)} but only have ${formatUsd(balanceDollars)}. Open the Portfolio tab to deposit USDC.`,
+        `You need ${formatUsd(margin)} but only have ${formatUsd(balanceDollars)}.`,
       )
       return
     }

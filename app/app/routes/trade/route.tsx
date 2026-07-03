@@ -6,6 +6,7 @@ import 'react-grid-layout/css/styles.css'
 import { IconPlus, IconX } from '@tabler/icons-react'
 import { LevelsProvider } from '../../context/levels-context'
 import { MarketProvider, slugToSymbol } from '../../context/market-context'
+import { NavProvider } from '../../context/nav-context'
 import { SettingsProvider } from '../../context/settings-context'
 import { ThemeProvider } from '../../context/theme-context'
 import { WalletProvider, useWallet } from '../../context/wallet-context'
@@ -367,6 +368,7 @@ function TradeBoard({
     )
 
   return (
+    <NavProvider onActive={onActive}>
     <div className="flex h-screen min-w-0 bg-page">
       <Sidebar active={active} onActive={onActive} />
       <div className="flex min-w-0 flex-1 flex-col">
@@ -420,6 +422,7 @@ function TradeBoard({
         </div>
       </div>
     </div>
+    </NavProvider>
   )
 }
 
