@@ -3,7 +3,7 @@ use crate::log;
 use anyhow::{Context, Result};
 use ark_bn254::Fr;
 use ark_ff::{AdditiveGroup, Field};
-use rust_circuits::{compute_commitment, fr_to_biguint, load_pk, prove_cancel_with_pk, prove_commitment_with_pk, prove_match_with_pk, ProofOutput};
+use rust_circuits::{compute_commitment, compute_note_commitment, compute_note_nullifier, fr_to_biguint, load_pk, prove_cancel_with_pk, prove_commitment_with_pk, prove_match_with_pk, prove_note_spend_with_pk, ProofOutput};
 use std::path::{Path, PathBuf};
 
 pub type MatchProof = ProofOutput;
@@ -70,6 +70,39 @@ pub fn gen_match_proof(
         "side_b", b.side, "price_b", b.price,
         "match_price", mp, "match_size", ms);
     Ok(out)
+}
+
+pub struct NoteProofOutput {
+    pub note_cmt: String,     // 64-char hex
+    pub note_null: String,    // 64-char hex
+    pub proof: MatchProof,
+}
+
+/// Generate a NoteSpend Groth16 proof for a shielded note.
+/// Public inputs: [note_cmt, note_nullifier]
+pub fn gen_note_proof(keys_dir: &Path, amount: u64, secret: u64) -> Result<NoteProofOutput> {
+    let pk = load_pk(&pk_path(keys_dir, "note_spend"))
+        .with_context(|| format!("Failed to load note_spend pk from {}", keys_dir.display()))?;
+    let amount_fr = Fr::from(amount);
+    let secret_fr = Fr::from(secret);
+    let note_cmt = compute_note_commitment(amount_fr, secret_fr);
+    let note_null = compute_note_nullifier(note_cmt, secret_fr);
+    let out = prove_note_spend_with_pk(&pk, amount_fr, secret_fr)?;
+    log::debug!("Note spend proof generated", "amount", amount);
+    Ok(NoteProofOutput {
+        note_cmt: format!("{:0>64x}", fr_to_biguint(&note_cmt)),
+        note_null: format!("{:0>64x}", fr_to_biguint(&note_null)),
+        proof: out,
+    })
+}
+
+/// Fast note commitment hash — Poseidon2 only, no Groth16 proof. Sub-millisecond.
+pub fn compute_note_cmt_hex(amount: u64, secret: u64) -> (String, String) {
+    let amount_fr = Fr::from(amount);
+    let secret_fr = Fr::from(secret);
+    let cmt = compute_note_commitment(amount_fr, secret_fr);
+    let null = compute_note_nullifier(cmt, secret_fr);
+    (format!("{:0>64x}", fr_to_biguint(&cmt)), format!("{:0>64x}", fr_to_biguint(&null)))
 }
 
 /// Fast commitment hash — Poseidon2 only, no Groth16 proof.

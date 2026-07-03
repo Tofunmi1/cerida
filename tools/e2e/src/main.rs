@@ -181,10 +181,12 @@ enum Command {
         size_a: u64,
         #[arg(long, default_value = "1")]
         leverage_a: u64,
-        #[arg(long, default_value = "111")]
-        nonce_a: u64,
-        #[arg(long, default_value = "222")]
-        secret_a: u64,
+        /// Defaults to a random value — commitments must be unique on-chain
+        #[arg(long)]
+        nonce_a: Option<u64>,
+        /// Defaults to a random value — commitments must be unique on-chain
+        #[arg(long)]
+        secret_a: Option<u64>,
         #[arg(long, default_value = "1")]
         side_b: u64,
         #[arg(long, default_value = "99000")]
@@ -193,10 +195,12 @@ enum Command {
         size_b: u64,
         #[arg(long, default_value = "1")]
         leverage_b: u64,
-        #[arg(long, default_value = "333")]
-        nonce_b: u64,
-        #[arg(long, default_value = "444")]
-        secret_b: u64,
+        /// Defaults to a random value — commitments must be unique on-chain
+        #[arg(long)]
+        nonce_b: Option<u64>,
+        /// Defaults to a random value — commitments must be unique on-chain
+        #[arg(long)]
+        secret_b: Option<u64>,
         #[arg(long, default_value = "99500")]
         match_price: u64,
         #[arg(long, default_value = "1000000000")]
@@ -341,6 +345,13 @@ fn main() -> Result<()> {
             side_b, price_b, size_b, leverage_b, nonce_b, secret_b,
             match_price: _, match_size: _, perp, orderbook,
         } => {
+            // Fresh values per run unless pinned — a reused (nonce, secret) pair
+            // recreates a commitment that already exists on-chain and place_order traps.
+            let nonce_a = nonce_a.unwrap_or_else(rand::random);
+            let secret_a = secret_a.unwrap_or_else(rand::random);
+            let nonce_b = nonce_b.unwrap_or_else(rand::random);
+            let secret_b = secret_b.unwrap_or_else(rand::random);
+
             eprintln!("━━━ E2E via TEE Match Server ━━━");
             eprintln!("  Server: {server_addr}");
             eprintln!("  Order A: side={} price={} size={} leverage={} nonce={}",

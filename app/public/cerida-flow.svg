@@ -1,0 +1,428 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 960" width="1600" height="960">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f4f6fb"/>
+      <stop offset="100%" stop-color="#eef1f8"/>
+    </linearGradient>
+
+    <!-- Box fills -->
+    <linearGradient id="fill-user" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#dcfce7"/>
+      <stop offset="100%" stop-color="#f0fdf4"/>
+    </linearGradient>
+    <linearGradient id="fill-tee" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#dbeafe"/>
+      <stop offset="100%" stop-color="#eff6ff"/>
+    </linearGradient>
+    <linearGradient id="fill-stellar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ede9fe"/>
+      <stop offset="100%" stop-color="#f5f3ff"/>
+    </linearGradient>
+    <linearGradient id="fill-keeper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffedd5"/>
+      <stop offset="100%" stop-color="#fff7ed"/>
+    </linearGradient>
+    <linearGradient id="fill-pyth" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fef9c3"/>
+      <stop offset="100%" stop-color="#fefce8"/>
+    </linearGradient>
+    <linearGradient id="fill-zk" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fce7f3"/>
+      <stop offset="100%" stop-color="#fdf4ff"/>
+    </linearGradient>
+
+    <!-- Shadow -->
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="124%">
+      <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="rgba(0,0,0,0.08)"/>
+    </filter>
+    <filter id="shadow-sm" x="-8%" y="-8%" width="116%" height="124%">
+      <feDropShadow dx="0" dy="1" stdDeviation="3" flood-color="rgba(0,0,0,0.06)"/>
+    </filter>
+
+    <!-- Arrowheads -->
+    <marker id="arr-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 1L9 5L0 9z" fill="#16a34a"/>
+    </marker>
+    <marker id="arr-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 1L9 5L0 9z" fill="#2563eb"/>
+    </marker>
+    <marker id="arr-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 1L9 5L0 9z" fill="#7c3aed"/>
+    </marker>
+    <marker id="arr-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 1L9 5L0 9z" fill="#ea580c"/>
+    </marker>
+    <marker id="arr-pink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 1L9 5L0 9z" fill="#db2777"/>
+    </marker>
+    <marker id="arr-yellow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 1L9 5L0 9z" fill="#ca8a04"/>
+    </marker>
+  </defs>
+
+  <!-- ── Background ─────────────────────────────────────────── -->
+  <rect width="1600" height="960" fill="url(#bg)"/>
+
+  <!-- Subtle dot grid -->
+  <pattern id="dots" x="0" y="0" width="32" height="32" patternUnits="userSpaceOnUse">
+    <circle cx="1" cy="1" r="0.9" fill="rgba(0,0,0,0.06)"/>
+  </pattern>
+  <rect width="1600" height="960" fill="url(#dots)"/>
+
+  <!-- ── Header ─────────────────────────────────────────────── -->
+  <circle cx="80" cy="48" r="22" fill="#807dfe" opacity="0.15"/>
+  <circle cx="80" cy="48" r="16" fill="#807dfe" opacity="0.9"/>
+  <text x="80" y="53" font-family="ui-monospace,monospace" font-size="13" font-weight="800" fill="#fff" text-anchor="middle">C</text>
+
+  <text x="112" y="43" font-family="ui-monospace,monospace" font-size="18" font-weight="800" fill="#0f0f1a" letter-spacing="-0.5">Ceria Flow
+  <text x="112" y="60" font-family="ui-monospace,monospace" font-size="10" fill="rgba(0,0,0,0.4)" letter-spacing="0.08em">ZERO-KNOWLEDGE PERPETUALS · STELLAR SOROBAN</text>
+
+  <text x="1600" y="43" font-family="ui-monospace,monospace" font-size="10" fill="rgba(0,0,0,0.3)" text-anchor="end" letter-spacing="0.1em">SYSTEM ARCHITECTURE</text>
+  <text x="1600" y="60" font-family="ui-monospace,monospace" font-size="10" fill="rgba(0,0,0,0.2)" text-anchor="end">Groth16 · BN254 · GCP Confidential Space</text>
+
+  <!-- Divider -->
+  <line x1="40" y1="80" x2="1560" y2="80" stroke="rgba(0,0,0,0.08)" stroke-width="1"/>
+
+  <!-- ── Layer labels ───────────────────────────────────────── -->
+  <text x="190" y="112" font-family="ui-monospace,monospace" font-size="9" font-weight="700" fill="#16a34a" text-anchor="middle" letter-spacing="0.16em">CLIENT LAYER</text>
+  <text x="660" y="112" font-family="ui-monospace,monospace" font-size="9" font-weight="700" fill="#2563eb" text-anchor="middle" letter-spacing="0.16em">CONFIDENTIAL COMPUTE</text>
+  <text x="1290" y="112" font-family="ui-monospace,monospace" font-size="9" font-weight="700" fill="#7c3aed" text-anchor="middle" letter-spacing="0.16em">SETTLEMENT LAYER</text>
+
+  <!-- Section outlines -->
+  <rect x="52" y="120" width="278" height="490" rx="18" fill="none" stroke="#16a34a" stroke-width="1" stroke-dasharray="8 5" opacity="0.3"/>
+  <rect x="380" y="120" width="560" height="490" rx="18" fill="none" stroke="#2563eb" stroke-width="1" stroke-dasharray="8 5" opacity="0.3"/>
+  <rect x="990" y="120" width="570" height="490" rx="18" fill="none" stroke="#7c3aed" stroke-width="1" stroke-dasharray="8 5" opacity="0.3"/>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- ── NODE: Browser / Client ─────────────────────────────── -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <rect x="68" y="148" width="246" height="346" rx="14" fill="url(#fill-user)" stroke="#16a34a" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="68" y="148" width="246" height="5" rx="14" fill="#16a34a"/>
+  <rect x="68" y="153" width="246" height="4" fill="#16a34a"/>
+
+  <text x="88" y="183" font-family="ui-monospace,monospace" font-size="15" font-weight="800" fill="#0f0f1a">Browser</text>
+  <rect x="88" y="190" width="80" height="14" rx="4" fill="#16a34a" opacity="0.15"/>
+  <text x="91" y="200" font-family="ui-monospace,monospace" font-size="8.5" fill="#16a34a" font-weight="700" letter-spacing="0.06em">FREIGHTER WALLET</text>
+
+  <line x1="88" y1="213" x2="298" y2="213" stroke="rgba(0,0,0,0.07)" stroke-width="1"/>
+
+  <text x="88" y="233" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.4)" letter-spacing="0.06em">ACTIONS</text>
+  <g font-family="ui-monospace,monospace" font-size="10.5" fill="rgba(0,0,0,0.65)">
+    <text x="100" y="252">· Encrypt order → TEE pubkey</text>
+    <text x="100" y="270">· Sign Stellar transactions</text>
+    <text x="100" y="288">· Store note secrets locally</text>
+    <text x="100" y="306">· Submit proof to Soroban</text>
+    <text x="100" y="324">· View live 32-level orderbook</text>
+    <text x="100" y="342">· Monitor positions + funding</text>
+  </g>
+
+  <line x1="88" y1="358" x2="298" y2="358" stroke="rgba(0,0,0,0.07)" stroke-width="1"/>
+
+  <text x="88" y="375" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.4)" letter-spacing="0.06em">SHIELDED NOTE</text>
+  <rect x="88" y="382" width="206" height="46" rx="8" fill="rgba(22,163,74,0.08)" stroke="rgba(22,163,74,0.25)" stroke-width="1"/>
+  <text x="101" y="399" font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.55)">note_cmt = Poseidon2(</text>
+  <text x="101" y="416" font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.55)">  amount, secret, 8)</text>
+
+  <text x="88" y="452" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.4)" letter-spacing="0.06em">WALLET</text>
+  <text x="88" y="468" font-family="ui-monospace,monospace" font-size="10" fill="#16a34a" font-weight="600">Freighter · Stellar Testnet</text>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- ── NODE: TEE ───────────────────────────────────────────── -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <rect x="396" y="148" width="528" height="440" rx="14" fill="url(#fill-tee)" stroke="#2563eb" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="396" y="148" width="528" height="5" rx="14" fill="#2563eb"/>
+  <rect x="396" y="153" width="528" height="4" fill="#2563eb"/>
+
+  <text x="418" y="184" font-family="ui-monospace,monospace" font-size="15" font-weight="800" fill="#0f0f1a">Trusted Execution Environment</text>
+  <rect x="418" y="191" width="206" height="14" rx="4" fill="#2563eb" opacity="0.1"/>
+  <text x="422" y="201" font-family="ui-monospace,monospace" font-size="8.5" fill="#2563eb" font-weight="700" letter-spacing="0.06em">GCP CONFIDENTIAL SPACE · AMD SEV-SNP</text>
+
+  <line x1="418" y1="215" x2="906" y2="215" stroke="rgba(0,0,0,0.07)" stroke-width="1"/>
+
+  <text x="418" y="233" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.4)" letter-spacing="0.06em">COMPONENTS</text>
+
+  <!-- CLOB box -->
+  <rect x="418" y="241" width="234" height="90" rx="9" fill="rgba(37,99,235,0.06)" stroke="rgba(37,99,235,0.2)" stroke-width="1"/>
+  <text x="432" y="258" font-family="ui-monospace,monospace" font-size="9" font-weight="700" fill="#2563eb" letter-spacing="0.06em">CLOB ENGINE</text>
+  <g font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.6)">
+    <text x="432" y="274">· Price-time priority matching</text>
+    <text x="432" y="290">· Market / Limit / Stop orders</text>
+    <text x="432" y="306">· IOC · FOK · TP/SL</text>
+    <text x="432" y="321">· WAL persistence · RwLock</text>
+  </g>
+
+  <!-- Groth16 box -->
+  <rect x="418" y="341" width="234" height="80" rx="9" fill="rgba(37,99,235,0.06)" stroke="rgba(37,99,235,0.2)" stroke-width="1"/>
+  <text x="432" y="358" font-family="ui-monospace,monospace" font-size="9" font-weight="700" fill="#2563eb" letter-spacing="0.06em">GROTH16 PROVER</text>
+  <g font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.6)">
+    <text x="432" y="374">· arkworks · BN254 scalar field</text>
+    <text x="432" y="390">· 6 circuits · proving keys in RAM</text>
+    <text x="432" y="406">· Keys never leave enclave</text>
+  </g>
+
+  <!-- Commitment chain -->
+  <text x="670" y="233" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.4)" letter-spacing="0.06em">COMMITMENT CHAIN (POSEIDON2)</text>
+  <rect x="670" y="241" width="236" height="180" rx="9" fill="rgba(37,99,235,0.04)" stroke="rgba(37,99,235,0.18)" stroke-width="1"/>
+  <g font-family="ui-monospace,monospace" font-size="10" fill="rgba(0,0,0,0.5)">
+    <text x="684" y="261">h₁ = P₂(side,      price,    1)</text>
+    <text x="684" y="279">h₂ = P₂(h₁,        size,     2)</text>
+    <text x="684" y="297">h₃ = P₂(h₂,        leverage, 3)</text>
+    <text x="684" y="315">h₄ = P₂(h₃,        asset,    4)</text>
+    <text x="684" y="333">h₅ = P₂(h₄,        is_mkt,   5)</text>
+    <text x="684" y="351">h₆ = P₂(h₅,        nonce,    6)</text>
+    <text x="684" y="375" fill="#2563eb" font-weight="700">cmt = P₂(h₆, secret, 7)  ◀ public</text>
+    <text x="684" y="393">null = P₂(cmt, secret, 9)  ◀ public</text>
+    <text x="684" y="411" fill="rgba(0,0,0,0.3)">domain sep per round → no aliasing</text>
+  </g>
+
+  <!-- Circuit badges -->
+  <line x1="418" y1="438" x2="906" y2="438" stroke="rgba(0,0,0,0.07)" stroke-width="1"/>
+  <text x="418" y="454" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.4)" letter-spacing="0.06em">ZK CIRCUITS  ·  R1CS over BN254  ·  ark-r1cs-std</text>
+
+  <g font-family="ui-monospace,monospace" font-size="9.5">
+    <rect x="418" y="462" width="122" height="22" rx="5" fill="rgba(219,39,119,0.08)" stroke="rgba(219,39,119,0.3)" stroke-width="1"/>
+    <text x="425" y="477" fill="#db2777">OrderCommitment</text>
+    <rect x="548" y="462" width="90" height="22" rx="5" fill="rgba(219,39,119,0.08)" stroke="rgba(219,39,119,0.3)" stroke-width="1"/>
+    <text x="555" y="477" fill="#db2777">NoteSpend</text>
+    <rect x="646" y="462" width="90" height="22" rx="5" fill="rgba(219,39,119,0.08)" stroke="rgba(219,39,119,0.3)" stroke-width="1"/>
+    <text x="653" y="477" fill="#db2777">OrderMatch</text>
+    <rect x="744" y="462" width="94" height="22" rx="5" fill="rgba(219,39,119,0.08)" stroke="rgba(219,39,119,0.3)" stroke-width="1"/>
+    <text x="751" y="477" fill="#db2777">OrderCancel</text>
+    <rect x="418" y="490" width="102" height="22" rx="5" fill="rgba(219,39,119,0.08)" stroke="rgba(219,39,119,0.3)" stroke-width="1"/>
+    <text x="425" y="505" fill="#db2777">ShieldedInsert</text>
+    <rect x="528" y="490" width="118" height="22" rx="5" fill="rgba(219,39,119,0.08)" stroke="rgba(219,39,119,0.3)" stroke-width="1"/>
+    <text x="535" y="505" fill="#db2777">ShieldedWithdraw</text>
+    <text x="670" y="504" fill="rgba(0,0,0,0.3)">TCP :9720 encrypted · HTTP :9721 public</text>
+  </g>
+
+  <!-- Enclave note -->
+  <rect x="418" y="518" width="528" height="50" rx="8" fill="rgba(37,99,235,0.05)" stroke="rgba(37,99,235,0.15)" stroke-width="1"/>
+  <text x="660" y="538" font-family="ui-monospace,monospace" font-size="9" fill="#2563eb" text-anchor="middle">🔒  AMD SEV-SNP encrypts all memory.  Host operator sees only encrypted bytes in, proof out.</text>
+  <text x="660" y="556" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.35)" text-anchor="middle">Private keys generated inside enclave at boot · KMS-backed · never exported</text>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- ── NODE: Stellar Soroban ──────────────────────────────── -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <rect x="1006" y="148" width="538" height="440" rx="14" fill="url(#fill-stellar)" stroke="#7c3aed" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="1006" y="148" width="538" height="5" rx="14" fill="#7c3aed"/>
+  <rect x="1006" y="153" width="538" height="4" fill="#7c3aed"/>
+
+  <text x="1028" y="184" font-family="ui-monospace,monospace" font-size="15" font-weight="800" fill="#0f0f1a">Stellar Soroban</text>
+  <rect x="1028" y="191" width="160" height="14" rx="4" fill="#7c3aed" opacity="0.1"/>
+  <text x="1032" y="201" font-family="ui-monospace,monospace" font-size="8.5" fill="#7c3aed" font-weight="700" letter-spacing="0.06em">PROTOCOL 26 · TESTNET</text>
+
+  <line x1="1028" y1="215" x2="1526" y2="215" stroke="rgba(0,0,0,0.07)" stroke-width="1"/>
+
+  <text x="1028" y="233" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.4)" letter-spacing="0.06em">PROOF VERIFICATION  ·  BN254 HOST FUNCTIONS</text>
+
+  <rect x="1028" y="241" width="498" height="80" rx="9" fill="rgba(219,39,119,0.06)" stroke="rgba(219,39,119,0.2)" stroke-width="1"/>
+  <g font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.6)">
+    <text x="1044" y="260">verify_groth16(proof: Groth16Proof, public_inputs: Vec&lt;Bn254Fr&gt;, vk)</text>
+    <text x="1044" y="278">  → g1_msm()       multi-scalar multiplication over G1</text>
+    <text x="1044" y="295">  → pairing_check() e(A,B) · e(α,β) · e(C,δ) = 1</text>
+    <text x="1044" y="312">  → panic!() if invalid  (reject tx atomically)</text>
+  </g>
+
+  <!-- Three contracts -->
+  <text x="1028" y="341" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.4)" letter-spacing="0.06em">DEPLOYED CONTRACTS</text>
+
+  <rect x="1028" y="349" width="152" height="160" rx="9" fill="rgba(124,58,237,0.06)" stroke="rgba(124,58,237,0.22)" stroke-width="1"/>
+  <text x="1042" y="367" font-family="ui-monospace,monospace" font-size="9" font-weight="700" fill="#7c3aed" letter-spacing="0.04em">perp-engine</text>
+  <g font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.55)">
+    <text x="1042" y="385">Positions (open/close)</text>
+    <text x="1042" y="401">Collateral management</text>
+    <text x="1042" y="417">Oracle prices (mark)</text>
+    <text x="1042" y="433">Funding rate accrual</text>
+    <text x="1042" y="449">Liquidation logic</text>
+    <text x="1042" y="466">Asset config (max lev)</text>
+    <text x="1042" y="483">ZK proof gating</text>
+    <text x="1042" y="499">Nullifier registry</text>
+  </g>
+
+  <rect x="1190" y="349" width="152" height="160" rx="9" fill="rgba(124,58,237,0.06)" stroke="rgba(124,58,237,0.22)" stroke-width="1"/>
+  <text x="1204" y="367" font-family="ui-monospace,monospace" font-size="9" font-weight="700" fill="#7c3aed" letter-spacing="0.04em">orderbook</text>
+  <g font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.55)">
+    <text x="1204" y="385">Order commitments</text>
+    <text x="1204" y="401">place_order(cmt, proof)</text>
+    <text x="1204" y="417">cancel_order(cmt, proof)</text>
+    <text x="1204" y="433">Match nullifiers</text>
+    <text x="1204" y="449">open_position_from_note</text>
+    <text x="1204" y="466">close_position_to_note</text>
+    <text x="1204" y="483">add_margin_from_note</text>
+  </g>
+
+  <rect x="1352" y="349" width="174" height="160" rx="9" fill="rgba(124,58,237,0.06)" stroke="rgba(124,58,237,0.22)" stroke-width="1"/>
+  <text x="1366" y="367" font-family="ui-monospace,monospace" font-size="9" font-weight="700" fill="#7c3aed" letter-spacing="0.04em">collateral-token</text>
+  <g font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.55)">
+    <text x="1366" y="385">USDC (7-decimal scale)</text>
+    <text x="1366" y="401">mint / burn / transfer</text>
+    <text x="1366" y="417">deposit_note(cmt)</text>
+    <text x="1366" y="433">withdraw_note(proof)</text>
+    <text x="1366" y="449">Trust registry</text>
+    <text x="1366" y="466">Balance tracking</text>
+    <text x="1366" y="483">PRICE_SCALE = 1e7</text>
+  </g>
+
+  <!-- Privacy note -->
+  <rect x="1028" y="518" width="498" height="50" rx="8" fill="rgba(124,58,237,0.04)" stroke="rgba(124,58,237,0.15)" stroke-width="1"/>
+  <text x="1277" y="538" font-family="ui-monospace,monospace" font-size="9" fill="#7c3aed" text-anchor="middle">Chain stores: commitment hashes · nullifiers · proof verification results</text>
+  <text x="1277" y="556" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.35)" text-anchor="middle">Position size · collateral · direction · P&amp;L are NEVER stored in plaintext on-chain</text>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- ── KEEPER ROW ──────────────────────────────────────────── -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <text x="800" y="630" font-family="ui-monospace,monospace" font-size="9" font-weight="700" fill="#ea580c" text-anchor="middle" letter-spacing="0.16em">KEEPER INFRASTRUCTURE  ·  RUST BINARY</text>
+
+  <!-- Pyth -->
+  <rect x="52" y="644" width="200" height="130" rx="12" fill="url(#fill-pyth)" stroke="#ca8a04" stroke-width="1.5" filter="url(#shadow-sm)"/>
+  <rect x="52" y="644" width="200" height="5" rx="12" fill="#ca8a04"/>
+  <rect x="52" y="649" width="200" height="3" fill="#ca8a04"/>
+  <text x="72" y="673" font-family="ui-monospace,monospace" font-size="12" font-weight="800" fill="#0f0f1a">Pyth Network</text>
+  <text x="72" y="687" font-family="ui-monospace,monospace" font-size="8.5" fill="#ca8a04" letter-spacing="0.06em" font-weight="700">HERMES REST + WEBSOCKET</text>
+  <line x1="72" y1="695" x2="236" y2="695" stroke="rgba(0,0,0,0.07)" stroke-width="1"/>
+  <g font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.6)">
+    <text x="72" y="712">· 7 market price feeds</text>
+    <text x="72" y="728">· Sub-second tick updates</text>
+    <text x="72" y="744">· Auto-reconnect WS</text>
+  </g>
+  <text x="72" y="760" font-family="ui-monospace,monospace" font-size="9" fill="#ca8a04" font-weight="600">BTC XRP XLM SPCE TSLA OIL GOLD</text>
+
+  <!-- Oracle Keeper -->
+  <rect x="280" y="644" width="220" height="130" rx="12" fill="url(#fill-keeper)" stroke="#ea580c" stroke-width="1.5" filter="url(#shadow-sm)"/>
+  <rect x="280" y="644" width="220" height="5" rx="12" fill="#ea580c"/>
+  <rect x="280" y="649" width="220" height="3" fill="#ea580c"/>
+  <text x="300" y="673" font-family="ui-monospace,monospace" font-size="12" font-weight="800" fill="#0f0f1a">Oracle Keeper</text>
+  <text x="300" y="687" font-family="ui-monospace,monospace" font-size="8.5" fill="#ea580c" letter-spacing="0.06em" font-weight="700">EVERY 30 SECONDS</text>
+  <line x1="300" y1="695" x2="484" y2="695" stroke="rgba(0,0,0,0.07)" stroke-width="1"/>
+  <g font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.6)">
+    <text x="300" y="712">· Fetch Pyth REST prices</text>
+    <text x="300" y="728">· set_asset_price on-chain</text>
+    <text x="300" y="744">· stellar CLI + Soroban RPC</text>
+    <text x="300" y="760">· 2s delay between markets</text>
+  </g>
+
+  <!-- Market Maker -->
+  <rect x="530" y="644" width="280" height="130" rx="12" fill="url(#fill-keeper)" stroke="#ea580c" stroke-width="1.5" filter="url(#shadow-sm)"/>
+  <rect x="530" y="644" width="280" height="5" rx="12" fill="#ea580c"/>
+  <rect x="530" y="649" width="280" height="3" fill="#ea580c"/>
+  <text x="550" y="673" font-family="ui-monospace,monospace" font-size="12" font-weight="800" fill="#0f0f1a">Market Maker</text>
+  <text x="550" y="687" font-family="ui-monospace,monospace" font-size="8.5" fill="#ea580c" letter-spacing="0.06em" font-weight="700">32 LEVELS / SIDE · ALGORITHMIC</text>
+  <line x1="550" y1="695" x2="794" y2="695" stroke="rgba(0,0,0,0.07)" stroke-width="1"/>
+  <g font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.6)">
+    <text x="550" y="712">· Size: base × 1.08^level (geometric)</text>
+    <text x="550" y="728">· Spread: Crypto (5+3×lvl) bps · RWA (10+5×lvl) bps</text>
+    <text x="550" y="744">· Re-quote if mid moves &gt;0.5% or TTL &gt;5 min</text>
+    <text x="550" y="760">· Pre-generates proof pool to avoid latency</text>
+  </g>
+
+  <!-- Liquidator -->
+  <rect x="838" y="644" width="240" height="130" rx="12" fill="url(#fill-keeper)" stroke="#ea580c" stroke-width="1.5" filter="url(#shadow-sm)"/>
+  <rect x="838" y="644" width="240" height="5" rx="12" fill="#ea580c"/>
+  <rect x="838" y="649" width="240" height="3" fill="#ea580c"/>
+  <text x="858" y="673" font-family="ui-monospace,monospace" font-size="12" font-weight="800" fill="#0f0f1a">Liquidator</text>
+  <text x="858" y="687" font-family="ui-monospace,monospace" font-size="8.5" fill="#ea580c" letter-spacing="0.06em" font-weight="700">EVERY 30 SECONDS</text>
+  <line x1="858" y1="695" x2="1062" y2="695" stroke="rgba(0,0,0,0.07)" stroke-width="1"/>
+  <g font-family="ui-monospace,monospace" font-size="9.5" fill="rgba(0,0,0,0.6)">
+    <text x="858" y="712">· Scan position watchlist JSON</text>
+    <text x="858" y="728">· Check collateral + PnL vs mark</text>
+    <text x="858" y="744">· Call liquidate(commitment)</text>
+    <text x="858" y="760">· Keeper fee + return residual</text>
+  </g>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- ── ARROWS ─────────────────────────────────────────────── -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+
+  <!-- ① Browser → TEE -->
+  <path d="M 315 290 C 355 290 370 270 396 270" fill="none" stroke="#16a34a" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arr-green)" opacity="0.9"/>
+  <rect x="316" y="258" width="56" height="16" rx="4" fill="rgba(22,163,74,0.1)" stroke="rgba(22,163,74,0.2)" stroke-width="1"/>
+  <text x="344" y="269" font-family="ui-monospace,monospace" font-size="8.5" fill="#16a34a" text-anchor="middle" font-weight="700">① encrypted</text>
+
+  <!-- TEE → Browser (proof) -->
+  <path d="M 396 340 C 370 340 355 360 315 360" fill="none" stroke="#db2777" stroke-width="2" stroke-dasharray="6 3" marker-end="url(#arr-pink)" opacity="0.9"/>
+  <rect x="316" y="347" width="68" height="16" rx="4" fill="rgba(219,39,119,0.08)" stroke="rgba(219,39,119,0.2)" stroke-width="1"/>
+  <text x="350" y="358" font-family="ui-monospace,monospace" font-size="8.5" fill="#db2777" text-anchor="middle" font-weight="700">③ proof π</text>
+
+  <!-- Browser → Stellar (arc over top) -->
+  <path d="M 191 148 C 191 80 1277 80 1277 148" fill="none" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arr-green)" opacity="0.6"/>
+  <rect x="660" y="66" width="130" height="16" rx="4" fill="rgba(22,163,74,0.08)" stroke="rgba(22,163,74,0.2)" stroke-width="1"/>
+  <text x="725" y="77" font-family="ui-monospace,monospace" font-size="8.5" fill="#16a34a" text-anchor="middle" font-weight="700">④ submit tx + proof</text>
+
+  <!-- TEE → Stellar (match proof) -->
+  <path d="M 924 270 L 1006 270" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-dasharray="6 3" marker-end="url(#arr-blue)" opacity="0.9"/>
+  <rect x="926" y="250" width="76" height="14" rx="4" fill="rgba(37,99,235,0.1)" stroke="rgba(37,99,235,0.2)" stroke-width="1"/>
+  <text x="964" y="261" font-family="ui-monospace,monospace" font-size="8.5" fill="#2563eb" text-anchor="middle" font-weight="700">② match proof</text>
+
+  <!-- Stellar → TEE (mark price) -->
+  <path d="M 1006 330 L 924 330" fill="none" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arr-purple)" opacity="0.6"/>
+  <text x="960" y="348" font-family="ui-monospace,monospace" font-size="8.5" fill="#7c3aed" text-anchor="middle">mark price read</text>
+
+  <!-- Pyth → Oracle Keeper -->
+  <path d="M 252 705 L 280 705" fill="none" stroke="#ca8a04" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#arr-yellow)" opacity="0.9"/>
+  <text x="248" y="695" font-family="ui-monospace,monospace" font-size="8.5" fill="#ca8a04">price ticks</text>
+
+  <!-- Oracle Keeper → Stellar -->
+  <path d="M 390 644 C 390 580 1150 560 1150 588" fill="none" stroke="#ea580c" stroke-width="1.8" stroke-dasharray="5 3" marker-end="url(#arr-orange)" opacity="0.8"/>
+  <rect x="640" y="562" width="115" height="15" rx="4" fill="rgba(234,88,12,0.08)" stroke="rgba(234,88,12,0.2)" stroke-width="1"/>
+  <text x="697" y="572" font-family="ui-monospace,monospace" font-size="8.5" fill="#ea580c" text-anchor="middle" font-weight="700">⑤ set_asset_price</text>
+
+  <!-- MM → TEE -->
+  <path d="M 670 644 C 670 610 660 590 660 588" fill="none" stroke="#ea580c" stroke-width="1.8" stroke-dasharray="5 3" marker-end="url(#arr-orange)" opacity="0.8"/>
+  <rect x="594" y="612" width="150" height="15" rx="4" fill="rgba(234,88,12,0.08)" stroke="rgba(234,88,12,0.2)" stroke-width="1"/>
+  <text x="669" y="622" font-family="ui-monospace,monospace" font-size="8.5" fill="#ea580c" text-anchor="middle" font-weight="700">⑥ place_order (32 lvls)</text>
+
+  <!-- Liquidator → Stellar -->
+  <path d="M 958 644 C 1020 610 1100 600 1150 588" fill="none" stroke="#ea580c" stroke-width="1.8" stroke-dasharray="5 3" marker-end="url(#arr-orange)" opacity="0.8"/>
+  <rect x="1020" y="608" width="82" height="15" rx="4" fill="rgba(234,88,12,0.08)" stroke="rgba(234,88,12,0.2)" stroke-width="1"/>
+  <text x="1061" y="618" font-family="ui-monospace,monospace" font-size="8.5" fill="#ea580c" text-anchor="middle" font-weight="700">⑦ liquidate()</text>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- ── ZK PROOF BADGE ──────────────────────────────────────── -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <rect x="932" y="214" width="66" height="24" rx="6" fill="rgba(219,39,119,0.1)" stroke="rgba(219,39,119,0.35)" stroke-width="1"/>
+  <text x="965" y="229" font-family="ui-monospace,monospace" font-size="9" font-weight="800" fill="#db2777" text-anchor="middle" letter-spacing="0.06em">GROTH16</text>
+
+  <rect x="926" y="244" width="78" height="74" rx="8" fill="rgba(219,39,119,0.05)" stroke="rgba(219,39,119,0.2)" stroke-width="1"/>
+  <text x="965" y="260" font-family="ui-monospace,monospace" font-size="8.5" fill="rgba(0,0,0,0.5)" text-anchor="middle">π = (A, B, C)</text>
+  <text x="965" y="275" font-family="ui-monospace,monospace" font-size="8.5" fill="rgba(0,0,0,0.5)" text-anchor="middle">∈ BN254 curve</text>
+  <line x1="932" y1="285" x2="1004" y2="285" stroke="rgba(219,39,119,0.15)" stroke-width="1"/>
+  <text x="965" y="300" font-family="ui-monospace,monospace" font-size="8" fill="#db2777" text-anchor="middle">256 bytes on-chain</text>
+  <text x="965" y="313" font-family="ui-monospace,monospace" font-size="8" fill="#db2777" text-anchor="middle">~250ms verify</text>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- ── LEGEND ─────────────────────────────────────────────── -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <rect x="1108" y="638" width="436" height="162" rx="12" fill="#fff" stroke="rgba(0,0,0,0.08)" stroke-width="1" filter="url(#shadow-sm)"/>
+  <text x="1128" y="658" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.35)" letter-spacing="0.1em">FLOW STEPS</text>
+
+  <g font-family="ui-monospace,monospace" font-size="10">
+    <circle cx="1128" cy="675" r="3.5" fill="#16a34a"/>
+    <text x="1142" y="678" fill="rgba(0,0,0,0.65)">① User encrypts order → TEE pubkey</text>
+    <circle cx="1128" cy="694" r="3.5" fill="#2563eb"/>
+    <text x="1142" y="697" fill="rgba(0,0,0,0.65)">② TEE runs CLOB · generates Groth16 proof · submits match</text>
+    <circle cx="1128" cy="713" r="3.5" fill="#db2777"/>
+    <text x="1142" y="716" fill="rgba(0,0,0,0.65)">③ Proof π returned to client browser</text>
+    <circle cx="1128" cy="732" r="3.5" fill="#16a34a"/>
+    <text x="1142" y="735" fill="rgba(0,0,0,0.65)">④ Client submits open_position_from_note tx to Soroban</text>
+    <circle cx="1128" cy="751" r="3.5" fill="#ea580c"/>
+    <text x="1142" y="754" fill="rgba(0,0,0,0.65)">⑤ Oracle keeper pushes Pyth prices every 30s</text>
+    <circle cx="1128" cy="770" r="3.5" fill="#ea580c"/>
+    <text x="1142" y="773" fill="rgba(0,0,0,0.65)">⑥ Market maker seeds 64 CLOB levels (32 bid + 32 ask)</text>
+    <circle cx="1128" cy="789" r="3.5" fill="#ea580c"/>
+    <text x="1142" y="792" fill="rgba(0,0,0,0.65)">⑦ Liquidator calls liquidate() on under-collateralised positions</text>
+  </g>
+
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <!-- ── FOOTER ─────────────────────────────────────────────── -->
+  <!-- ══════════════════════════════════════════════════════════ -->
+  <line x1="40" y1="862" x2="1560" y2="862" stroke="rgba(0,0,0,0.06)" stroke-width="1"/>
+  <text x="80" y="884" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.25)">Cerida · ZK Perpetuals on Stellar · Groth16 / BN254 · GCP Confidential Space / AMD SEV-SNP · Pyth Oracle · 7 Markets</text>
+  <text x="1520" y="884" font-family="ui-monospace,monospace" font-size="9" fill="rgba(0,0,0,0.18)" text-anchor="end">cerida.xyz</text>
+
+  <!-- Corner accents -->
+  <circle cx="40" cy="40" r="2" fill="rgba(128,125,254,0.4)"/>
+  <circle cx="1560" cy="40" r="2" fill="rgba(128,125,254,0.4)"/>
+  <circle cx="40" cy="920" r="2" fill="rgba(128,125,254,0.4)"/>
+  <circle cx="1560" cy="920" r="2" fill="rgba(128,125,254,0.4)"/>
+</svg>

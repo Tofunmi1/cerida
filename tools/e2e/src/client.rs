@@ -46,6 +46,7 @@ pub struct Request {
 struct Response {
     ok: bool,
     commitment: Option<String>,
+    proof: Option<String>,
     match_price: Option<String>,
     match_size: Option<String>,
     nullifier_a: Option<String>,
@@ -172,14 +173,21 @@ impl ServerClient {
         let req = Request {
             cmd: "commit-proof".to_string(),
             cmt: Some(cmt.to_string()),
-            out: Some(out.to_string_lossy().to_string()),
             ..Default::default()
         };
-        self.send(&req)?;
-        // Verify file was written
-        let meta = std::fs::metadata(out).ok();
-        if let Some(m) = meta {
-            eprintln!("  [client] proof file on disk: {} bytes", m.len());
+        let resp = self.send(&req)?;
+        // Write proof from response to local file
+        if let Some(ref proof) = resp.proof {
+            std::fs::write(out, proof)?;
+            eprintln!("  [client] proof file written: {} bytes", proof.len());
+        } else {
+            // Fallback: check if server wrote it
+            let meta = std::fs::metadata(out).ok();
+            if let Some(m) = meta {
+                eprintln!("  [client] proof file on disk: {} bytes", m.len());
+            } else {
+                anyhow::bail!("no proof in response or file");
+            }
         }
         Ok(())
     }

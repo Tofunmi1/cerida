@@ -12,6 +12,14 @@ REGION="${REGION:-us-central1}"
 ZONE="${ZONE:-us-central1-a}"
 SERVICE="${SERVICE:-tee-match}"
 
+# Stellar signing key used by tee-match to submit on-chain transactions.
+# Must be set in the environment before running this script.
+# Example: export STELLAR_SOURCE_SECRET=SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+if [ -z "${STELLAR_SOURCE_SECRET:-}" ]; then
+  echo "WARNING: STELLAR_SOURCE_SECRET not set — tee-match will use named identity 'e2e'" >&2
+  echo "  Set it with: export STELLAR_SOURCE_SECRET=<stellar-secret-key>" >&2
+fi
+
 if [ -z "$PROJECT" ]; then
   echo "Usage: $0 <PROJECT_ID>" >&2
   echo "   or: PROJECT=<id> $0" >&2
@@ -108,7 +116,8 @@ gcloud compute instances create tee-match-vm \
   --metadata=\
 "tee-image-reference=${IMAGE},\
 tee-restart-policy=Always,\
-tee-env-KEYS_DIR=/keys" \
+tee-env-KEYS_DIR=/keys,\
+tee-env-STELLAR_SOURCE_SECRET=${STELLAR_SOURCE_SECRET:-}" \
   2>/dev/null || echo "  (instance already exists — use 'gcloud compute instances update-container' to update)"
 
 echo "=== 7. Deploy keepers VM ================================"

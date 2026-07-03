@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router'
 import {
   IconAlertTriangleFilled,
   IconBell,
@@ -31,7 +32,7 @@ export default function MarketBar({
   onOpenSettings: () => void
   onNavigate: (path: string) => void
 }) {
-  const { symbol, mark, index, changePct, funding, openInterest, volume24h } = useMarket()
+  const { symbol, mark, index, changePct, funding, openInterest, volume24h, allPrices, candlesLoading } = useMarket()
   const { theme, setTheme } = useTheme()
   const [marketOpen, setMarketOpen] = useState(false)
   const [themeOpen, setThemeOpen] = useState(false)
@@ -48,12 +49,20 @@ export default function MarketBar({
           className="flex min-w-[210px] items-center justify-between gap-3 rounded-[10px] border border-border-subtle bg-surface-primary px-3 py-2 transition-colors hover:bg-surface-hover"
         >
           <span className="flex min-w-0 items-center gap-2">
-            <span
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-[12px] font-bold text-white"
-              style={{ backgroundColor: activeMarket.color }}
-            >
-              {activeMarket.icon}
-            </span>
+            {activeMarket.logo ? (
+              <img
+                src={activeMarket.logo}
+                alt={activeMarket.name}
+                className="h-7 w-7 shrink-0 rounded-full object-cover"
+              />
+            ) : (
+              <span
+                className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-[10px] font-bold text-white"
+                style={{ backgroundColor: activeMarket.color }}
+              >
+                {activeMarket.icon}
+              </span>
+            )}
             <span className="min-w-0 text-left">
               <span className="block truncate text-[13px] font-bold text-text-primary">{activeMarket.symbol}</span>
               <span className="block truncate text-[10px] uppercase tracking-widest text-text-quaternary">
@@ -65,19 +74,30 @@ export default function MarketBar({
         </button>
 
         <div className="hidden min-w-0 items-center gap-6 md:flex">
-          <Stat label="Mark">{formatUsd(mark)}</Stat>
-          <Stat label="Index">{formatUsd(index)}</Stat>
+          <Stat label="Index (Pyth)">
+            {candlesLoading && !mark ? <span className="text-text-quaternary">…</span> : formatUsd(index)}
+          </Stat>
+          <Stat label="Mark">{candlesLoading && !mark ? <span className="text-text-quaternary">…</span> : formatUsd(mark)}</Stat>
           <Stat label="24h">
-            <span className={positive ? 'text-bullish-green' : 'text-bearish-red'}>
-              {positive ? '+' : ''}
-              {changePct.toFixed(2)}%
+            {candlesLoading ? (
+              <span className="text-text-quaternary">…</span>
+            ) : (
+              <span className={positive ? 'text-bullish-green' : 'text-bearish-red'}>
+                {positive ? '+' : ''}{changePct.toFixed(2)}%
+              </span>
+            )}
+          </Stat>
+          <Stat label="Funding 8h">
+            <span className={funding >= 0 ? 'text-brand-violet' : 'text-bearish-red'}>
+              {funding >= 0 ? '+' : ''}{(funding * 100).toFixed(4)}%
             </span>
           </Stat>
-          <Stat label="Funding">
-            <span className="text-brand-violet">{funding.toFixed(4)}%</span>
+          <Stat label="Open Interest">
+            {openInterest != null ? formatCompactUsd(openInterest) : <span className="text-text-quaternary">—</span>}
           </Stat>
-          <Stat label="Open Interest">{formatCompactUsd(openInterest)}</Stat>
-          <Stat label="Volume">{formatCompactUsd(volume24h)}</Stat>
+          <Stat label="Volume 24h">
+            {volume24h != null ? formatCompactUsd(volume24h) : <span className="text-text-quaternary">—</span>}
+          </Stat>
         </div>
 
         <div className="ml-auto flex items-center gap-1">
@@ -87,12 +107,14 @@ export default function MarketBar({
             active={active === 'Portfolio'}
             onClick={() => onActive('Portfolio')}
           />
-          <NavPill
-            icon={<IconBook size={15} stroke={1.8} />}
-            label="Docs"
-            active={active === 'Docs'}
-            onClick={() => onActive('Docs')}
-          />
+          <Link to="/docs" className="contents">
+            <NavPill
+              icon={<IconBook size={15} stroke={1.8} />}
+              label="Docs"
+              active={false}
+              onClick={() => {}}
+            />
+          </Link>
           <div className="mx-1 h-5 w-px bg-border-subtle" />
           <div className="relative">
             <button
@@ -164,6 +186,7 @@ export default function MarketBar({
             toast.success('Market selected', `${market?.name ?? next} perpetual is now active.`, { duration: 3000 })
             onNavigate(`/trade/${symbolToSlug(next)}`)
           }}
+          livePrices={allPrices}
           onClose={() => setMarketOpen(false)}
         />
       )}
@@ -175,10 +198,12 @@ function MarketModal({
   activeSymbol,
   onSelect,
   onClose,
+  livePrices,
 }: {
   activeSymbol: string
   onSelect: (symbol: string) => void
   onClose: () => void
+  livePrices: Map<string, number>
 }) {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<'All' | 'Crypto' | 'RWA'>('All')
@@ -256,6 +281,7 @@ function MarketModal({
               market={market}
               active={market.symbol === activeSymbol}
               onSelect={() => onSelect(market.symbol)}
+              livePrice={market.pythId ? livePrices.get(market.pythId) : undefined}
             />
           ))}
         </div>
@@ -268,10 +294,12 @@ function MarketRow({
   market,
   active,
   onSelect,
+  livePrice,
 }: {
   market: MarketDefinition
   active: boolean
   onSelect: () => void
+  livePrice?: number
 }) {
   return (
     <button
@@ -281,12 +309,20 @@ function MarketRow({
       }`}
     >
       <span className="flex min-w-0 items-center gap-3">
-        <span
-          className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-[13px] font-bold text-white"
-          style={{ backgroundColor: market.color }}
-        >
-          {market.icon}
-        </span>
+        {market.logo ? (
+          <img
+            src={market.logo}
+            alt={market.name}
+            className="h-10 w-10 shrink-0 rounded-full object-cover"
+          />
+        ) : (
+          <span
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-[11px] font-bold text-white"
+            style={{ backgroundColor: market.color }}
+          >
+            {market.icon}
+          </span>
+        )}
         <span className="min-w-0">
           <span className="block truncate text-[14px] font-bold text-text-primary">{market.symbol}</span>
           <span className="block truncate text-[12px] text-text-tertiary">{market.name} perpetual</span>
@@ -294,7 +330,7 @@ function MarketRow({
       </span>
       <span className="text-[12px] font-semibold text-text-secondary">{market.category}</span>
       <span className="text-right text-[12px] tabular-nums text-text-secondary">
-        {formatUsd(market.basePrice)}
+        {formatUsd(livePrice ?? market.basePrice)}
       </span>
       <span className="text-right">
         <span className="rounded-[5px] bg-bullish-green/10 px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-bullish-green">

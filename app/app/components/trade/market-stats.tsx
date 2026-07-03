@@ -3,16 +3,16 @@ import { formatCompactUsd, formatUsd } from './format'
 
 export default function MarketStats() {
   const { mark, index, funding, openInterest, volume24h } = useMarket()
-  const basis = ((mark - index) / index) * 100
+  const basis = index > 0 ? ((mark - index) / index) * 100 : 0
 
   return (
     <div className="grid h-full grid-cols-2 gap-px bg-border-subtle">
       <Tile label="Oracle index" value={formatUsd(index)} />
-      <Tile label="Mark basis" value={`${basis.toFixed(4)}%`} />
-      <Tile label="Funding / 8h" value={`${funding.toFixed(4)}%`} accent />
-      <Tile label="Next funding" value="00:41:18" />
-      <Tile label="Open interest" value={formatCompactUsd(openInterest)} />
-      <Tile label="24h volume" value={formatCompactUsd(volume24h)} />
+      <Tile label="Mark basis" value={`${basis >= 0 ? '+' : ''}${basis.toFixed(4)}%`} />
+      <Tile label="Funding / 8h" value={`${funding >= 0 ? '+' : ''}${(funding * 100).toFixed(4)}%`} accent />
+      <Tile label="Next funding" value="—" />
+      <Tile label="Open interest" value={openInterest != null ? formatCompactUsd(openInterest) : '—'} />
+      <Tile label="24h volume"    value={volume24h   != null ? formatCompactUsd(volume24h)   : '—'} />
     </div>
   )
 }

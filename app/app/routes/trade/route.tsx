@@ -8,7 +8,7 @@ import { LevelsProvider } from '../../context/levels-context'
 import { MarketProvider, slugToSymbol } from '../../context/market-context'
 import { SettingsProvider } from '../../context/settings-context'
 import { ThemeProvider } from '../../context/theme-context'
-import { WalletProvider } from '../../context/wallet-context'
+import { WalletProvider, useWallet } from '../../context/wallet-context'
 import { ToastContainer } from '../../components/toast/toast-container'
 import { ToastProvider } from '../../components/toast/toast-context'
 import MarketBar from '../../components/trade/market-bar'
@@ -16,6 +16,7 @@ import Sidebar from '../../components/trade/sidebar'
 import PortfolioPage from '../../components/trade/portfolio-page'
 import SettingsModal from '../../components/trade/settings-modal'
 import ShieldedPoolModal from '../../components/trade/shielded-pool-modal'
+import OnboardingModal from '../../components/trade/onboarding-modal'
 
 export const meta = () => [{ title: 'Cerida Perp' }]
 
@@ -433,6 +434,7 @@ export default function TradeRoute() {
     <ThemeProvider>
       <ToastProvider>
         <WalletProvider>
+          <OnboardingGate />
           <MarketProvider initialSymbol={initialSymbol} key={initialSymbol}>
             <SettingsProvider>
               <LevelsProvider>
@@ -445,4 +447,21 @@ export default function TradeRoute() {
       </ToastProvider>
     </ThemeProvider>
   )
+}
+
+function OnboardingGate() {
+  const { connected } = useWallet()
+  const [showOnboard, setShowOnboard] = useState(false)
+
+  useEffect(() => {
+    const already = localStorage.getItem('cerida-onboarded')
+    if (!connected && !already) {
+      const timer = setTimeout(() => setShowOnboard(true), 500)
+      return () => clearTimeout(timer)
+    }
+  }, [connected])
+
+  if (!showOnboard) return null
+
+  return <OnboardingModal onClose={() => setShowOnboard(false)} />
 }

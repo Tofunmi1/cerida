@@ -11,6 +11,12 @@ pub fn rpc_url() -> String {
 
 const NETWORK_PASSPHRASE: &str = "Test SDF Network ; September 2015";
 
+/// Returns the signing identity: raw secret key from env if available, else named identity.
+/// Set STELLAR_SOURCE_SECRET=S... in the container environment.
+fn signing_source(fallback: &str) -> String {
+    std::env::var("STELLAR_SOURCE_SECRET").unwrap_or_else(|_| fallback.to_string())
+}
+
 const SOURCE_IDENTITY: &str = "e2e";
 
 pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof: &MatchProof) -> Result<()> {
@@ -33,11 +39,12 @@ pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof
     })
     .to_string();
 
+    let src = signing_source(source);
     let mut cmd = std::process::Command::new("stellar");
     cmd.args([
         "contract", "invoke",
         "--id", perp_id,
-        "--source", source,
+        "--source", &src,
         "--network-passphrase", NETWORK_PASSPHRASE,
         "--rpc-url", &rpc_url(),
         "--",
@@ -116,13 +123,14 @@ pub fn submit_cancel(
     })
     .to_string();
 
+    let src = signing_source(source);
     let cancel_order = |contract_id: &str, method: &str| -> Result<()> {
         let start = Instant::now();
         let mut cmd = std::process::Command::new("stellar");
         cmd.args([
             "contract", "invoke",
             "--id", contract_id,
-            "--source", source,
+            "--source", &src,
             "--network-passphrase", NETWORK_PASSPHRASE,
             "--rpc-url", &rpc_url(),
             "--",
@@ -172,11 +180,12 @@ pub fn submit_cancel(
 
 pub fn submit_mark_price(perp_id: &str, source: &str, price: u64) -> Result<()> {
     let start = Instant::now();
+    let src = signing_source(source);
     let mut cmd = std::process::Command::new("stellar");
     cmd.args([
         "contract", "invoke",
         "--id", perp_id,
-        "--source", source,
+        "--source", &src,
         "--network-passphrase", NETWORK_PASSPHRASE,
         "--rpc-url", &rpc_url(),
         "--",
@@ -219,11 +228,12 @@ pub fn submit_mark_price(perp_id: &str, source: &str, price: u64) -> Result<()> 
 
 pub fn submit_liquidate(perp_id: &str, commitment: &str) -> Result<()> {
     let start = Instant::now();
+    let src = signing_source(SOURCE_IDENTITY);
     let mut cmd = std::process::Command::new("stellar");
     cmd.args([
         "contract", "invoke",
         "--id", perp_id,
-        "--source", SOURCE_IDENTITY,
+        "--source", &src,
         "--network-passphrase", NETWORK_PASSPHRASE,
         "--rpc-url", &rpc_url(),
         "--",

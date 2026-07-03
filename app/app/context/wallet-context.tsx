@@ -8,6 +8,7 @@ import { LobstrModule } from '@creit.tech/stellar-wallets-kit/modules/lobstr'
 import { HanaModule } from '@creit.tech/stellar-wallets-kit/modules/hana'
 import { toast } from '../components/toast/toast-context'
 import { useTheme } from './theme-context'
+import { getUsdcBalance } from '../lib/contracts'
 
 const EXPECTED_PASSPHRASE: string =
   import.meta.env.VITE_NETWORK_PASSPHRASE ?? Networks.TESTNET
@@ -103,10 +104,17 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   }, [theme])
 
   const refreshBalance = useCallback(async () => {
-    // Note-based: balance tracked locally, not on-chain
-    setBalance(0n)
-    setBalanceLoading(false)
-  }, [])
+    if (!publicKey) return
+    setBalanceLoading(true)
+    try {
+      const bal = await getUsdcBalance(publicKey)
+      setBalance(bal ?? 0n)
+    } catch {
+      setBalance(0n)
+    } finally {
+      setBalanceLoading(false)
+    }
+  }, [publicKey])
 
   // The kit fires STATE_UPDATED immediately with the resumed session (if any),
   // and again whenever the address or network changes — covers reconnects,

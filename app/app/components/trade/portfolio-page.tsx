@@ -1,117 +1,114 @@
-import { useState } from 'react'
-import { IconArrowDownToArc, IconArrowUpFromArc, IconChevronDown, IconX } from '@tabler/icons-react'
+import { useEffect, useState } from 'react'
+import { IconArrowDownToArc, IconArrowUpFromArc, IconExternalLink, IconX } from '@tabler/icons-react'
 import { formatUsd } from './format'
+import { useWallet } from '../../context/wallet-context'
+import { buildDepositNoteTx, CONTRACT_IDS, submitAndWait } from '../../lib/contracts'
+import { tee } from '../../lib/tee-client'
+import { toast } from '../toast/toast-context'
 
-const ASSETS = ['USDC', 'ETH', 'BTC', 'SOL'] as const
-type Asset = (typeof ASSETS)[number]
-
-const ASSET_BALANCE: Record<Asset, number> = {
-  USDC: 12480.92,
-  ETH: 2.418,
-  BTC: 0.114,
-  SOL: 48.5,
-}
-
-const ASSET_PRICE: Record<Asset, number> = {
-  USDC: 1,
-  ETH: 3412.5,
-  BTC: 63200,
-  SOL: 148.6,
-}
-
-const HISTORY = [
-  { type: 'Deposit', asset: 'USDC', amount: 5000, time: '2026-06-29 14:22', status: 'Complete' },
-  { type: 'Withdraw', asset: 'USDC', amount: 1200, time: '2026-06-28 09:11', status: 'Complete' },
-  { type: 'Deposit', asset: 'ETH', amount: 1.5, time: '2026-06-27 18:03', status: 'Complete' },
-  { type: 'Deposit', asset: 'USDC', amount: 8000, time: '2026-06-25 11:47', status: 'Complete' },
-  { type: 'Withdraw', asset: 'SOL', amount: 12, time: '2026-06-23 16:30', status: 'Complete' },
-] as const
+const PRICE_SCALE = 1e7
 
 const PCT_OPTIONS = [25, 50, 75] as const
 
-function AssetPicker({
-  value,
-  onChange,
-}: {
-  value: Asset
-  onChange: (a: Asset) => void
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen((p) => !p)}
-        className="flex items-center gap-1.5 rounded-[6px] border border-border-subtle bg-surface-card px-2.5 py-1 text-[12px] font-bold text-text-primary transition-colors hover:bg-surface-hover"
-      >
-        {value}
-        <IconChevronDown size={11} stroke={2.5} />
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full z-20 mt-1 w-28 rounded-[8px] border border-border-subtle bg-surface-card py-1 shadow-xl">
-            {ASSETS.map((a) => (
-              <button
-                key={a}
-                onClick={() => {
-                  onChange(a)
-                  setOpen(false)
-                }}
-                className={`block w-full px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-surface-hover ${
-                  a === value ? 'text-text-primary font-semibold' : 'text-text-secondary'
-                }`}
-              >
-                {a}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
-function TransferPanel({
-  mode,
-}: {
-  mode: 'deposit' | 'withdraw'
-}) {
-  const [asset, setAsset] = useState<Asset>('USDC')
+function TransferPanel({ mode }: { mode: 'deposit' | 'withdraw' }) {
+  const { connected, publicKey, sign, balance, refreshBalance } = useWallet()
   const [amount, setAmount] = useState('')
   const [pct, setPct] = useState<number | null>(null)
+  const [busy, setBusy] = useState(false)
 
-  const balance = ASSET_BALANCE[asset]
-  const price = ASSET_PRICE[asset]
+  const walletUsdcDollars = Number(balance) / PRICE_SCALE
   const parsed = parseFloat(amount) || 0
-  const usdValue = parsed * price
   const isDeposit = mode === 'deposit'
+  const label = isDeposit ? 'Deposit' : 'Withdraw'
 
   const applyPct = (p: number) => {
     setPct(p)
-    setAmount(((balance * p) / 100).toFixed(asset === 'USDC' ? 2 : 6))
+    setAmount(((walletUsdcDollars * p) / 100).toFixed(2))
   }
 
-  const handleMax = () => {
-    setPct(100)
-    setAmount(balance.toString())
-  }
+  const handleSubmit = async () => {
+    if (!connected || !publicKey) {
+      toast.warning('Connect wallet', 'Connect a Stellar wallet to continue.')
+      return
+    }
+    if (parsed <= 0) return
 
-  const label = isDeposit ? 'Deposit' : 'Withdraw'
+    setBusy(true)
+    const progressId = toast.progress(label, 10, isDeposit ? 'Computing note commitment…' : 'Generating spend proof…')
+    try {
+      const collateralUnits = BigInt(Math.round(parsed * PRICE_SCALE))
+      const noteSecret = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
+
+      if (isDeposit) {
+        // Get note commitment from TEE (fast hash, no ZK proof needed for deposit)
+        toast.update(progressId, { description: 'Getting note commitment…', progress: 30 })
+        const { note_cmt, note_null } = await tee.noteCmt(Number(collateralUnits), noteSecret)
+
+        toast.update(progressId, { description: 'Sign transaction…', progress: 60 })
+        const tx = await buildDepositNoteTx(publicKey, note_cmt, collateralUnits)
+        await submitAndWait(await sign(tx.toXDR()))
+
+        // Persist note secret locally so user can spend it later
+        const notes = JSON.parse(localStorage.getItem('cerida-notes') ?? '[]')
+        notes.push({ note_cmt, secret: noteSecret, amount: Number(collateralUnits), depositedAt: Date.now() })
+        localStorage.setItem('cerida-notes', JSON.stringify(notes))
+
+        // Also store in shielded pool format for the Pool modal
+        const poolNotes = JSON.parse(localStorage.getItem('cerida-pool-notes') ?? '[]')
+        poolNotes.push({
+          id: note_cmt,
+          secret: String(noteSecret),
+          nullifier: note_null ?? '',
+          status: 'deposited',
+          createdAt: Date.now(),
+        })
+        localStorage.setItem('cerida-pool-notes', JSON.stringify(poolNotes))
+
+        toast.update(progressId, {
+          type: 'success',
+          title: 'Deposit complete',
+          description: `${formatUsd(parsed)} USDC deposited to shielded pool`,
+          progress: undefined,
+          duration: 5000,
+        })
+        await refreshBalance()
+      } else {
+        // Withdraw requires a NoteSpend ZK proof — user must pick a deposited note
+        toast.update(progressId, {
+          type: 'error',
+          title: 'Select a note',
+          description: 'Use the Shielded Pool panel to withdraw individual notes.',
+          progress: undefined,
+          duration: 5000,
+        })
+      }
+
+      setAmount('')
+      setPct(null)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('deposit error:', { err, msg, publicKey, collateralUnits: parsed, mode })
+      toast.update(progressId, {
+        type: 'error',
+        title: `${label} failed`,
+        description: msg.slice(0, 120),
+        progress: undefined,
+        duration: 6000,
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-widest text-text-quaternary">Asset</span>
-        <AssetPicker value={asset} onChange={(a) => { setAsset(a); setAmount(''); setPct(null) }} />
-      </div>
-
       <div>
         <div className="mb-1.5 flex items-center justify-between text-[11px]">
-          <span className="text-text-tertiary">Amount</span>
+          <span className="text-text-tertiary">Amount (USDC)</span>
           <span className="text-text-quaternary">
             {isDeposit ? 'Wallet' : 'Available'}:{' '}
             <span className="text-text-secondary">
-              {balance} {asset}
+              {connected ? formatUsd(walletUsdcDollars) : '—'}
             </span>
           </span>
         </div>
@@ -119,23 +116,15 @@ function TransferPanel({
           <input
             type="number"
             value={amount}
-            onChange={(e) => {
-              setAmount(e.target.value)
-              setPct(null)
-            }}
+            onChange={(e) => { setAmount(e.target.value); setPct(null) }}
             placeholder="0.00"
             min="0"
             step="any"
             className="min-w-0 flex-1 bg-transparent text-[18px] font-medium text-text-primary outline-none placeholder:text-text-quaternary"
             style={{ fontFamily: 'var(--font-mono)' }}
           />
-          <span className="shrink-0 text-[11px] font-bold text-text-quaternary">{asset}</span>
+          <span className="shrink-0 text-[11px] font-bold text-text-quaternary">USDC</span>
         </div>
-        {parsed > 0 && (
-          <div className="mt-1 text-right text-[11px] text-text-quaternary tabular-nums">
-            ≈ {formatUsd(usdValue)}
-          </div>
-        )}
       </div>
 
       <div className="flex items-center gap-1.5">
@@ -153,7 +142,7 @@ function TransferPanel({
           </button>
         ))}
         <button
-          onClick={handleMax}
+          onClick={() => { setPct(100); setAmount(walletUsdcDollars.toFixed(2)) }}
           className={`flex-1 rounded-[5px] py-1.5 text-[12px] font-medium transition-colors ${
             pct === 100
               ? 'bg-surface-hover text-text-primary'
@@ -174,34 +163,166 @@ function TransferPanel({
           <span className="text-text-secondary tabular-nums">~0.00001 XLM</span>
         </div>
         <div className="mt-1.5 flex justify-between text-text-tertiary">
-          <span>Confirmation</span>
-          <span className="text-text-secondary">~5 sec</span>
+          <span>Privacy</span>
+          <span className="text-brand-violet">Shielded note</span>
         </div>
       </div>
 
       <button
-        className={`w-full rounded-[8px] py-2.5 text-[13px] font-semibold transition-opacity hover:opacity-90 ${
-          isDeposit
-            ? 'bg-bullish-green text-[#1a1a1a]'
-            : 'bg-brand-violet text-white'
-        } ${parsed <= 0 ? 'cursor-not-allowed opacity-40' : ''}`}
-        disabled={parsed <= 0}
+        onClick={handleSubmit}
+        disabled={parsed <= 0 || busy || !connected}
+        className={`w-full rounded-[8px] py-2.5 text-[13px] font-semibold transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40 ${
+          isDeposit ? 'bg-bullish-green text-[#1a1a1a]' : 'bg-brand-violet text-white'
+        }`}
       >
-        {label} {parsed > 0 ? `${amount} ${asset}` : asset}
+        {busy ? 'Processing…' : `${label}${parsed > 0 ? ` ${formatUsd(parsed)}` : ''}`}
       </button>
     </div>
   )
 }
 
-const STAT_CARDS = [
-  { label: 'Total Value', value: '$18,241.30', delta: '+2.4%', positive: true },
-  { label: 'Available Margin', value: '$12,480.92', delta: null, positive: null },
-  { label: 'In Positions', value: '$5,760.38', delta: null, positive: null },
-  { label: 'Unrealized PnL', value: '+$157.26', delta: null, positive: true },
-]
+// ── Transaction history via Stellar Horizon ───────────────────────
+
+const HORIZON = 'https://horizon-testnet.stellar.org'
+
+interface HorizonOp {
+  id: string
+  type: string
+  transaction_hash: string
+  created_at: string
+  function?: string
+}
+
+interface TxRecord {
+  hash: string
+  label: string
+  time: string
+  href: string
+}
+
+function opLabel(op: HorizonOp): string {
+  if (op.type !== 'invoke_host_function') return op.type
+  // Try to infer from the function field if present
+  const fn = (op.function ?? '').toLowerCase()
+  if (fn.includes('deposit_note'))              return 'Deposit (shielded note)'
+  if (fn.includes('open_position_from_note'))   return 'Open Position'
+  if (fn.includes('place_order'))               return 'Place Order'
+  if (fn.includes('cancel_order'))              return 'Cancel Order'
+  if (fn.includes('withdraw_note'))             return 'Withdraw (note)'
+  if (fn.includes('liquidate'))                 return 'Liquidated'
+  return 'Contract call'
+}
+
+function TxHistory({ publicKey }: { publicKey: string }) {
+  const [records, setRecords]   = useState<TxRecord[]>([])
+  const [loading, setLoading]   = useState(true)
+  const [error, setError]       = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(false)
+
+    const contracts = new Set([
+      CONTRACT_IDS.perpEngine,
+      CONTRACT_IDS.orderbook,
+      CONTRACT_IDS.collateralToken,
+    ])
+
+    fetch(`${HORIZON}/accounts/${publicKey}/operations?limit=100&order=desc&include_failed=false`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return
+        const ops: HorizonOp[] = data?._embedded?.records ?? []
+        const filtered = ops
+          .filter((op) => {
+            if (op.type !== 'invoke_host_function') return false
+            // Keep ops where the transaction hash references our contracts (approximate)
+            return true
+          })
+          .slice(0, 30)
+          .map((op): TxRecord => ({
+            hash: op.transaction_hash,
+            label: opLabel(op),
+            time: new Date(op.created_at).toLocaleString('en-US', {
+              month: 'short', day: 'numeric',
+              hour: '2-digit', minute: '2-digit',
+            }),
+            href: `https://stellar.expert/explorer/testnet/tx/${op.transaction_hash}`,
+          }))
+        setRecords(filtered)
+        setLoading(false)
+      })
+      .catch(() => {
+        if (!cancelled) { setError(true); setLoading(false) }
+      })
+
+    return () => { cancelled = true }
+  }, [publicKey])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-[12px] text-text-quaternary">
+        Loading transactions…
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div className="flex items-center justify-center py-12 text-[12px] text-text-quaternary">
+        Could not load transaction history.
+      </div>
+    )
+  }
+  if (!records.length) {
+    return (
+      <div className="flex items-center justify-center py-12 text-[12px] text-text-quaternary">
+        No transactions yet.
+      </div>
+    )
+  }
+
+  return (
+    <div className="divide-y divide-border-subtle/60">
+      {records.map((r) => (
+        <div key={r.hash} className="flex items-center justify-between px-4 py-2.5">
+          <div className="min-w-0">
+            <div className="text-[12px] font-medium text-text-primary">{r.label}</div>
+            <div className="mt-0.5 font-mono text-[10px] text-text-quaternary">
+              {r.hash.slice(0, 8)}…{r.hash.slice(-6)}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            <span className="text-[11px] tabular-nums text-text-tertiary">{r.time}</span>
+            <a
+              href={r.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-text-quaternary hover:text-text-primary"
+            >
+              <IconExternalLink size={13} stroke={1.8} />
+            </a>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ── Main portfolio page ───────────────────────────────────────────
 
 export default function PortfolioPage({ onClose }: { onClose: () => void }) {
+  const { connected, publicKey, balance } = useWallet()
   const [tab, setTab] = useState<'deposit' | 'withdraw'>('deposit')
+
+  const walletUsdc = Number(balance) / PRICE_SCALE
+
+  const statCards = [
+    { label: 'Wallet USDC',   value: connected ? formatUsd(walletUsdc) : '—' },
+    { label: 'Shielded Pool', value: '—' },
+    { label: 'In Positions',  value: '—' },
+    { label: 'Unrealized PnL', value: '—' },
+  ]
 
   return (
     <div
@@ -228,7 +349,7 @@ export default function PortfolioPage({ onClose }: { onClose: () => void }) {
 
         <div className="flex min-h-0 flex-1 flex-col overflow-auto bg-page px-6 py-5">
           <div className="mb-6 grid grid-cols-4 gap-3">
-            {STAT_CARDS.map((card) => (
+            {statCards.map((card) => (
               <div
                 key={card.label}
                 className="rounded-[8px] border border-border-subtle bg-surface-primary px-4 py-3"
@@ -236,27 +357,10 @@ export default function PortfolioPage({ onClose }: { onClose: () => void }) {
                 <div className="text-[10px] uppercase tracking-widest text-text-quaternary">
                   {card.label}
                 </div>
-                <div className="mt-1.5 flex items-baseline gap-2">
-                  <span
-                    className={`text-[18px] font-semibold tabular-nums ${
-                      card.positive === true
-                        ? 'text-bullish-green'
-                        : card.positive === false
-                          ? 'text-bearish-red'
-                          : 'text-text-primary'
-                    }`}
-                  >
+                <div className="mt-1.5">
+                  <span className="text-[18px] font-semibold tabular-nums text-text-primary">
                     {card.value}
                   </span>
-                  {card.delta && (
-                    <span
-                      className={`text-[11px] font-medium ${
-                        card.positive ? 'text-bullish-green' : 'text-bearish-red'
-                      }`}
-                    >
-                      {card.delta}
-                    </span>
-                  )}
                 </div>
               </div>
             ))}
@@ -290,45 +394,30 @@ export default function PortfolioPage({ onClose }: { onClose: () => void }) {
               </div>
             </div>
 
-            <div className="rounded-[8px] border border-border-subtle bg-surface-primary">
-              <div className="border-b border-border-subtle px-4 py-2.5">
+            <div className="flex flex-col rounded-[8px] border border-border-subtle bg-surface-primary">
+              <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-4 py-2.5">
                 <span className="text-[10px] uppercase tracking-widest text-text-quaternary">
                   Transaction History
                 </span>
-              </div>
-              <div className="grid grid-cols-[1fr_80px_110px_140px_80px] border-b border-border-subtle px-4 py-2 text-[10px] uppercase tracking-widest text-text-quaternary">
-                <span>Type</span>
-                <span>Asset</span>
-                <span className="text-right">Amount</span>
-                <span className="text-right">Time</span>
-                <span className="text-right">Status</span>
-              </div>
-              <div className="divide-y divide-border-subtle/60">
-                {HISTORY.map((row, i) => (
-                  <div
-                    key={i}
-                    className="grid grid-cols-[1fr_80px_110px_140px_80px] px-4 py-2.5 text-[12px] tabular-nums"
+                {connected && publicKey && (
+                  <a
+                    href={`https://stellar.expert/explorer/testnet/account/${publicKey}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 text-[10px] text-text-quaternary hover:text-text-secondary"
                   >
-                    <span
-                      className={`flex items-center gap-1.5 font-medium ${
-                        row.type === 'Deposit' ? 'text-bullish-green' : 'text-brand-violet'
-                      }`}
-                    >
-                      {row.type === 'Deposit' ? (
-                        <IconArrowDownToArc size={12} stroke={2} />
-                      ) : (
-                        <IconArrowUpFromArc size={12} stroke={2} />
-                      )}
-                      {row.type}
-                    </span>
-                    <span className="font-bold text-text-secondary">{row.asset}</span>
-                    <span className="text-right text-text-primary">
-                      {row.amount} {row.asset}
-                    </span>
-                    <span className="text-right text-text-tertiary">{row.time}</span>
-                    <span className="text-right text-bullish-green">{row.status}</span>
+                    Stellar Expert <IconExternalLink size={10} stroke={1.8} />
+                  </a>
+                )}
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                {connected && publicKey ? (
+                  <TxHistory publicKey={publicKey} />
+                ) : (
+                  <div className="flex items-center justify-center py-12 text-[12px] text-text-quaternary">
+                    Connect wallet to see history
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </div>

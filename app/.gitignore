@@ -3,3 +3,4 @@ build
 .react-router
 .DS_Store
 *.log
+.env

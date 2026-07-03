@@ -14,6 +14,7 @@
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^16.0.1",
     "@tabler/icons-react": "^3.44.0",
+    "buffer": "^6.0.3",
     "framer-motion": "^12.40.0",
     "lightweight-charts": "^5.2.0",
     "react": "^19.1.1",
@@ -21,7 +22,8 @@
     "react-draggable": "4.6.0",
     "react-grid-layout": "^2.2.3",
     "react-resizable": "3.2.0",
-    "react-router": "^7.9.2"
+    "react-router": "^7.9.2",
+    "vite-plugin-node-polyfills": "^0.28.0"
   },
   "devDependencies": {
     "@react-router/dev": "^7.9.2",

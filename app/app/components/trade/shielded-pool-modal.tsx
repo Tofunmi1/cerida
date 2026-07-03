@@ -22,7 +22,23 @@ interface PoolNote {
 
 function loadNotes(): PoolNote[] {
   try {
-    return JSON.parse(localStorage.getItem(NOTES_KEY) ?? '[]')
+    const poolNotes = JSON.parse(localStorage.getItem(NOTES_KEY) ?? '[]')
+    if (poolNotes.length > 0) return poolNotes
+
+    // Migrate from portfolio deposits (cerida-notes)
+    const legacy = JSON.parse(localStorage.getItem('cerida-notes') ?? '[]')
+    console.log('pool-migration: legacy notes from cerida-notes:', legacy.length)
+    if (legacy.length === 0) return []
+
+    const migrated: PoolNote[] = legacy.map((n: { note_cmt: string; secret: number; amount: number; depositedAt: number }) => ({
+      id: n.note_cmt,
+      secret: String(n.secret),
+      nullifier: '',
+      status: 'deposited' as const,
+      createdAt: n.depositedAt,
+    }))
+    saveNotes(migrated)
+    return migrated
   } catch {
     return []
   }

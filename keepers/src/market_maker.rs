@@ -1,204 +1,349 @@
-// ── Market Maker ─────────────────────────────────────────────────
-// Quote grid market maker using fast-init commitments.
-// Connects to TEE server for order management.
-// Pre-generates commitment pools per market for instant quoting.
+// ── 32-Level Market Maker ─────────────────────────────────────────
+// Quotes a grid of 32 bids + 32 asks per market, priced from Pyth.
+//
+// Spread profile (percentage-based, not fixed ticks):
+//   Crypto: level i → (5 + 3*i) bps from mid
+//   RWA:    level i → (10 + 5*i) bps from mid
+//
+// Size profile (geometric growth outward):
+//   level i → base_size * 1.08^(i-1)
+//   → inner quotes are small (fill fast), outer quotes are large
+//
+// Pool management:
+//   Pre-generates 2× buffer (128 commitments) per market.
+//   On price movement > REFRESH_THRESHOLD, cancels stale quotes
+//   and replenishes from the pool at updated price levels.
 // ─────────────────────────────────────────────────────────────────
 
 use anyhow::Result;
 use e2e::client::ServerClient;
 use rand::Rng;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
+
+pub const LEVELS: usize = 32;
+const REFRESH_THRESHOLD: f64 = 0.005; // re-quote if mid moves > 0.5%
+const QUOTE_TTL_SECS: u64 = 300;      // cancel quotes older than 5 minutes
+const POOL_BUFFER: usize = LEVELS * 2; // how many extras to pre-generate per side
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    Crypto,
+    Rwa,
+}
+
+pub struct MarketConfig {
+    pub symbol: &'static str,
+    pub asset_id: u64,
+    pub category: Category,
+    pub base_price: u64,   // fallback price in 7-decimal scale
+    pub base_size: u64,    // smallest order size (level 1 bid/ask)
+    pub leverage: u64,
+}
 
 pub struct MmConfig {
     pub tee_addr: String,
     pub markets: Vec<MarketConfig>,
+    /// Shared Pyth price map: pyth_id → scaled price (7 decimals).
+    /// Keyed by the market symbol for easy lookup.
+    pub prices: Arc<RwLock<HashMap<String, u64>>>,
 }
 
-pub struct MarketConfig {
-    pub asset_id: u64,
-    pub base_price: u64,
-    pub spread_bps: u64,
-    pub depth_levels: u64,
-    pub size_per_level: u64,
-    pub leverage: u64,
-    pub pool_size: u64,
-}
+// ── Internal state ─────────────────────────────────────────────────
 
-struct MarketState {
-    asset: u64,
-    base_price: u64,
-    spread_bps: u64,
-    depth_levels: u64,
-    size: u64,
-    leverage: u64,
-    pool: VecDeque<Commitment>,
-    active_quotes: HashMap<String, QuoteInfo>,
-    next_nonce: u64,
-}
-
-struct Commitment {
+struct Slot {
     cmt: String,
-    side: u64,
+    side: u64,   // 0 = bid, 1 = ask
+    level: usize,
     price: u64,
     size: u64,
 }
 
-struct QuoteInfo {
+struct ActiveQuote {
     side: u64,
+    level: usize,
     price: u64,
     placed_at: Instant,
 }
 
-pub fn run(config: MmConfig, interval_secs: u64) {
-    let interval = Duration::from_secs(interval_secs);
+struct Market {
+    cfg: MarketConfig,
+    mid_at_gen: u64,     // price when the pool was last generated
+    pool: Vec<Slot>,     // pre-generated but unplaced commitments
+    active: HashMap<String, ActiveQuote>,
+    next_nonce: u64,
+}
+
+// ── Spread / size calculations ─────────────────────────────────────
+
+fn spread_bps(cat: Category, level: usize) -> u64 {
+    let i = level as u64;
+    match cat {
+        Category::Crypto => 5 + 3 * i,
+        Category::Rwa    => 10 + 5 * i,
+    }
+}
+
+fn level_size(base: u64, level: usize) -> u64 {
+    // Geometric growth: base * 1.08^(level-1) approximated with integer ops
+    // Use 1000 as the multiplier base and divide at the end
+    let mut s = base as u128;
+    for _ in 0..level.saturating_sub(1) {
+        s = s * 108 / 100;
+    }
+    (s as u64).max(1)
+}
+
+fn level_price(mid: u64, cat: Category, side: u64, level: usize) -> u64 {
+    let bps = spread_bps(cat, level);
+    let delta = mid.saturating_mul(bps) / 10_000;
+    if side == 0 { mid.saturating_sub(delta) } else { mid.saturating_add(delta) }
+}
+
+// ── Pool generation ────────────────────────────────────────────────
+
+fn gen_pool(
+    client: &ServerClient,
+    cfg: &MarketConfig,
+    mid: u64,
+    nonce: &mut u64,
+) -> Vec<Slot> {
     let mut rng = rand::thread_rng();
+    let mut pool = Vec::with_capacity((LEVELS + POOL_BUFFER) * 2);
 
-    // ── Initialize per-market state ──
-    let mut states: HashMap<u64, MarketState> = HashMap::new();
-    for mc in &config.markets {
-        let mut pool = VecDeque::new();
-        let mut nonce = 0u64;
+    for side in [0u64, 1u64] {
+        // Generate LEVELS active slots + POOL_BUFFER extras
+        for level in 1..=(LEVELS + POOL_BUFFER) {
+            let price = level_price(mid, cfg.category, side, level.min(LEVELS));
+            let size = level_size(cfg.base_size, level.min(LEVELS));
+            let secret: u64 = rng.gen();
 
-        // Pre-generate commitment pool via fast-init
-        let start = Instant::now();
-        for _ in 0..mc.pool_size {
-            // Bid side
-            for side in [0u64, 1u64] {
-                let price = if side == 0 {
-                    mc.base_price.saturating_sub(mc.spread_bps * mc.base_price / 10_000)
-                } else {
-                    mc.base_price.saturating_add(mc.spread_bps * mc.base_price / 10_000)
-                };
-                let secret: u64 = rng.gen();
-
-                match ServerClient::new(&config.tee_addr).fast_init(
-                    side, price, mc.size_per_level, mc.leverage,
-                    mc.asset_id, nonce, secret,
-                ) {
-                    Ok(cmt) => {
-                        pool.push_back(Commitment { cmt: cmt.clone(), side, price, size: mc.size_per_level });
-                        eprintln!("  [mm] asset={} side={} price={} cmt={}...", mc.asset_id, side, price, &cmt[..12]);
-                    }
-                    Err(e) => eprintln!("  [mm] fast-init failed: {e}"),
-                }
-                nonce += 1;
+            match client.fast_init(side, price, size, cfg.leverage, cfg.asset_id, *nonce, secret) {
+                Ok(cmt) => pool.push(Slot { cmt, side, level, price, size }),
+                Err(e) => eprintln!("  [mm] {} fast-init side={side} lvl={level}: {e}", cfg.symbol),
             }
+            *nonce += 1;
         }
-        eprintln!("  [mm] asset={} pool={} generated in {:.1}s",
-            mc.asset_id, pool.len(), start.elapsed().as_secs_f64());
-
-        states.insert(mc.asset_id, MarketState {
-            asset: mc.asset_id,
-            base_price: mc.base_price,
-            spread_bps: mc.spread_bps,
-            depth_levels: mc.depth_levels,
-            size: mc.size_per_level,
-            leverage: mc.leverage,
-            pool,
-            active_quotes: HashMap::new(),
-            next_nonce: nonce,
-        });
     }
 
-    // ── Main quoting loop ──
-    let tee = config.tee_addr.clone();
+    pool
+}
+
+// ── Main loop ──────────────────────────────────────────────────────
+
+pub fn run(config: MmConfig, interval_secs: u64) {
+    let interval = Duration::from_secs(interval_secs);
+
+    eprintln!("  [mm] initializing {} markets at {} levels/side", config.markets.len(), LEVELS);
+
+    let client = ServerClient::new(&config.tee_addr);
+
+    let mut markets: Vec<Market> = config.markets.iter().map(|cfg| {
+        let mid = read_price(&config.prices, cfg.symbol, cfg.base_price);
+        let mut nonce = 0u64;
+        eprintln!("  [mm] {} generating pool at mid=${:.2}", cfg.symbol, mid as f64 / 1e7);
+        let t = Instant::now();
+        let pool = gen_pool(&client, cfg, mid, &mut nonce);
+        eprintln!("  [mm] {} pool={} slots in {:.1}s", cfg.symbol, pool.len(), t.elapsed().as_secs_f64());
+
+        Market {
+            cfg: MarketConfig {
+                symbol: cfg.symbol,
+                asset_id: cfg.asset_id,
+                category: cfg.category,
+                base_price: cfg.base_price,
+                base_size: cfg.base_size,
+                leverage: cfg.leverage,
+            },
+            mid_at_gen: mid,
+            pool,
+            active: HashMap::new(),
+            next_nonce: nonce,
+        }
+    }).collect();
+
+    // ── Initial placement ──
+    for mkt in &mut markets {
+        let client = ServerClient::new(&config.tee_addr);
+        initial_place(mkt, &client);
+    }
+
     let mut tick = 0u64;
     loop {
         tick += 1;
         let t = Instant::now();
-        let client = ServerClient::new(&tee);
+        let client = ServerClient::new(&config.tee_addr);
 
-        for mc in &config.markets {
-            let state = states.get_mut(&mc.asset_id).unwrap();
-
-            if let Ok(market) = client.get_market() {
-                let mid = match (market.best_bid, market.best_ask) {
-                    (Some(bid_str), Some(ask_str)) => {
-                        let bid: u64 = bid_str.split('x').next().and_then(|s| s.parse().ok()).unwrap_or(mc.base_price);
-                        let ask: u64 = ask_str.split('x').next().and_then(|s| s.parse().ok()).unwrap_or(mc.base_price);
-                        (bid + ask) / 2
-                    }
-                    _ => mc.base_price,
-                };
-
-                let spread_amount = mid * mc.spread_bps / 10_000;
-                let desired_bid = mid.saturating_sub(spread_amount);
-                let desired_ask = mid.saturating_add(spread_amount);
-
-                // Check which quotes need refreshing
-                let mut place_bid = true;
-                let mut place_ask = true;
-
-                for (cmt, qi) in &state.active_quotes {
-                    let too_old = qi.placed_at.elapsed() > Duration::from_secs(interval_secs * 3);
-                    let too_far = if qi.side == 0 {
-                        qi.price < desired_bid || qi.price > desired_bid
-                    } else {
-                        qi.price > desired_ask || qi.price < desired_ask
-                    };
-                    if too_old || too_far {
-                        let _ = client.cancel_order(cmt);
-                    } else if qi.side == 0 {
-                        place_bid = false;
-                    } else {
-                        place_ask = false;
-                    }
-                }
-
-                // Place new quotes from pool
-                if place_bid || state.active_quotes.is_empty() {
-                    if let Some(cmt_info) = state.pool.pop_front() {
-                        let cmt = cmt_info.cmt.clone();
-                        let side = cmt_info.side;
-                        match client.place_order(&cmt, "limit", cmt_info.price, cmt_info.size) {
-                            Ok(_) => {
-                                state.active_quotes.insert(cmt, QuoteInfo { side, price: cmt_info.price, placed_at: Instant::now() });
-                            }
-                            Err(e) => eprintln!("  [mm] place bid failed: {e}"),
-                        }
-                    }
-                }
-
-                if place_ask || state.active_quotes.len() < 2 {
-                    if let Some(cmt_info) = state.pool.pop_front() {
-                        let cmt = cmt_info.cmt.clone();
-                        let side = cmt_info.side;
-                        match client.place_order(&cmt, "limit", cmt_info.price, cmt_info.size) {
-                            Ok(_) => {
-                                state.active_quotes.insert(cmt, QuoteInfo { side, price: cmt_info.price, placed_at: Instant::now() });
-                            }
-                            Err(e) => eprintln!("  [mm] place ask failed: {e}"),
-                        }
-                    }
-                }
-
-                // Replenish pool if low
-                if state.pool.len() < mc.pool_size as usize / 2 {
-                    let mut rng = rand::thread_rng();
-                    let to_generate = mc.pool_size as usize - state.pool.len();
-                    for _ in 0..to_generate {
-                        let side: u64 = rng.gen_range(0..2);
-                        let price = if side == 0 { desired_bid } else { desired_ask };
-                        let secret: u64 = rng.gen();
-                        if let Ok(cmt) = client.fast_init(
-                            side, price, mc.size_per_level, mc.leverage,
-                            mc.asset_id, state.next_nonce, secret,
-                        ) {
-                            state.pool.push_back(Commitment { cmt, side, price, size: mc.size_per_level });
-                            state.next_nonce += 1;
-                        }
-                    }
-                }
-            }
+        for mkt in &mut markets {
+            let mid = read_price(&config.prices, mkt.cfg.symbol, mkt.cfg.base_price);
+            refresh_market(mkt, &client, mid, interval_secs);
         }
 
-        eprintln!("  [mm] tick #{tick}: pool={} active={} ({:.1}s)",
-            states.values().map(|s| s.pool.len()).sum::<usize>(),
-            states.values().map(|s| s.active_quotes.len()).sum::<usize>(),
-            t.elapsed().as_secs_f64()
-        );
+        let total_active: usize = markets.iter().map(|m| m.active.len()).sum();
+        let total_pool: usize = markets.iter().map(|m| m.pool.len()).sum();
+        eprintln!("  [mm] tick #{tick}: active={total_active} pool={total_pool} ({:.1}s)",
+            t.elapsed().as_secs_f64());
+
         thread::sleep(interval);
     }
+}
+
+fn read_price(prices: &Arc<RwLock<HashMap<String, u64>>>, symbol: &str, fallback: u64) -> u64 {
+    prices.read()
+        .ok()
+        .and_then(|m| m.get(symbol).copied())
+        .unwrap_or(fallback)
+}
+
+fn initial_place(mkt: &mut Market, client: &ServerClient) {
+    // Place one bid + one ask per level (levels 1..=LEVELS)
+    let mut bid_counts = vec![0usize; LEVELS + 1];
+    let mut ask_counts = vec![0usize; LEVELS + 1];
+    let mut to_place: Vec<Slot> = Vec::new();
+
+    // Drain desired levels from pool
+    let pool = std::mem::take(&mut mkt.pool);
+    let mut remaining = Vec::new();
+
+    for slot in pool {
+        if slot.level > LEVELS {
+            remaining.push(slot);
+            continue;
+        }
+        let counts = if slot.side == 0 { &mut bid_counts } else { &mut ask_counts };
+        if counts[slot.level] == 0 {
+            counts[slot.level] += 1;
+            to_place.push(slot);
+        } else {
+            remaining.push(slot);
+        }
+    }
+    mkt.pool = remaining;
+
+    for slot in to_place {
+        match client.place_order(&slot.cmt, "limit", slot.price, slot.size) {
+            Ok(_) => {
+                mkt.active.insert(slot.cmt.clone(), ActiveQuote {
+                    side: slot.side,
+                    level: slot.level,
+                    price: slot.price,
+                    placed_at: Instant::now(),
+                });
+            }
+            Err(e) => eprintln!("  [mm] {} place side={} lvl={}: {e}", mkt.cfg.symbol, slot.side, slot.level),
+        }
+    }
+
+    eprintln!("  [mm] {} placed {} active quotes", mkt.cfg.symbol, mkt.active.len());
+}
+
+fn refresh_market(mkt: &mut Market, client: &ServerClient, mid: u64, interval_secs: u64) {
+    let ttl = Duration::from_secs(QUOTE_TTL_SECS.max(interval_secs * 3));
+    let price_drift = price_change_ratio(mid, mkt.mid_at_gen);
+
+    let needs_full_refresh = price_drift > REFRESH_THRESHOLD;
+
+    if needs_full_refresh {
+        eprintln!("  [mm] {} price moved {:.2}%, refreshing all quotes (mid ${:.2})",
+            mkt.cfg.symbol,
+            price_drift * 100.0,
+            mid as f64 / 1e7,
+        );
+        // Cancel all active quotes
+        let cmts: Vec<String> = mkt.active.keys().cloned().collect();
+        for cmt in cmts {
+            let _ = client.cancel_order(&cmt);
+        }
+        mkt.active.clear();
+
+        // Regenerate pool at new mid
+        let pool = gen_pool(client, &mkt.cfg, mid, &mut mkt.next_nonce);
+        mkt.pool = pool;
+        mkt.mid_at_gen = mid;
+
+        initial_place(mkt, client);
+        return;
+    }
+
+    // Partial refresh: cancel stale quotes, replenish missing levels
+    let mut to_cancel: Vec<String> = Vec::new();
+    for (cmt, q) in &mkt.active {
+        if q.placed_at.elapsed() > ttl {
+            to_cancel.push(cmt.clone());
+        }
+    }
+    for cmt in &to_cancel {
+        let _ = client.cancel_order(cmt);
+        mkt.active.remove(cmt);
+    }
+
+    // Track which levels are covered
+    let mut bid_covered = vec![false; LEVELS + 1];
+    let mut ask_covered = vec![false; LEVELS + 1];
+    for q in mkt.active.values() {
+        if q.level <= LEVELS {
+            if q.side == 0 { bid_covered[q.level] = true; }
+            else { ask_covered[q.level] = true; }
+        }
+    }
+
+    // Place missing levels from pool
+    let pool = std::mem::take(&mut mkt.pool);
+    let mut remaining = Vec::new();
+    for slot in pool {
+        if slot.level > LEVELS {
+            remaining.push(slot);
+            continue;
+        }
+        let covered = if slot.side == 0 { &mut bid_covered } else { &mut ask_covered };
+        if !covered[slot.level] {
+            match client.place_order(&slot.cmt, "limit", slot.price, slot.size) {
+                Ok(_) => {
+                    covered[slot.level] = true;
+                    mkt.active.insert(slot.cmt.clone(), ActiveQuote {
+                        side: slot.side,
+                        level: slot.level,
+                        price: slot.price,
+                        placed_at: Instant::now(),
+                    });
+                }
+                Err(e) => {
+                    eprintln!("  [mm] {} place side={} lvl={}: {e}", mkt.cfg.symbol, slot.side, slot.level);
+                    remaining.push(slot);
+                }
+            }
+        } else {
+            remaining.push(slot);
+        }
+    }
+    mkt.pool = remaining;
+
+    // Replenish pool if low
+    let want_pool = POOL_BUFFER * 2;
+    if mkt.pool.len() < want_pool {
+        let to_gen = want_pool - mkt.pool.len();
+        let mut rng = rand::thread_rng();
+        for _ in 0..to_gen {
+            let side: u64 = rng.gen_range(0..2);
+            let level: usize = rng.gen_range(1..=LEVELS);
+            let price = level_price(mid, mkt.cfg.category, side, level);
+            let size = level_size(mkt.cfg.base_size, level);
+            let secret: u64 = rng.gen();
+            if let Ok(cmt) = client.fast_init(
+                side, price, size, mkt.cfg.leverage,
+                mkt.cfg.asset_id, mkt.next_nonce, secret,
+            ) {
+                mkt.pool.push(Slot { cmt, side, level, price, size });
+                mkt.next_nonce += 1;
+            }
+        }
+    }
+}
+
+fn price_change_ratio(a: u64, b: u64) -> f64 {
+    if b == 0 { return 1.0; }
+    let diff = if a > b { a - b } else { b - a };
+    diff as f64 / b as f64
 }

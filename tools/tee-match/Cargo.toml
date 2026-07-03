@@ -20,6 +20,7 @@ rust-circuits = { path = "../rust-circuits" }
 # Secure mode (attestation, encryption, HTTP API)
 tokio = { version = "1", features = ["full"], optional = true }
 axum = { version = "0.7", optional = true }
+tower-http = { version = "0.5", features = ["cors"], optional = true }
 reqwest = { version = "0.12", features = ["json", "blocking", "rustls-tls"], optional = true, default-features = false }
 jsonwebtoken = { version = "9", optional = true }
 base64 = { version = "0.22", optional = true }
@@ -30,7 +31,7 @@ zeroize = { version = "1", optional = true, features = ["zeroize_derive"] }
 [features]
 default = []
 secure = [
-  "tokio", "axum",
+  "tokio", "axum", "tower-http",
   "reqwest", "jsonwebtoken", "base64",
   "aes-gcm", "ring", "zeroize",
 ]
