@@ -6,19 +6,21 @@
 # TLS is terminated by GCP Load Balancer — app listens on plain HTTP.
 #
 # Build: docker build -f infra/Dockerfile -t tee-match .
-# Run:   docker run -p 9721:9721 -e CER_DEK=<hex> -v $(pwd)/circuits/keys:/keys tee-match
+# Run locally: docker run -p 9721:9721 -e CER_DEK=<hex> tee-match
 
 # ── Stage 1: Build ─────────────────────────────────────────────
-FROM rust:1.85-slim-bookworm AS builder
+FROM rust:1.88-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
-COPY Cargo.toml Cargo.lock ./
-COPY tools/tee-match/ tools/tee-match/
-COPY tools/rust-circuits/ tools/rust-circuits/
+COPY tools/tee-match/Cargo.toml tools/tee-match/Cargo.toml
+COPY tools/tee-match/Cargo.lock tools/tee-match/Cargo.lock
+COPY tools/tee-match/src/ tools/tee-match/src/
+COPY tools/rust-circuits/Cargo.toml tools/rust-circuits/
+COPY tools/rust-circuits/src/ tools/rust-circuits/src/
 
 RUN cargo build --release --features secure \
     --manifest-path tools/tee-match/Cargo.toml
@@ -33,15 +35,15 @@ RUN groupadd -r tee && useradd -r -g tee tee
 
 COPY --from=builder /build/tools/tee-match/target/release/tee-match /usr/local/bin/tee-match
 
-RUN mkdir -p /keys && chown -R tee:tee /keys
+COPY circuits/keys/ /keys/
+
+RUN chown -R tee:tee /keys
 
 USER tee
-EXPOSE 9721
-
-ENV CER_DEK=""
+EXPOSE 9720
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD bash -c 'echo > /dev/tcp/localhost/9721' 2>/dev/null || exit 1
+    CMD tee-match --help > /dev/null || exit 1
 
-ENTRYPOINT ["tee-match"]
-CMD ["ServeSecure", "--addr", "0.0.0.0:9721", "--db", "/keys/tee-db"]
+ENTRYPOINT ["tee-match", "--keys-dir", "/keys"]
+CMD ["Serve", "--addr", "0.0.0.0:9720", "--db", "/keys/tee-db"]

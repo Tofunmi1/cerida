@@ -3,13 +3,13 @@
 # -----------------------------------------------------------------------
 # Prerequisites:
 #   gcloud CLI installed and authenticated
-#   docker CLI installed
 #   GCP project with billing enabled
 # -----------------------------------------------------------------------
 set -euo pipefail
 
 PROJECT="${PROJECT:-${1:-}}"
 REGION="${REGION:-us-central1}"
+ZONE="${ZONE:-us-central1-a}"
 SERVICE="${SERVICE:-tee-match}"
 
 if [ -z "$PROJECT" ]; then
@@ -20,12 +20,15 @@ fi
 
 gcloud config set project "$PROJECT" 2>/dev/null || true
 
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/tee-match-repo/${SERVICE}:latest"
+
 echo "=== 1. Enable APIs ======================================"
 gcloud services enable \
   compute.googleapis.com \
   confidentialcomputing.googleapis.com \
   cloudkms.googleapis.com \
   artifactregistry.googleapis.com \
+  cloudbuild.googleapis.com \
   --project="$PROJECT"
 
 echo "=== 2. Create Artifact Registry repo ===================="
@@ -34,11 +37,12 @@ gcloud artifacts repositories create tee-match-repo \
   --location="$REGION" \
   --project="$PROJECT" \
   2>/dev/null || echo "  (repo already exists)"
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/tee-match-repo/${SERVICE}:latest"
 
-echo "=== 3. Build and push Docker image ======================"
-docker build -f infra/Dockerfile -t "$IMAGE" .
-docker push "$IMAGE"
+echo "=== 3. Build and push via Cloud Build ==================="
+gcloud builds submit \
+  --config=cloudbuild-tee.yaml \
+  --project="$PROJECT" \
+  .
 
 echo "=== 4. Create KMS key ring + key ========================"
 gcloud kms keyrings create cer-perp \
@@ -53,33 +57,88 @@ gcloud kms keys create tee-dek \
   --project="$PROJECT" \
   2>/dev/null || echo "  (key already exists)"
 
-echo "=== 5. Generate and encrypt DEK ========================="
-DEK_HEX=$(openssl rand -hex 32)
-echo -n "$DEK_HEX" | base64 > /tmp/tek-dek.plain
-gcloud kms encrypt \
+echo "=== 5. Create service account for TEE VM ================"
+SA_NAME="tee-match-sa"
+SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
+
+gcloud iam service-accounts create "$SA_NAME" \
+  --display-name="tee-match TEE service account" \
+  --project="$PROJECT" \
+  2>/dev/null || echo "  (service account already exists)"
+
+# Allow it to pull from Artifact Registry
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/artifactregistry.reader" \
+  --condition=None 2>/dev/null || true
+
+# Allow it to decrypt with the KMS key
+gcloud kms keys add-iam-policy-binding tee-dek \
   --location=global \
   --keyring=cer-perp \
-  --key=tee-dek \
-  --plaintext-file=/tmp/tek-dek.plain \
-  --ciphertext-file=/tmp/tek-dek.enc \
-  --project="$PROJECT"
-rm -f /tmp/tek-dek.plain
-DEK_ENC_B64=$(base64 < /tmp/tek-dek.enc | tr -d '\n')
-rm -f /tmp/tek-dek.enc
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/cloudkms.cryptoKeyDecrypter" \
+  --project="$PROJECT" 2>/dev/null || true
 
-echo "=== 6. Deploy Confidential Space workload ==============="
-echo "  DEK_HEX: ${DEK_HEX:0:16}... (save this!)"
-echo "  Image:   $IMAGE"
+echo "=== 6. Deploy Confidential Space VM ====================="
+gcloud compute instances create tee-match-vm \
+  --project="$PROJECT" \
+  --zone="$ZONE" \
+  --machine-type=n2d-standard-2 \
+  --confidential-compute-type=SEV_SNP \
+  --on-host-maintenance=TERMINATE \
+  --shielded-secure-boot \
+  --image-project=confidential-space-images \
+  --image-family=confidential-space \
+  --service-account="${SA_EMAIL}" \
+  --scopes=cloud-platform \
+  --tags=tee-match \
+  --metadata=\
+"tee-image-reference=${IMAGE},\
+tee-restart-policy=Always,\
+tee-env-KEYS_DIR=/keys" \
+  2>/dev/null || echo "  (instance already exists — use 'gcloud compute instances update-container' to update)"
+
+echo "=== 7. Deploy keepers VM ================================"
+gcloud builds submit \
+  --config=cloudbuild-keepers.yaml \
+  --project="$PROJECT" \
+  .
+
+KEEPERS_IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/tee-match-repo/keepers:latest"
+TEE_INTERNAL_IP=$(gcloud compute instances describe tee-match-vm \
+  --zone="$ZONE" --project="$PROJECT" \
+  --format="value(networkInterfaces[0].networkIP)" 2>/dev/null || echo "UNKNOWN")
+
+gcloud compute instances create keepers-vm \
+  --project="$PROJECT" \
+  --zone="$ZONE" \
+  --machine-type=e2-standard-2 \
+  --image-project=cos-cloud \
+  --image-family=cos-stable \
+  --tags=keepers \
+  --metadata=\
+"gce-container-declaration=spec:
+  containers:
+  - image: ${KEEPERS_IMAGE}
+    args:
+    - --tee-addr
+    - ${TEE_INTERNAL_IP}:9720
+    - --perp-id
+    - CD6IY25X36TIDYU7TKX3Y6NMZY2TTCDKCYYHER5EAHATKAZNXN6J4JBA
+    env:
+    - name: SOROBAN_RPC_URL
+      value: https://soroban-testnet.stellar.org
+    restartPolicy: Always" \
+  2>/dev/null || echo "  (keepers instance already exists)"
+
 echo ""
-echo "  Deploy via GCP Console:"
-echo "    Confidential Space → Create Workload"
-echo "    Image: $IMAGE"
-echo "    KMS Key: projects/$PROJECT/locations/global/keyRings/cer-perp/cryptoKeys/tee-dek"
-echo "    Port: 9721"
-echo "    Env: CER_DEK=\${DEK_HEX}"
+echo "=== Done ================================================"
+echo "  tee-match VM internal IP: ${TEE_INTERNAL_IP}"
+echo "  Image: ${IMAGE}"
 echo ""
-echo "  Or use: gcloud beta confidential-computing workloads create ..."
-echo "  See: tools/tee-match/src/crypto.rs for the encryption scheme."
-echo ""
-echo "=== Local test command ==================================="
-echo "  docker run -p 9721:9721 -e CER_DEK=$DEK_HEX -v \$(pwd)/circuits/keys:/keys $IMAGE"
+echo "  Firewall rule (allow keepers → tee-match on port 9720):"
+echo "    gcloud compute firewall-rules create allow-keepers-to-tee \\"
+echo "      --network=default --allow=tcp:9720 \\"
+echo "      --source-tags=keepers --target-tags=tee-match \\"
+echo "      --project=$PROJECT"

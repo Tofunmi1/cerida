@@ -1,0 +1,17 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'keepers/Dockerfile'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/keepers:latest'
+      - '.'
+    timeout: '1800s'
+
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/keepers:latest'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
