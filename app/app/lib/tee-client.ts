@@ -2,7 +2,9 @@
 // Connects to the TEE match server via HTTP for order commitment
 // generation and proof creation.
 
-const TEE_URL = import.meta.env.VITE_TEE_URL ?? 'http://127.0.0.1:9721'
+// In production (HTTPS) use the Vercel edge rewrite at /tee to avoid mixed-content.
+// In local dev the vite proxy rewrites /tee → http://127.0.0.1:9721 too.
+const TEE_URL = import.meta.env.VITE_TEE_URL ?? '/tee'
 
 export interface OrderBookLevel {
   price: number
