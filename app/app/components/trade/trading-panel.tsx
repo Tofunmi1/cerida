@@ -525,18 +525,31 @@ export default function TradingPanel() {
         noteProof: noteScVal,
         commitProof: commitScVal,
       })
-      await submitAndWait(await sign(openTx.toXDR()))
+      const openTxHash = await submitAndWait(await sign(openTx.toXDR()))
 
       positionsStore.add({ commitment, symbol, side: sideNum, leverage, openedAt: Date.now() })
       levels.setEntry(mark)
       refreshBalance()
 
+      const txUrl = `https://stellar.expert/explorer/testnet/tx/${openTxHash}`
       toast.update(progressId, {
         type: 'success',
         title: `${actionLabel} ${symbol} opened`,
-        description: `${leverage}x · ${formatUsd(notional)} notional`,
+        description: (
+          <span>
+            {leverage}x · {formatUsd(notional)} notional{' · '}
+            <a
+              href={txUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:opacity-80"
+            >
+              View tx ↗
+            </a>
+          </span>
+        ),
         progress: undefined,
-        duration: 5000,
+        duration: 8000,
       })
       setAmount('')
       setPctSelected(null)

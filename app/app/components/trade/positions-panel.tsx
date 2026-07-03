@@ -60,7 +60,7 @@ export default function PositionsPanel() {
         recipientNote: recipient.note_cmt,
         cancelProof: proofJsonToScVal(proof),
       })
-      await submitAndWait(await sign(tx.toXDR()))
+      const closeTxHash = await submitAndWait(await sign(tx.toXDR()))
 
       const notes = JSON.parse(localStorage.getItem('cerida-notes') ?? '[]')
       notes.push({
@@ -76,10 +76,18 @@ export default function PositionsPanel() {
       positionsStore.remove(cmt)
       setPositions((prev) => prev.filter((p) => p.stored.commitment !== cmt))
 
+      const closeUrl = `https://stellar.expert/explorer/testnet/tx/${closeTxHash}`
       toast.update(progressId, {
         type: 'success',
         title: `${symbol} closed`,
-        description: 'Collateral refunded to a shielded note',
+        description: (
+          <span>
+            Collateral refunded to a shielded note{' · '}
+            <a href={closeUrl} target="_blank" rel="noopener noreferrer" className="underline hover:opacity-80">
+              View tx ↗
+            </a>
+          </span>
+        ),
         progress: undefined,
         duration: 5000,
       })

@@ -538,7 +538,7 @@ export async function getUsdcBalance(address: string): Promise<bigint | null> {
 
 // ── Submit ────────────────────────────────────────────────────────────────────
 
-export async function submitAndWait(signedXdr: string) {
+export async function submitAndWait(signedXdr: string): Promise<string> {
   const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE)
   const sendResult = await rpc.sendTransaction(tx)
   if (sendResult.status === 'ERROR') {
@@ -549,7 +549,7 @@ export async function submitAndWait(signedXdr: string) {
   for (let i = 0; i < 20; i++) {
     await new Promise((r) => setTimeout(r, 1500))
     const status = await rpc.getTransaction(hash)
-    if (status.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) return status
+    if (status.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) return hash
     if (status.status === SorobanRpc.Api.GetTransactionStatus.FAILED) {
       throw new Error('Transaction failed on-chain')
     }

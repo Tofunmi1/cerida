@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from 'react'
+import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
 
 export interface ToastAction {
   label: string
@@ -9,10 +9,10 @@ export interface Toast {
   id: string
   type: 'success' | 'info' | 'warning' | 'error' | 'progress'
   title: string
-  description?: string
-  progress?: number // 0 to 100, or undefined for indeterminate/none
+  description?: ReactNode
+  progress?: number
   action?: ToastAction
-  duration?: number | null // duration in ms, or null/Infinity for persistent
+  duration?: number | null
 }
 
 type ToastListener = (toasts: Toast[]) => void
@@ -27,7 +27,7 @@ function emit() {
 export const toast = {
   success: (
     title: string,
-    description?: string,
+    description?: ReactNode,
     options?: Omit<Partial<Toast>, 'id' | 'type' | 'title' | 'description'>
   ) => {
     const id = Math.random().toString(36).substring(2, 9)
@@ -46,7 +46,7 @@ export const toast = {
 
   info: (
     title: string,
-    description?: string,
+    description?: ReactNode,
     options?: Omit<Partial<Toast>, 'id' | 'type' | 'title' | 'description'>
   ) => {
     const id = Math.random().toString(36).substring(2, 9)
@@ -65,7 +65,7 @@ export const toast = {
 
   warning: (
     title: string,
-    description?: string,
+    description?: ReactNode,
     options?: Omit<Partial<Toast>, 'id' | 'type' | 'title' | 'description'>
   ) => {
     const id = Math.random().toString(36).substring(2, 9)
@@ -84,7 +84,7 @@ export const toast = {
 
   error: (
     title: string,
-    description?: string,
+    description?: ReactNode,
     options?: Omit<Partial<Toast>, 'id' | 'type' | 'title' | 'description'>
   ) => {
     const id = Math.random().toString(36).substring(2, 9)
@@ -104,7 +104,7 @@ export const toast = {
   progress: (
     title: string,
     progress: number,
-    description?: string,
+    description?: ReactNode,
     options?: Omit<Partial<Toast>, 'id' | 'type' | 'title' | 'description' | 'progress'>
   ) => {
     const id = Math.random().toString(36).substring(2, 9)
