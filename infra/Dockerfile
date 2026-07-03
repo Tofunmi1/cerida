@@ -46,4 +46,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD tee-match --help > /dev/null || exit 1
 
 ENTRYPOINT ["tee-match", "--keys-dir", "/keys"]
-CMD ["Serve", "--addr", "0.0.0.0:9720", "--db", "/keys/tee-db"]
+CMD ["serve", "--addr", "0.0.0.0:9720", "--db", "/keys/tee-db"]

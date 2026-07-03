@@ -138,6 +138,7 @@ gcloud compute instances create keepers-vm \
     - ${TEE_INTERNAL_IP}:9720
     - --perp-id
     - CD6IY25X36TIDYU7TKX3Y6NMZY2TTCDKCYYHER5EAHATKAZNXN6J4JBA
+    - --no-oracle
     env:
     - name: SOROBAN_RPC_URL
       value: https://soroban-testnet.stellar.org
