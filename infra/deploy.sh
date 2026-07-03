@@ -86,7 +86,7 @@ gcloud compute instances create tee-match-vm \
   --zone="$ZONE" \
   --machine-type=n2d-standard-2 \
   --confidential-compute-type=SEV_SNP \
-  --on-host-maintenance=TERMINATE \
+  --maintenance-policy=TERMINATE \
   --shielded-secure-boot \
   --image-project=confidential-space-images \
   --image-family=confidential-space \
