@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMarket } from '../../context/market-context'
+import { usePriceSelect } from '../../context/price-select-context'
 import type { OrderBookLevel } from '../../lib/tee-client'
 
 // Pixel constants
@@ -146,8 +147,18 @@ function fmtPrice(price: number): string {
   return price.toFixed(4)
 }
 
+type Tooltip = {
+  x: number
+  y: number
+  price: number
+  size: number
+  cumulative: number
+  side: 'ask' | 'bid'
+}
+
 export default function OrderBook() {
   const { mark, bids: liveBids, asks: liveAsks } = useMarket()
+  const { emit } = usePriceSelect()
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animRef = useRef<Map<string, AnimEntry>>(new Map())
@@ -160,8 +171,11 @@ export default function OrderBook() {
     bids: RowData[]
     maxSize: number
     maxCum: number
+    spreadY: number
     colors: { primary: string; tertiary: string; quaternary: string; border: string }
   } | null>(null)
+  const hoverRef = useRef<{ rowIndex: number; side: 'ask' | 'bid' } | null>(null)
+  const [tooltip, setTooltip] = useState<Tooltip | null>(null)
 
   markRef.current = mark
 
@@ -212,7 +226,8 @@ export default function OrderBook() {
       border:     cs.getPropertyValue('--color-border-subtle').trim() || 'rgba(255,255,255,0.1)',
     }
 
-    dataRef.current = { asks: displayAsks, bids: displayBids, maxSize, maxCum, colors }
+    const spreadY = displayAsks.length * ROW_H
+    dataRef.current = { asks: displayAsks, bids: displayBids, maxSize, maxCum, spreadY, colors }
 
     const m = animRef.current
     const seen = new Set<string>()
@@ -245,10 +260,10 @@ export default function OrderBook() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, w, h)
 
-    const { asks, bids, maxSize, maxCum, colors } = d
+    const { asks, bids, maxSize, maxCum, spreadY, colors } = d
     const m = animRef.current
-    const barX    = HEAT_W + PW + SW
-    const spreadY = asks.length * ROW_H
+    const barX = HEAT_W + PW + SW
+    const hover = hoverRef.current
 
     const stepXFor = (row: RowData) => m.get(row.key)?.stepCur ?? 0
     const barWFor  = (row: RowData) => m.get(row.key)?.barCur ?? 0
@@ -274,25 +289,33 @@ export default function OrderBook() {
     ctx.fillStyle = 'rgba(0,120,95,0.09)'
     ctx.fill(bidPath)
 
-    const drawRow = (row: RowData, y: number, side: 'ask' | 'bid') => {
+    const drawRow = (row: RowData, y: number, side: 'ask' | 'bid', rowIndex: number) => {
       const barWidth = barWFor(row)
       const stops = side === 'ask' ? ASK_STOPS : BID_STOPS
+      const isHovered = hover?.side === side && hover.rowIndex === rowIndex
+
+      // Hover row background
+      if (isHovered) {
+        ctx.fillStyle = side === 'ask' ? 'rgba(190,90,30,0.18)' : 'rgba(0,160,120,0.15)'
+        ctx.fillRect(0, y, w, ROW_H)
+      }
 
       ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, row.heatRatio)
       ctx.fillRect(0, y, HEAT_W, ROW_H)
 
-      const cumRatio = maxCum > 0 ? row.cumulative / maxCum : 0
       ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, row.heatRatio)
       ctx.fillRect(barX, y, barWidth, ROW_H)
 
       ctx.font = FONT
       ctx.textBaseline = 'middle'
       ctx.textAlign = 'left'
-      ctx.fillStyle = isBold(row.price) ? colors.primary : colors.tertiary
+      ctx.fillStyle = isHovered
+        ? (side === 'ask' ? '#f59e44' : '#34d399')
+        : isBold(row.price) ? colors.primary : colors.tertiary
       ctx.fillText(fmtPrice(row.price), HEAT_W + 6, y + ROW_H / 2 + 1)
 
       ctx.textAlign = 'right'
-      ctx.fillStyle = colors.quaternary
+      ctx.fillStyle = isHovered ? colors.primary : colors.quaternary
       ctx.fillText(fmtSize(row.size), HEAT_W + PW + SW - 6, y + ROW_H / 2 + 1)
 
       if (Math.round(row.price * 10) % 10 === 0) {
@@ -301,8 +324,8 @@ export default function OrderBook() {
       }
     }
 
-    asks.forEach((row, i) => drawRow(row, i * ROW_H, 'ask'))
-    bids.forEach((row, i) => drawRow(row, spreadY + i * ROW_H, 'bid'))
+    asks.forEach((row, i) => drawRow(row, i * ROW_H, 'ask', i))
+    bids.forEach((row, i) => drawRow(row, spreadY + i * ROW_H, 'bid', i))
 
     ctx.lineWidth = 1
     ctx.strokeStyle = ASK_STROKE
@@ -310,20 +333,34 @@ export default function OrderBook() {
     ctx.strokeStyle = BID_STROKE
     ctx.stroke(bidPath)
 
+    // Spread band
+    const bestAsk = asks.at(-1)?.price   // asks display high→low, best ask is last
+    const bestBid = bids[0]?.price       // bids display high→low, best bid is first
+    const spreadAbs = bestAsk != null && bestBid != null ? bestAsk - bestBid : 0
+    const spreadPct = bestBid != null && spreadAbs > 0 ? (spreadAbs / bestBid) * 100 : 0
+
     ctx.strokeStyle = colors.tertiary
-    ctx.globalAlpha = 0.55
+    ctx.globalAlpha = 0.4
     ctx.beginPath()
     ctx.moveTo(0, spreadY)
     ctx.lineTo(w, spreadY)
     ctx.stroke()
     ctx.globalAlpha = 1
 
+    if (spreadAbs > 0) {
+      ctx.font = FONT_SM
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = colors.quaternary
+      ctx.textAlign = 'left'
+      ctx.fillText(`Spread  ${fmtPrice(spreadAbs)}  (${spreadPct.toFixed(3)}%)`, HEAT_W + 6, spreadY - 1)
+    }
+
     ctx.font = FONT_SM
     ctx.textAlign = 'right'
     ctx.fillStyle = colors.primary
     ctx.shadowColor = 'rgba(0,0,0,0.6)'
     ctx.shadowBlur = 3
-    ctx.fillText(fmtPrice(markRef.current), w - 6, spreadY - 6)
+    ctx.fillText(fmtPrice(markRef.current), w - 6, spreadY - 8)
     ctx.shadowBlur = 0
 
     const drawWallLabel = (row: RowData | undefined, y: number, color: string) => {
@@ -400,6 +437,68 @@ export default function OrderBook() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Mouse interactions: hover highlight + tooltip + click-to-fill
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const hitTest = (e: MouseEvent) => {
+      const d = dataRef.current
+      if (!d) return null
+      const rect = canvas.getBoundingClientRect()
+      const y = e.clientY - rect.top
+      const { spreadY, asks, bids } = d
+      if (y < spreadY) {
+        const i = Math.floor(y / ROW_H)
+        if (i >= 0 && i < asks.length) return { side: 'ask' as const, row: asks[i]!, rowIndex: i, y }
+      } else {
+        const i = Math.floor((y - spreadY) / ROW_H)
+        if (i >= 0 && i < bids.length) return { side: 'bid' as const, row: bids[i]!, rowIndex: i, y }
+      }
+      return null
+    }
+
+    const onMove = (e: MouseEvent) => {
+      const hit = hitTest(e)
+      const rect = canvas.getBoundingClientRect()
+      hoverRef.current = hit ? { rowIndex: hit.rowIndex, side: hit.side } : null
+      if (hit) {
+        setTooltip({
+          x: e.clientX - rect.left,
+          y: hit.y,
+          price: hit.row.price,
+          size: hit.row.size,
+          cumulative: hit.row.cumulative,
+          side: hit.side,
+        })
+      } else {
+        setTooltip(null)
+      }
+      paint()
+    }
+
+    const onLeave = () => {
+      hoverRef.current = null
+      setTooltip(null)
+      paint()
+    }
+
+    const onClick = (e: MouseEvent) => {
+      const hit = hitTest(e)
+      if (hit) emit(hit.row.price)
+    }
+
+    canvas.addEventListener('mousemove', onMove)
+    canvas.addEventListener('mouseleave', onLeave)
+    canvas.addEventListener('click', onClick)
+    return () => {
+      canvas.removeEventListener('mousemove', onMove)
+      canvas.removeEventListener('mouseleave', onLeave)
+      canvas.removeEventListener('click', onClick)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Rebuild when live book data arrives or mark price changes
   useEffect(() => {
     rebuild()
@@ -432,8 +531,53 @@ export default function OrderBook() {
         <span className="pl-1 leading-5">Depth</span>
       </div>
       <div ref={wrapRef} className="relative min-h-0 flex-1">
-        <canvas ref={canvasRef} className="absolute inset-0" />
+        <canvas ref={canvasRef} className="absolute inset-0 cursor-pointer" />
+        {tooltip && <OrderBookTooltip tooltip={tooltip} mark={mark} />}
       </div>
+    </div>
+  )
+}
+
+function OrderBookTooltip({ tooltip, mark }: { tooltip: Tooltip; mark: number }) {
+  const { price, size, cumulative, side, x, y } = tooltip
+  const notional = price * size
+  const PRICE_SCALE = 1e7
+  const notionalUsd = notional / PRICE_SCALE
+  const distFromMid = Math.abs(price - mark) / mark * 100
+
+  // Flip tooltip left/right based on canvas x position
+  const flipLeft = x > 120
+
+  return (
+    <div
+      className="pointer-events-none absolute z-20 rounded-[6px] border border-border-subtle bg-surface-card px-2.5 py-1.5 shadow-lg"
+      style={{
+        top: Math.max(0, y - 4),
+        ...(flipLeft ? { right: 4 } : { left: x + 12 }),
+        minWidth: 140,
+      }}
+    >
+      <div className={`mb-1 text-[10px] font-semibold uppercase tracking-widest ${side === 'ask' ? 'text-bearish-red' : 'text-bullish-green'}`}>
+        {side === 'ask' ? 'Ask' : 'Bid'}
+      </div>
+      <TooltipRow label="Price" value={fmtPrice(price)} accent={side === 'ask' ? '#f59e44' : '#34d399'} />
+      <TooltipRow label="Qty" value={fmtSize(size)} />
+      <TooltipRow label="Total" value={fmtSize(cumulative)} />
+      <TooltipRow label="Notional" value={`$${notionalUsd >= 1000 ? `${(notionalUsd / 1000).toFixed(1)}k` : notionalUsd.toFixed(0)}`} />
+      <div className="mt-1.5 border-t border-border-subtle pt-1 text-[9px] text-text-quaternary">
+        {distFromMid.toFixed(2)}% from mid · click to fill
+      </div>
+    </div>
+  )
+}
+
+function TooltipRow({ label, value, accent }: { label: string; value: string; accent?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[10px] text-text-quaternary">{label}</span>
+      <span className="text-[10px] font-medium" style={accent ? { color: accent } : undefined}>
+        {value}
+      </span>
     </div>
   )
 }

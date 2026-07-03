@@ -8,6 +8,7 @@ import {
 import { useLevels } from '../../context/levels-context'
 import { type Side, useMarket } from '../../context/market-context'
 import { useNav } from '../../context/nav-context'
+import { usePriceSelect } from '../../context/price-select-context'
 import { useWallet } from '../../context/wallet-context'
 import {
   buildDepositNoteTx,
@@ -383,6 +384,7 @@ export default function TradingPanel() {
   const { connected, publicKey, sign, balance, refreshBalance } = useWallet()
   const { symbol, mark } = useMarket()
   const { openPortfolio } = useNav()
+  const { subscribe } = usePriceSelect()
   const levels = useLevels()
   const [side, setSide] = useState<Side>('long')
   const [marginMode, setMarginMode] = useState<'isolated' | 'cross'>('isolated')
@@ -405,6 +407,14 @@ export default function TradingPanel() {
     side === 'long'
       ? mark * (1 - 0.92 / leverage)
       : mark * (1 + 0.92 / leverage)
+
+  // Receive price clicks from the order book — switch to limit and prefill price
+  useEffect(() => {
+    return subscribe((price) => {
+      setOrderType('limit')
+      setLimitPrice(price.toFixed(price < 1 ? 4 : price < 100 ? 3 : price < 1000 ? 2 : 1))
+    })
+  }, [subscribe])
 
   useEffect(() => {
     if (!takeProfitEnabled) {
