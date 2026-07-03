@@ -1,5 +1,6 @@
 {
-  "buildCommand": "npm run build",
+  "buildCommand": "bun run build",
+  "installCommand": "bun install",
   "outputDirectory": "build/client",
   "framework": null,
   "rewrites": [
