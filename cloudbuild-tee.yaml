@@ -1,13 +1,55 @@
 steps:
+  # Step 1: Build the image with a unique timestamp tag (busts any registry cache)
   - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
     args:
-      - 'build'
-      - '-f'
-      - 'infra/Dockerfile'
-      - '-t'
-      - 'us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/tee-match:latest'
-      - '.'
+      - '-c'
+      - |
+        TAG="ts-$(date +%s)"
+        echo "$$TAG" > /workspace/new_tag.txt
+        docker build \
+          --no-cache \
+          -f infra/Dockerfile \
+          -t "us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/tee-match:$$TAG" \
+          -t "us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/tee-match:latest" \
+          .
     timeout: '1800s'
+
+  # Step 2: Push both tags
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        TAG=$(cat /workspace/new_tag.txt)
+        docker push "us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/tee-match:$$TAG"
+        docker push "us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/tee-match:latest"
+
+  # Step 3: Update the VM's tee-image-reference to the new tag
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        TAG=$(cat /workspace/new_tag.txt)
+        IMAGE="us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/tee-match:$$TAG"
+        echo "Updating VM to image: $$IMAGE"
+        gcloud compute instances add-metadata tee-match-vm \
+          --zone us-central1-a \
+          --project $PROJECT_ID \
+          --metadata "tee-image-reference=$$IMAGE"
+
+  # Step 4: Bounce the VM so it pulls the new image on boot
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud compute instances stop tee-match-vm \
+          --zone us-central1-a --project $PROJECT_ID --quiet
+        gcloud compute instances start tee-match-vm \
+          --zone us-central1-a --project $PROJECT_ID --quiet
+        echo "VM restarted — pulling new image on boot"
 
 images:
   - 'us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/tee-match:latest'

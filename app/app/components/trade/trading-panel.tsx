@@ -11,9 +11,9 @@ import { useWallet } from '../../context/wallet-context'
 import {
   buildDepositNoteTx,
   buildOpenPositionFromNoteTx,
+  buildPlaceOrderTx,
   crossMarginKey,
-  generateNote,
-  randomCommitment,
+  proofJsonToScVal,
   submitAndWait,
 } from '../../lib/contracts'
 import { tee } from '../../lib/tee-client'
@@ -379,7 +379,7 @@ function PriceInput({
 const PRICE_SCALE = 1e7
 
 export default function TradingPanel() {
-  const { connected, publicKey, sign } = useWallet()
+  const { connected, publicKey, sign, balance, refreshBalance } = useWallet()
   const { symbol, mark } = useMarket()
   const levels = useLevels()
   const [side, setSide] = useState<Side>('long')
@@ -394,8 +394,7 @@ export default function TradingPanel() {
   const [slInput, setSlInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  // Note-based collateral: balance tracked off-chain via note store.
-  const balanceDollars = 0
+  const balanceDollars = Number(balance) / PRICE_SCALE
 
   const margin = Number(amount) || 0
   const notional = margin * leverage
@@ -452,78 +451,85 @@ export default function TradingPanel() {
     }
 
     setSubmitting(true)
-    const progressId = toast.progress(
-      `${actionLabel} ${symbol}`,
-      20,
-      'Building transaction…',
-    )
+    const progressId = toast.progress(`${actionLabel} ${symbol}`, 5, 'Generating ZK proofs…')
 
     try {
       const collateralUnits = BigInt(Math.round(margin * PRICE_SCALE))
-
-      // Step 1: Generate a shielded note for collateral
-      toast.update(progressId, { description: 'Generating shielded note…', progress: 25 })
-      const note = generateNote()
-
-      // Step 2: Deposit collateral as a note
-      toast.update(progressId, { description: 'Depositing collateral…', progress: 40 })
-      const depositTx = await buildDepositNoteTx(publicKey, note.commitment, collateralUnits)
-      const signedDeposit = await sign(depositTx.toXDR())
-      await submitAndWait(signedDeposit)
-
-      toast.update(progressId, { description: 'Opening position…', progress: 65 })
-      const hintPrice = Math.round(mark * PRICE_SCALE)
+      const markPrice = Math.round(mark * PRICE_SCALE)
+      const hintPrice = orderType === 'market' ? markPrice : Math.round(Number(limitPrice) * PRICE_SCALE)
       const tpUnits = tpInput ? Math.round(parseFloat(tpInput) * PRICE_SCALE) : 0
       const slUnits = slInput ? Math.round(parseFloat(slInput) * PRICE_SCALE) : 0
-      const portfolioKey =
-        marginMode === 'cross' ? crossMarginKey(publicKey) : undefined
+      const portfolioKey = marginMode === 'cross' ? crossMarginKey(publicKey) : undefined
+      const sideNum: 0 | 1 = side === 'long' ? 0 : 1
 
-      // Get order commitment (try TEE server, fall back to random)
-      let commitment: string
-      try {
-        const secret = Math.floor(Math.random() * 1e12)
-        const nonce = Math.floor(Math.random() * 1e12)
-        const result = await tee.fastInit({
-          side: side === 'long' ? 0 : 1,
-          price: hintPrice,
-          size: 1_000_000_000,
-          leverage,
-          nonce,
-          secret,
-        })
-        commitment = result.commitment
-      } catch {
-        commitment = randomCommitment()
-      }
+      // Random secrets for the order commitment and the note
+      const orderNonce = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
+      const orderSecret = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
+      const noteSecret = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
+      // collateralUnits is bigint; note circuit uses u64 — safe if < 2^53
+      const noteAmount = Number(collateralUnits)
 
-      const openTx = await buildOpenPositionFromNoteTx(publicKey, {
-        noteCmt: note.commitment,
-        noteNull: note.nullifier,
+      // TEE encodes is_market via side>=2: 0=limit-bid, 1=limit-ask, 2=market-bid, 3=market-ask
+      const rawSide = orderType === 'market' ? sideNum + 2 : sideNum
+
+      // Step 1: Ask TEE to store order secrets + generate both proofs in parallel
+      // init stores secrets so the TEE can later match this order
+      console.log('step: calling tee.init + tee.noteProof…')
+      const [initResult, noteResult] = await Promise.all([
+        tee.init({ side: rawSide, price: hintPrice, size: 1_000_000_000, leverage, nonce: orderNonce, secret: orderSecret }),
+        tee.noteProof(noteAmount, noteSecret),
+      ])
+      console.log('step: tee proofs done, commitment=', initResult.commitment.slice(0,16))
+      const commitment = initResult.commitment
+      toast.update(progressId, { description: 'Getting commitment proof…', progress: 30 })
+
+      console.log('step: calling tee.commitProof…')
+      const commitProofResult = await tee.commitProof(commitment)
+      console.log('step: commitProof done')
+
+      const commitScVal = proofJsonToScVal(commitProofResult.proof)
+      const noteScVal   = proofJsonToScVal(noteResult.proof)
+
+      // Soroban's simulator rejects multi-op transactions, so we send three
+      // separate signing prompts. The ops are independent at build-time
+      // (open_position reads deposit_note's note via on-chain storage, but
+      // noteCmt is known client-side), so we don't need inter-tx confirmation.
+      toast.update(progressId, { description: 'Sign 1/3 — place order…', progress: 45 })
+      const placeTx = await buildPlaceOrderTx(publicKey, {
         commitment,
         hintPrice,
-        side: side === 'long' ? 0 : 1,
+        hintSide: sideNum,
+        hintSize: 1_000_000_000,
+        hintLeverage: leverage,
+        portfolioKey,
+        proof: commitScVal,
+      })
+      await submitAndWait(await sign(placeTx.toXDR()))
+
+      toast.update(progressId, { description: 'Sign 2/3 — deposit collateral…', progress: 62 })
+      const depositTx = await buildDepositNoteTx(publicKey, noteResult.note_cmt, collateralUnits)
+      await submitAndWait(await sign(depositTx.toXDR()))
+
+      toast.update(progressId, { description: 'Sign 3/3 — open position…', progress: 80 })
+      const openTx = await buildOpenPositionFromNoteTx(publicKey, {
+        noteCmt: noteResult.note_cmt,
+        noteNull: noteResult.note_null,
+        commitment,
+        hintPrice,
+        side: sideNum,
         leverage,
         size: 1_000_000_000,
         tpPrice: tpUnits,
         slPrice: slUnits,
         portfolioKey,
+        noteProof: noteScVal,
+        commitProof: commitScVal,
       })
+      await submitAndWait(await sign(openTx.toXDR()))
 
-      toast.update(progressId, { description: 'Waiting for signature…', progress: 75 })
-      const signedOpen = await sign(openTx.toXDR())
-
-      toast.update(progressId, { description: 'Submitting…', progress: 90 })
-      await submitAndWait(signedOpen)
-
-      positionsStore.add({
-        commitment,
-        symbol,
-        side: side === 'long' ? 0 : 1,
-        leverage,
-        openedAt: Date.now(),
-      })
-
+      positionsStore.add({ commitment, symbol, side: sideNum, leverage, openedAt: Date.now() })
       levels.setEntry(mark)
+      refreshBalance()
 
       toast.update(progressId, {
         type: 'success',
@@ -532,11 +538,11 @@ export default function TradingPanel() {
         progress: undefined,
         duration: 5000,
       })
-
       setAmount('')
       setPctSelected(null)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      console.error('trade error:', { err, msg, step: 'unknown' })
       toast.update(progressId, {
         type: 'error',
         title: 'Order failed',
@@ -611,7 +617,7 @@ export default function TradingPanel() {
           <span className="text-[13px] text-text-tertiary">
             Bal.{' '}
             <span className="text-text-secondary">
-              {connected ? '$0.00' : '—'}
+              {connected ? formatUsd(balanceDollars) : '—'}
             </span>
           </span>
         </div>

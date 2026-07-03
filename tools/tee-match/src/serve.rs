@@ -1,4 +1,5 @@
 use crate::{db, engine, log, proof, stellar};
+// cancel-proof: added 2026-07-03
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,6 +31,7 @@ struct Request {
     owner: Option<String>,
     order_type: Option<String>,
     stop_price: Option<u64>,
+    amount: Option<u64>,
 }
 
 #[derive(Serialize, Default)]
@@ -37,6 +39,10 @@ struct Response {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     commitment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note_cmt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note_null: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     proof: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -224,6 +230,9 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<Stri
                 "init" => handle_init(&store, &keys, &req),
                 "fast-init" => handle_fast_init(&store, &req),
                 "commit-proof" => handle_commit_proof(&store, &keys, &req),
+                "cancel-proof" => handle_cancel_proof(&store, &keys, &req),
+                "note-proof" => handle_note_proof(&keys, &req),
+                "note-cmt" => handle_note_cmt(&req),
                 "match" => handle_match(&store, &keys, &req),
                 "place" => handle_place(&store, &book_store, &fills, &books, &keys, &req),
                 "cancel" => handle_cancel(&store, &book_store, &books, &keys, &req),
@@ -425,6 +434,102 @@ fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
     );
 
     Response { ok: true, proof: Some(proof_str), ..Default::default() }
+}
+
+/// Generate a cancel/close proof for a position. Returns proof JSON + nullifier.
+/// The frontend uses this to build + sign `cancel_position_to_note` on-chain.
+fn handle_cancel_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Response {
+    let start = Instant::now();
+    let cmt = match req.cmt.as_ref() {
+        Some(c) => c,
+        None => return err("missing cmt"),
+    };
+
+    log::info!("Generating cancel proof", "commitment", log::hex_snippet(cmt, 12));
+
+    let secrets = match store.get(cmt) {
+        Ok(Some(s)) => s,
+        Ok(None) => return err(format!("secrets not found for {cmt}")),
+        Err(e) => return err(e),
+    };
+
+    let result = match proof::gen_cancel_proof(keys, &secrets) {
+        Ok(r) => r,
+        Err(e) => return err(e),
+    };
+
+    let nullifier = format!("{:0>64x}", result.public_inputs[0].parse::<num_bigint::BigUint>().unwrap());
+    let proof_json = serde_json::json!({"a": result.proof.a, "b": result.proof.b, "c": result.proof.c});
+    let proof_str = serde_json::to_string(&proof_json).unwrap();
+
+    log::info!("Cancel proof generated",
+        "cmt", log::hex_snippet(cmt, 12),
+        "nullifier", log::hex_snippet(&nullifier, 12),
+        "took", log::duration_secs(&start.elapsed())
+    );
+
+    Response {
+        ok: true,
+        commitment: Some(nullifier.clone()),
+        proof: Some(proof_str),
+        ..Default::default()
+    }
+}
+
+/// Generate a NoteSpend Groth16 proof for a shielded deposit note.
+/// Request: {cmd:"note-proof", amount:<u64>, secret:<u64>}
+/// Response: {ok:true, note_cmt:<hex>, note_null:<hex>, proof:<json>}
+fn handle_note_proof(keys: &PathBuf, req: &Request) -> Response {
+    let start = Instant::now();
+    let amount = match req.amount {
+        Some(a) => a,
+        None => return err("missing amount"),
+    };
+    let secret = match req.secret {
+        Some(s) => s,
+        None => return err("missing secret"),
+    };
+    log::info!("Generating note spend proof", "amount", amount);
+    match proof::gen_note_proof(keys, amount, secret) {
+        Ok(out) => {
+            let proof_str = serde_json::json!({
+                "a": out.proof.proof.a,
+                "b": out.proof.proof.b,
+                "c": out.proof.proof.c,
+            }).to_string();
+            log::info!("Note spend proof generated",
+                "note_cmt", log::hex_snippet(&out.note_cmt, 12),
+                "took", log::duration_secs(&start.elapsed())
+            );
+            Response {
+                ok: true,
+                note_cmt: Some(out.note_cmt),
+                note_null: Some(out.note_null),
+                proof: Some(proof_str),
+                ..Default::default()
+            }
+        }
+        Err(e) => {
+            log::error!("Note proof failed", "err", e.to_string());
+            err("note proof generation failed")
+        }
+    }
+}
+
+/// Fast note commitment hash — no ZK proof, sub-millisecond.
+/// Request: {cmd:"note-cmt", amount:<u64>, secret:<u64>}
+/// Response: {ok:true, note_cmt:<hex>, note_null:<hex>}
+fn handle_note_cmt(req: &Request) -> Response {
+    let amount = match req.amount {
+        Some(a) => a,
+        None => return err("missing amount"),
+    };
+    let secret = match req.secret {
+        Some(s) => s,
+        None => return err("missing secret"),
+    };
+    let (note_cmt, note_null) = proof::compute_note_cmt_hex(amount, secret);
+    Response { ok: true, note_cmt: Some(note_cmt), note_null: Some(note_null), ..Default::default() }
 }
 
 fn handle_match(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Response {
@@ -833,9 +938,9 @@ fn handle_get_market(books: &RwLock<HashMap<u64, engine::OrderBook>>, req: &Requ
             best_ask: book.best_ask().map(|(p, s)| format!("{p}x{s}")),
             spread: book.spread(),
             order_count: Some(book.order_count()),
-            depth: Some(book.depth(engine::Side::Bid, 5).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
-            bids: Some(book.depth(engine::Side::Bid, 10).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
-            asks: Some(book.depth(engine::Side::Ask, 10).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
+            depth: Some(book.depth(engine::Side::Bid, 32).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
+            bids: Some(book.depth(engine::Side::Bid, 32).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
+            asks: Some(book.depth(engine::Side::Ask, 32).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
             ..Default::default()
         }
     } else {
@@ -1166,12 +1271,13 @@ pub mod secure {
 #[cfg(feature = "secure")]
 pub mod http {
     use super::*;
-    use axum::{
-        extract::{Path, Query, State},
-        routing::{get, post},
-        Json, Router,
-    };
-    use std::sync::Arc as StdArc;
+use axum::{
+    extract::{Path, Query, State},
+    routing::{get, post},
+    Json, Router,
+};
+use tower_http::cors::{Any, CorsLayer};
+use std::sync::Arc as StdArc;
 
     #[derive(Clone)]
     pub struct HttpState {
@@ -1202,11 +1308,15 @@ pub mod http {
             .route("/init", post(handle_http_init))
             .route("/fast-init", post(handle_http_fast_init))
             .route("/commit-proof", post(handle_http_commit_proof))
+            .route("/cancel-proof", post(handle_http_cancel_proof))
+            .route("/note-proof", post(handle_http_note_proof))
+            .route("/note-cmt", post(handle_http_note_cmt))
             .route("/place", post(handle_http_place))
             .route("/cancel", post(handle_http_cancel))
             .route("/match", post(handle_http_match))
             .route("/market", post(handle_http_market))
             .route("/get-market", get(handle_http_get_market))
+            .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -1234,6 +1344,27 @@ pub mod http {
         Json(req): Json<Request>,
     ) -> Json<serde_json::Value> {
         Json(serde_json::json!(handle_commit_proof(&state.store, &state.keys_dir, &req)))
+    }
+
+    async fn handle_http_cancel_proof(
+        State(state): State<HttpState>,
+        Json(req): Json<Request>,
+    ) -> Json<serde_json::Value> {
+        Json(serde_json::json!(handle_cancel_proof(&state.store, &state.keys_dir, &req)))
+    }
+
+    async fn handle_http_note_proof(
+        State(state): State<HttpState>,
+        Json(req): Json<Request>,
+    ) -> Json<serde_json::Value> {
+        Json(serde_json::json!(handle_note_proof(&state.keys_dir, &req)))
+    }
+
+    async fn handle_http_note_cmt(
+        State(state): State<HttpState>,
+        Json(req): Json<Request>,
+    ) -> Json<serde_json::Value> {
+        Json(serde_json::json!(handle_note_cmt(&req)))
     }
 
     async fn handle_http_place(

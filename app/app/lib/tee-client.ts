@@ -4,9 +4,18 @@
 
 const TEE_URL = import.meta.env.VITE_TEE_URL ?? 'http://127.0.0.1:9721'
 
+export interface OrderBookLevel {
+  price: number
+  size: number
+  orders: number
+}
+
 interface TeeResponse {
   ok: boolean
   commitment?: string
+  nullifier?: string
+  note_cmt?: string
+  note_null?: string
   proof?: string
   error?: string
   best_bid?: string
@@ -14,6 +23,9 @@ interface TeeResponse {
   spread?: number
   order_count?: number
   fills?: Array<{ maker_id: string; price: number; size: number }>
+  bids?: OrderBookLevel[]
+  asks?: OrderBookLevel[]
+  depth?: OrderBookLevel[]
 }
 
 async function call(endpoint: string, body?: unknown): Promise<TeeResponse> {
@@ -86,13 +98,43 @@ export const tee = {
     return { proof: resp.proof }
   },
 
+  /** Generate a cancel/close proof for a position commitment. Returns proof + nullifier. */
+  async cancelProof(cmt: string): Promise<{ proof: string; nullifier: string }> {
+    const resp = await call('cancel-proof', { cmd: 'cancel-proof', cmt })
+    if (!resp.ok || !resp.proof || !resp.commitment) {
+      throw new Error(resp.error ?? 'cancel-proof failed')
+    }
+    return { proof: resp.proof, nullifier: resp.commitment }
+  },
+
+  /**
+   * Generate a NoteSpend Groth16 proof for a shielded deposit note (~9s).
+   * Returns note_cmt, note_null, and proof JSON — all three needed for open_position_from_note.
+   */
+  async noteProof(amount: number, secret: number): Promise<{ note_cmt: string; note_null: string; proof: string }> {
+    const resp = await call('note-proof', { cmd: 'note-proof', amount, secret })
+    if (!resp.ok || !resp.note_cmt || !resp.note_null || !resp.proof) throw new Error(resp.error ?? 'note-proof failed')
+    return { note_cmt: resp.note_cmt, note_null: resp.note_null, proof: resp.proof }
+  },
+
+  /**
+   * Fast note commitment hash — Poseidon2 only, no proof (~1ms).
+   * Use this during deposit to get the commitment without a ZK proof.
+   */
+  async noteCmt(amount: number, secret: number): Promise<{ note_cmt: string; note_null: string }> {
+    const resp = await call('note-cmt', { cmd: 'note-cmt', amount, secret })
+    if (!resp.ok || !resp.note_cmt || !resp.note_null) throw new Error(resp.error ?? 'note-cmt failed')
+    return { note_cmt: resp.note_cmt, note_null: resp.note_null }
+  },
+
   /** Place an order on the CLOB (no on-chain submission). */
   async place(cmt: string, orderType: string, price: number, size: number): Promise<TeeResponse> {
     return call('place', { cmd: 'place', cmt, order_type: orderType, price, size })
   },
 
-  /** Get market state. */
-  async getMarket(): Promise<TeeResponse> {
-    return getCall('get-market')
+  /** Get market state (32-level depth). Asset 0 = BTC (DEFAULT_ASSET). */
+  async getMarket(asset?: number): Promise<TeeResponse> {
+    const qs = asset !== undefined ? `?asset=${asset}` : ''
+    return getCall(`get-market${qs}`)
   },
 }

@@ -12,7 +12,12 @@
 FROM rust:1.89-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+    pkg-config libssl-dev curl && rm -rf /var/lib/apt/lists/*
+
+# Install stellar CLI (used by tee-match to submit on-chain transactions)
+RUN curl -fsSL \
+    https://github.com/stellar/stellar-cli/releases/download/v22.2.0/stellar-cli-22.2.0-x86_64-unknown-linux-gnu.tar.gz \
+    | tar -xz -C /usr/local/bin/ stellar
 
 WORKDIR /build
 
@@ -31,9 +36,10 @@ FROM debian:bookworm-slim AS release
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -r tee && useradd -r -g tee tee
+RUN groupadd -r tee && useradd -r -m -g tee tee
 
 COPY --from=builder /build/tools/tee-match/target/release/tee-match /usr/local/bin/tee-match
+COPY --from=builder /usr/local/bin/stellar /usr/local/bin/stellar
 
 COPY circuits/keys/ /keys/
 
