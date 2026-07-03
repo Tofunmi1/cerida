@@ -72,6 +72,18 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
   --role="roles/artifactregistry.reader" \
   --condition=None 2>/dev/null || true
 
+# Allow the Confidential Space launcher to call the attestation API
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/confidentialcomputing.workloadUser" \
+  --condition=None 2>/dev/null || true
+
+# Allow launcher logs to be written
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/logging.logWriter" \
+  --condition=None 2>/dev/null || true
+
 # Allow it to decrypt with the KMS key
 gcloud kms keys add-iam-policy-binding tee-dek \
   --location=global \
