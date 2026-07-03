@@ -1172,7 +1172,7 @@ pub mod secure {
 pub mod http {
     use super::*;
     use axum::{
-        extract::{Path, State},
+        extract::{Path, Query, State},
         routing::{get, post},
         Json, Router,
     };
@@ -1271,8 +1271,10 @@ pub mod http {
 
     async fn handle_http_get_market(
         State(state): State<HttpState>,
+        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
     ) -> Json<serde_json::Value> {
-        let req = Request { cmd: "get_market".to_string(), ..Default::default() };
+        let asset = params.get("asset").and_then(|v| v.parse().ok());
+        let req = Request { cmd: "get_market".to_string(), asset, ..Default::default() };
         Json(serde_json::json!(handle_get_market(&state.books, &req)))
     }
 }
