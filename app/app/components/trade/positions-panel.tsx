@@ -197,7 +197,7 @@ export default function PositionsPanel() {
               <div className="flex h-full flex-col items-center justify-center gap-1.5">
                 <span className="text-[12px] text-text-quaternary">No open positions</span>
                 <span className="text-[11px] text-text-quaternary opacity-60">
-                  Positions are stored in this browser — shielded by design
+                  Open a trade to see your positions here
                 </span>
               </div>
             ) : (
