@@ -37,7 +37,8 @@ export interface MarketState {
 
 interface MarketContextValue extends MarketState {
   setSymbol: (symbol: string) => void
-  allPrices: Map<string, number>   // pythId → USD price for all markets
+  allPrices: Map<string, number>      // pythId → USD price for all markets
+  symbolPrices: Map<string, number>   // symbol → USD price (e.g. 'BTC-PERP' → 62378)
 }
 
 const MarketContext = createContext<MarketContextValue | undefined>(undefined)
@@ -188,7 +189,9 @@ export function MarketProvider({
   // ── Live price state ─────────────────────────────────────────────
   const [livePrice, setLivePrice]   = useState<number | null>(null)
   const allPricesRef = useRef<Map<string, number>>(new Map())
-  const [allPrices, setAllPrices]   = useState<Map<string, number>>(new Map())
+  const symbolPricesRef = useRef<Map<string, number>>(new Map())
+  const [allPrices, setAllPrices]     = useState<Map<string, number>>(new Map())
+  const [symbolPrices, setSymbolPrices] = useState<Map<string, number>>(new Map())
 
   // ── Orderbook state ──────────────────────────────────────────────
   const [bids, setBids] = useState<OrderBookLevel[]>([])
@@ -223,9 +226,14 @@ export function MarketProvider({
     const allIds = MARKET_CATALOG.map((m) => m.pythId).filter(Boolean)
 
     const disconnect = connectPythWs(allIds, (tick) => {
-      // Update allPrices map
+      // Update allPrices (pythId keyed) and symbolPrices (symbol keyed)
       allPricesRef.current.set(tick.pythId, tick.price)
       setAllPrices(new Map(allPricesRef.current))
+      const mkt = MARKET_CATALOG.find((m) => m.pythId === tick.pythId || '0x' + m.pythId === tick.pythId || m.pythId === '0x' + tick.pythId)
+      if (mkt) {
+        symbolPricesRef.current.set(mkt.symbol, tick.price)
+        setSymbolPrices(new Map(symbolPricesRef.current))
+      }
 
       // Only update candles/livePrice for the current market
       if (tick.pythId !== currentMarket?.pythId) return
@@ -325,8 +333,9 @@ export function MarketProvider({
       asks,
       setSymbol,
       allPrices,
+      symbolPrices,
     }
-  }, [candles, candlesLoading, symbol, livePrice, bids, asks, currentMarket, allPrices])
+  }, [candles, candlesLoading, symbol, livePrice, bids, asks, currentMarket, allPrices, symbolPrices])
 
   return <MarketContext.Provider value={value}>{children}</MarketContext.Provider>
 }

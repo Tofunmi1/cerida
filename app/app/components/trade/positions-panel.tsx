@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { MARKET_CATALOG, useMarket } from '../../context/market-context'
+import { useMarket } from '../../context/market-context'
 import { useWallet } from '../../context/wallet-context'
 import { buildCancelPositionTx, getPosition, proofJsonToScVal, submitAndWait, type PositionMeta } from '../../lib/contracts'
 import { positionsStore, type StoredPosition } from '../../lib/positions-store'
@@ -42,14 +42,8 @@ function pnlPct(meta: PositionMeta, markPrice: number): number {
   return lev * side * (markPrice - entry) / entry * 100
 }
 
-function markForSymbol(symbol: string, allPrices: Map<string, number>): number {
-  const market = MARKET_CATALOG.find((m) => m.symbol === symbol)
-  if (!market?.pythId) return 0
-  return allPrices.get(market.pythId) ?? 0
-}
-
 export default function PositionsPanel() {
-  const { allPrices } = useMarket()
+  const { symbolPrices } = useMarket()
   const { connected, publicKey, sign } = useWallet()
   const [tab, setTab] = useState<Tab>('Positions')
   const [positions, setPositions] = useState<LivePosition[]>([])
@@ -196,7 +190,7 @@ export default function PositionsPanel() {
               </div>
             ) : (
               active.map(({ stored, meta }) => {
-                const mark = markForSymbol(stored.symbol, allPrices)
+                const mark = symbolPrices.get(stored.symbol) ?? 0
                 const entry = meta ? Number(meta.entryPrice) / PRICE_SCALE : 0
                 const col = meta ? Number(meta.effectiveCollateral) / PRICE_SCALE : 0
                 const lev = meta ? Number(meta.leverage) : stored.leverage
