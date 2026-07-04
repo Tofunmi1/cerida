@@ -540,7 +540,7 @@ export default function TradingPanel() {
       const openTxHash = relayResult.tx_hash
       console.log('position opened, hash=', openTxHash)
 
-      positionsStore.add({ commitment, symbol, side: sideNum, leverage, openedAt: Date.now() })
+      positionsStore.add({ commitment, wallet: publicKey, symbol, side: sideNum, leverage, openedAt: Date.now() })
       levels.setEntry(mark)
       refreshBalance()
 

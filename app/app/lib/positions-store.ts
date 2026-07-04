@@ -1,11 +1,12 @@
-const STORAGE_KEY = 'cerp_positions'
+const STORAGE_KEY = 'cerp_positions_v2'
 
 export interface StoredPosition {
-  commitment: string  // 64-char hex
+  commitment: string  // 64-char hex — the on-chain position key
+  wallet: string      // Stellar public key that opened it
   symbol: string
   side: 0 | 1
   leverage: number
-  openedAt: number    // Date.now()
+  openedAt: number
 }
 
 function load(): StoredPosition[] {
@@ -25,6 +26,10 @@ export const positionsStore = {
     return load()
   },
 
+  forWallet(publicKey: string): StoredPosition[] {
+    return load().filter((p) => p.wallet === publicKey)
+  },
+
   add(p: StoredPosition) {
     const existing = load()
     if (!existing.find((x) => x.commitment === p.commitment)) {
@@ -34,11 +39,5 @@ export const positionsStore = {
 
   remove(commitment: string) {
     save(load().filter((p) => p.commitment !== commitment))
-  },
-
-  forWallet(_publicKey: string): StoredPosition[] {
-    // All positions in this browser session belong to the connected wallet.
-    // If multi-account support is needed later, key by publicKey.
-    return load()
   },
 }
