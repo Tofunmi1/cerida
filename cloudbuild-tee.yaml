@@ -54,16 +54,15 @@ steps:
             docker pull $$IMAGE
             docker stop tee-match 2>/dev/null || true
             docker rm tee-match 2>/dev/null || true
-            RELAYER=\$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_RELAYER_SECRET -H Metadata-Flavor:Google)
-            SOURCE=\$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_SOURCE_SECRET -H Metadata-Flavor:Google)
+            RELAYER=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_RELAYER_SECRET -H Metadata-Flavor:Google)
+            SOURCE=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_SOURCE_SECRET -H Metadata-Flavor:Google)
             docker run -d --name tee-match --restart=always --network=host \
-              -e STELLAR_RELAYER_SECRET=\"\$RELAYER\" \
-              -e STELLAR_SOURCE_SECRET=\"\$SOURCE\" \
+              -e STELLAR_RELAYER_SECRET=$$RELAYER \
+              -e STELLAR_SOURCE_SECRET=$$SOURCE \
               -v /var/lib/tee-keys:/keys \
               $$IMAGE
-            # Sync proving keys from image into the bind-mount so they're present on restart
             docker run --rm -v /var/lib/tee-keys:/host-keys --entrypoint='' $$IMAGE sh -c 'cp -rn /keys/. /host-keys/'
-            echo 'Container updated to $$IMAGE'
+            echo Container updated
           "
         echo "VM container hot-swapped to $$IMAGE"
 
