@@ -269,9 +269,19 @@ fn stellar_invoke(contract_id: &str, src: &str, fn_args: &[&str]) -> Result<Stri
         .map(|h| h.to_string());
 
     if !output.status.success() {
+        let stderr_preview = stderr.chars().take(800).collect::<String>();
         if stderr.contains("xdr processing error") || tx_hash.is_some() {
+            log::info!("stellar invoke xdr/success with hash",
+                "fn", fn_args.first().copied().unwrap_or("?"),
+                "tx_hash", tx_hash.as_deref().unwrap_or("none"),
+                "stderr_preview", &stderr_preview
+            );
             return Ok(tx_hash.unwrap_or_else(|| "unknown".to_string()));
         }
+        log::info!("stellar invoke failed",
+            "fn", fn_args.first().copied().unwrap_or("?"),
+            "stderr_preview", &stderr_preview
+        );
         anyhow::bail!("{stderr}");
     }
 
