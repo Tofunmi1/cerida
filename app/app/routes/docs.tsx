@@ -240,9 +240,9 @@ commitment = Poseidon2(h6, secret, domain=7)`}</Pre>
               Public outputs: <Code>(cmt_a, cmt_b, match_price, match_size, nullifier_a, nullifier_b)</Code> — no private order details exposed.
             </P>
 
-            <H3>4. Open Position — note spend</H3>
+            <H3>4. Open Position — relay + note spend</H3>
             <P>
-              Opening a matched position requires two proofs in sequence: a <strong>NoteSpend</strong> proof (proving the trader knows the secret for a shielded note with enough collateral), and an <strong>OrderCommitment</strong> proof binding the position to the matched order. The note nullifier is published, collateral locked, and the position commitment stored on-chain.
+              The user signs a single transaction: <Code>deposit_note</Code> (shields collateral) bundled with <Code>place_order</Code> (registers the order commitment). The TEE then acts as a relayer — it holds a separate <Code>STELLAR_RELAYER_SECRET</Code> key and submits <Code>open_position_from_note</Code> on the user's behalf. This requires two Groth16 proofs: a <strong>NoteSpend</strong> proof (proving knowledge of the shielded note secret and collateral amount) and an <strong>OrderCommitment</strong> proof binding the position to the matched order. The note nullifier is published, collateral locked, and the position commitment stored on-chain — with the user's address never appearing in the position-opening transaction.
             </P>
 
             <H3>5. Close / Withdraw</H3>
@@ -421,9 +421,12 @@ liq_price (short) = entry × (1 + 0.92 / leverage)`}</Pre>
               rows={[
                 ['GET /get-market?asset=N', '32-level bid/ask depth (prices in 7-decimal scale)'],
                 ['GET /mark-price?asset=N', 'Current oracle mark price'],
-                ['POST /place-order', 'Accepts order inputs, returns Groth16 proof + commitment'],
-                ['POST /prove-note-cmt', 'Returns Poseidon2 note commitment'],
-                ['POST /prove-note-spend', 'Returns NoteSpend Groth16 proof'],
+                ['POST /init', 'Stores order secrets in TEE, returns Groth16 commitment proof (~9s)'],
+                ['POST /fast-init', 'Poseidon2 commitment hash only, no proof (<1ms)'],
+                ['POST /commit-proof', 'Generates OrderCommitment Groth16 proof for a stored commitment'],
+                ['POST /note-proof', 'Returns NoteSpend Groth16 proof for a shielded deposit (~9s)'],
+                ['POST /note-cmt', 'Fast Poseidon2 note commitment, no proof'],
+                ['POST /relay/open-position', 'TEE submits open_position_from_note on-chain using its own relayer key — user address never appears in this TX'],
               ]}
             />
           </section>
@@ -499,7 +502,7 @@ RWA markets:    (10 + 5×level) bps`}</Pre>
                 },
                 {
                   label: 'Frontend on testnet',
-                  body: 'Full trading UI: Freighter wallet, live 32-level orderbook (TEE depth polling with seeded fallback), Pyth-powered candlestick charts (historical + live 1-min WebSocket ticks), funding rate, shielded deposit/withdraw, real transaction history from Stellar Horizon. End-to-end trade live on testnet with real ZK proofs.',
+                  body: 'Full trading UI: Freighter wallet, live 32-level orderbook (TEE depth polling with seeded fallback), Pyth-powered candlestick charts (historical + live 1-min WebSocket ticks), funding rate, shielded deposit/withdraw, real transaction history from Stellar Horizon. Single-TX trade flow: user signs deposit_note + place_order in one shot; the TEE relayer submits open_position_from_note with its own key so the user\'s address never appears in the position-opening TX. End-to-end trade live on testnet with real ZK proofs.',
                 },
               ].map((m, i) => (
                 <div
@@ -523,14 +526,18 @@ RWA markets:    (10 + 5×level) bps`}</Pre>
             <H2 id="arch">Architecture at a Glance</H2>
             <Pre>{`Browser (Freighter Wallet)
       │
-      │  encrypted order inputs → TEE pubkey
+      │  1. tee.init()      → Groth16 OrderCommitment proof
+      │  2. tee.noteProof() → Groth16 NoteSpend proof
+      │
+      │  User signs 1 TX:  deposit_note + place_order
+      │
       ▼
 TEE: tee-match  (GCP Confidential Space / AMD SEV-SNP)
       │
-      │  1. decrypt inside enclave
-      │  2. CLOB matching engine
-      │  3. Groth16 proof generation (arkworks BN254)
-      │  4. Stellar transaction construction
+      │  CLOB engine matches orders
+      │  /relay/open-position → TEE submits with STELLAR_RELAYER_SECRET
+      │    • open_position_from_note (NoteSpend + OrderCommitment proofs)
+      │    • user's Stellar address never appears in this TX
       │
       ▼
 Stellar Testnet  (Soroban Protocol 26)
