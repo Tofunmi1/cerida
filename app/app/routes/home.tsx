@@ -19,8 +19,8 @@ const PILLS = [
 ];
 
 const STATS = [
-  { v: '$183M', l: '24h Volume' },
-  { v: '$24.8M', l: 'Open Interest' },
+  { v: '$128,345', l: '24h Volume' },
+  { v: '$1M', l: 'Open Interest' },
   { v: '7', l: 'Markets' },
   { v: '50×', l: 'Max Leverage' },
 ];
