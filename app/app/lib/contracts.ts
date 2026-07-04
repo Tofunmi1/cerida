@@ -396,6 +396,41 @@ export async function buildPlaceOrderTx(
 }
 
 /**
+ * Bundle place_order + deposit_note into a single user-signed TX.
+ * Used with the relay flow — the user signs only this TX, and the relayer
+ * submits open_position_from_note separately (no user address in that TX).
+ */
+export async function buildDepositAndPlaceTx(
+  sourcePublicKey: string,
+  opts: {
+    commitment: string
+    hintPrice: number
+    hintSide: number
+    hintSize: number
+    hintLeverage: number
+    portfolioKey?: string
+    assetId?: string
+    proof: xdr.ScVal
+    noteCmt: string
+    noteAmount: bigint
+  },
+) {
+  return buildBundleTx(sourcePublicKey, [
+    placeOrderCall({
+      commitment: opts.commitment,
+      hintPrice: opts.hintPrice,
+      hintSide: opts.hintSide,
+      hintSize: opts.hintSize,
+      hintLeverage: opts.hintLeverage,
+      portfolioKey: opts.portfolioKey,
+      assetId: opts.assetId,
+      proof: opts.proof,
+    }),
+    depositNoteCall(sourcePublicKey, opts.noteCmt, opts.noteAmount),
+  ])
+}
+
+/**
  * Bundle the full shielded trade into a single signed transaction:
  *   1. place_order      (orderbook) — registers the order commitment
  *   2. deposit_note     (perp-engine) — stores the shielded note collateral

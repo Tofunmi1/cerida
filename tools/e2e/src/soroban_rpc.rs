@@ -389,19 +389,16 @@ impl SorobanRpc {
                 bump_fee
             );
 
-            match self.build_fee_bump(&current_xdr, source, bump_fee as i64) {
-                Ok(fb_xdr) => match self.sign_xdr(&fb_xdr, source) {
-                    Ok(fb_signed) => match self.send_transaction(&fb_signed) {
-                        Ok(hash) => {
-                            eprintln!("  [tx] fee-bump submitted: {}", hash);
-                            current_hash = hash;
-                            current_xdr = fb_signed;
-                        }
-                        Err(e) => eprintln!("  [tx] fee-bump send failed: {e}"),
-                    },
-                    Err(e) => eprintln!("  [tx] fee-bump sign failed: {e}"),
+            match self.build_and_sign_fee_bump(&current_xdr, source, bump_fee as i64) {
+                Ok(fb_signed) => match self.send_transaction(&fb_signed) {
+                    Ok(hash) => {
+                        eprintln!("  [tx] fee-bump submitted: {}", hash);
+                        current_hash = hash;
+                        current_xdr = fb_signed;
+                    }
+                    Err(e) => eprintln!("  [tx] fee-bump send failed: {e}"),
                 },
-                Err(e) => eprintln!("  [tx] fee-bump build failed: {e}"),
+                Err(e) => eprintln!("  [tx] fee-bump build/sign failed: {e}"),
             }
         }
         unreachable!()
@@ -450,7 +447,26 @@ impl SorobanRpc {
         self.poll_with_retry(&tx_hash, &signed_xdr, source, method, start)
     }
 
-    fn build_fee_bump(&self, inner_signed_xdr: &str, source: &str, fee: i64) -> Result<String> {
+    fn build_and_sign_fee_bump(&self, inner_signed_xdr: &str, source: &str, fee: i64) -> Result<String> {
+        use ed25519_dalek::{SigningKey, Signer};
+        use stellar_strkey::Strkey;
+
+        // Get secret key from CLI
+        let sk_out = std::process::Command::new("stellar")
+            .args(["keys", "show", source])
+            .output()
+            .map_err(|e| anyhow::anyhow!("stellar keys show: {e}"))?;
+        if !sk_out.status.success() {
+            bail!("stellar keys show failed: {}", String::from_utf8_lossy(&sk_out.stderr));
+        }
+        let sk_str = String::from_utf8(sk_out.stdout)?.trim().to_string();
+        let sk_bytes = match Strkey::from_string(&sk_str)? {
+            Strkey::PrivateKeyEd25519(sk) => sk.0,
+            _ => bail!("expected private key strkey"),
+        };
+        let signing_key = SigningKey::from_bytes(&sk_bytes);
+
+        // Build the inner envelope
         let source_pk = source_pubkey(source)?;
         let inner_env = TransactionEnvelope::from_xdr_base64(inner_signed_xdr, Limits::none())
             .context("parse inner envelope for fee-bump")?;
@@ -458,16 +474,32 @@ impl SorobanRpc {
             TransactionEnvelope::Tx(v1) => v1.clone(),
             _ => bail!("Expected Tx envelope for fee-bump, got {:?}", inner_env.name()),
         };
-
         let fb_tx = FeeBumpTransaction {
             fee_source: MuxedAccount::Ed25519(Uint256(pk_to_bytes(&source_pk)?)),
             fee,
             inner_tx: FeeBumpTransactionInnerTx::Tx(inner_v1),
             ext: FeeBumpTransactionExt::V0,
         };
+
+        // Sign natively
+        let tagged = TransactionSignaturePayloadTaggedTransaction::TxFeeBump(fb_tx.clone());
+        let payload = TransactionSignaturePayload {
+            network_id: Hash(*NETWORK_ID),
+            tagged_transaction: tagged,
+        };
+        let payload_xdr = payload.to_xdr(Limits::none())?;
+        let hash = Sha256::digest(&payload_xdr);
+        let sig = signing_key.sign(&hash);
+        let pk_bytes = signing_key.verifying_key().to_bytes();
+
+        let decorated_sig = DecoratedSignature {
+            hint: SignatureHint(pk_bytes[28..].try_into().unwrap()),
+            signature: Signature(sig.to_bytes().to_vec().try_into().unwrap()),
+        };
+        let sigs = VecM::try_from(vec![decorated_sig]).map_err(|e| anyhow::anyhow!("sigs VecM: {e}"))?;
         let fb_env = FeeBumpTransactionEnvelope {
             tx: fb_tx,
-            signatures: VecM::default(),
+            signatures: sigs,
         };
         Ok(fb_env.to_xdr_base64(Limits::none())?)
     }

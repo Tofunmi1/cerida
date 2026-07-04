@@ -226,6 +226,110 @@ pub fn submit_mark_price(perp_id: &str, source: &str, price: u64) -> Result<()> 
     Ok(())
 }
 
+/// Returns `STELLAR_RELAYER_SECRET` if set, else falls back to `STELLAR_SOURCE_SECRET` / named identity.
+fn relayer_source(fallback: &str) -> String {
+    std::env::var("STELLAR_RELAYER_SECRET")
+        .or_else(|_| std::env::var("STELLAR_SOURCE_SECRET"))
+        .unwrap_or_else(|_| fallback.to_string())
+}
+
+/// Submit `open_position_from_note` using the relayer key (no user signature required).
+/// Returns the on-chain TX hash.
+#[allow(clippy::too_many_arguments)]
+pub fn relay_open_position(
+    perp_id: &str,
+    note_cmt_hex: &str,
+    note_null_hex: &str,
+    position_cmt_hex: &str,
+    hint_price: u64,
+    hint_side: u64,
+    hint_leverage: u64,
+    hint_size: u64,
+    tp_price: u64,
+    sl_price: u64,
+    portfolio_key_hex: &str,
+    asset_id_hex: &str,
+    note_proof_json: &str,
+    commit_proof_json: &str,
+) -> Result<String> {
+    let start = Instant::now();
+    let src = relayer_source(SOURCE_IDENTITY);
+    let zeros = "0".repeat(64);
+
+    let mut cmd = std::process::Command::new("stellar");
+    cmd.args([
+        "contract", "invoke",
+        "--id", perp_id,
+        "--source", &src,
+        "--network-passphrase", NETWORK_PASSPHRASE,
+        "--rpc-url", &rpc_url(),
+        "--",
+        "open_position_from_note",
+        "--note_commitment", note_cmt_hex,
+        "--note_nullifier", note_null_hex,
+        "--position_commitment", position_cmt_hex,
+        "--hint_price", &hint_price.to_string(),
+        "--hint_side", &hint_side.to_string(),
+        "--hint_leverage", &hint_leverage.to_string(),
+        "--hint_size", &hint_size.to_string(),
+        "--tif", "GTC",
+        "--expiry_ledger", "0",
+        "--tp_price", &tp_price.to_string(),
+        "--sl_price", &sl_price.to_string(),
+        "--liquidation_recipient_note", &zeros,
+        "--portfolio_key", portfolio_key_hex,
+        "--asset_id", asset_id_hex,
+        "--note_proof", note_proof_json,
+        "--commit_proof", commit_proof_json,
+    ]);
+
+    log::info!("Relaying open_position_from_note",
+        "contract", &perp_id[..8],
+        "note_cmt", &note_cmt_hex[..16],
+        "position_cmt", &position_cmt_hex[..16],
+        "side", hint_side,
+        "leverage", hint_leverage
+    );
+
+    let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar relay: {e}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Extract TX hash — stellar CLI prints "Transaction hash is <hash>" to stderr
+    let tx_hash = stderr.lines()
+        .find_map(|l| {
+            l.strip_prefix("Transaction hash is ")
+                .or_else(|| l.strip_prefix("Signing transaction: "))
+        })
+        .map(|h| h.trim().to_string());
+
+    if !output.status.success() {
+        if stderr.contains("xdr processing error") || tx_hash.is_some() {
+            let hash = tx_hash.unwrap_or_else(|| "unknown".to_string());
+            log::info!("Relay submitted (false-positive XDR error)",
+                "contract", &perp_id[..8],
+                "tx_hash", &hash,
+                "took", log::duration_secs(&start.elapsed())
+            );
+            return Ok(hash);
+        }
+        log::error!("Relay open_position_from_note failed",
+            "contract", &perp_id[..8],
+            "stderr", &stderr[..stderr.len().min(500)]
+        );
+        anyhow::bail!("relay open_position_from_note failed:\n{stderr}");
+    }
+
+    let hash = tx_hash.unwrap_or_else(|| {
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    });
+    log::info!("Position relayed on-chain",
+        "contract", &perp_id[..8],
+        "tx_hash", &hash,
+        "took", log::duration_secs(&start.elapsed())
+    );
+    Ok(hash)
+}
+
 pub fn submit_liquidate(perp_id: &str, commitment: &str) -> Result<()> {
     let start = Instant::now();
     let src = signing_source(SOURCE_IDENTITY);

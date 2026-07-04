@@ -70,6 +70,8 @@ struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     asks: Option<Vec<LevelJson>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tx_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -1316,6 +1318,7 @@ use std::sync::Arc as StdArc;
             .route("/match", post(handle_http_match))
             .route("/market", post(handle_http_market))
             .route("/get-market", get(handle_http_get_market))
+            .route("/relay/open-position", post(handle_http_relay_open_position))
             .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
             .with_state(state);
 
@@ -1402,5 +1405,68 @@ use std::sync::Arc as StdArc;
         let asset = params.get("asset").and_then(|v| v.parse().ok());
         let req = Request { cmd: "get_market".to_string(), asset, ..Default::default() };
         Json(serde_json::json!(handle_get_market(&state.books, &req)))
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RelayOpenPositionReq {
+        perp: String,
+        note_cmt: String,
+        note_null: String,
+        position_cmt: String,
+        hint_price: u64,
+        hint_side: u64,
+        hint_leverage: u64,
+        hint_size: u64,
+        #[serde(default)]
+        tp_price: u64,
+        #[serde(default)]
+        sl_price: u64,
+        #[serde(default)]
+        portfolio_key: Option<String>,
+        #[serde(default)]
+        asset_id: Option<String>,
+        note_proof: String,
+        commit_proof: String,
+    }
+
+    async fn handle_http_relay_open_position(
+        Json(req): Json<RelayOpenPositionReq>,
+    ) -> Json<serde_json::Value> {
+        let zeros = "0".repeat(64);
+        let portfolio_key = req.portfolio_key.as_deref().unwrap_or(&zeros);
+        let asset_id = req.asset_id.as_deref().unwrap_or(&zeros);
+
+        let result = tokio::task::spawn_blocking({
+            let perp = req.perp.clone();
+            let note_cmt = req.note_cmt.clone();
+            let note_null = req.note_null.clone();
+            let position_cmt = req.position_cmt.clone();
+            let portfolio_key = portfolio_key.to_string();
+            let asset_id = asset_id.to_string();
+            let note_proof = req.note_proof.clone();
+            let commit_proof = req.commit_proof.clone();
+            move || stellar::relay_open_position(
+                &perp,
+                &note_cmt,
+                &note_null,
+                &position_cmt,
+                req.hint_price,
+                req.hint_side,
+                req.hint_leverage,
+                req.hint_size,
+                req.tp_price,
+                req.sl_price,
+                &portfolio_key,
+                &asset_id,
+                &note_proof,
+                &commit_proof,
+            )
+        }).await;
+
+        match result {
+            Ok(Ok(tx_hash)) => Json(serde_json::json!({ "ok": true, "tx_hash": tx_hash })),
+            Ok(Err(e)) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+            Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("task panic: {e}") })),
+        }
     }
 }

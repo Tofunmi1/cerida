@@ -19,6 +19,7 @@ interface TeeResponse {
   note_cmt?: string
   note_null?: string
   proof?: string
+  tx_hash?: string
   error?: string
   best_bid?: string
   best_ask?: string
@@ -138,5 +139,36 @@ export const tee = {
   async getMarket(asset?: number): Promise<TeeResponse> {
     const qs = asset !== undefined ? `?asset=${asset}` : ''
     return getCall(`get-market${qs}`)
+  },
+
+  /**
+   * Relay open_position_from_note via the TEE's own key.
+   * The user's Stellar address never appears in this TX — the TEE submits it.
+   * Requires deposit_note to have already been confirmed on-chain.
+   */
+  async relayOpenPosition(params: {
+    perp: string
+    note_cmt: string
+    note_null: string
+    position_cmt: string
+    hint_price: number
+    hint_side: number
+    hint_leverage: number
+    hint_size: number
+    tp_price?: number
+    sl_price?: number
+    portfolio_key?: string
+    asset_id?: string
+    note_proof: string
+    commit_proof: string
+  }): Promise<{ tx_hash: string }> {
+    const resp = await fetch(`${TEE_URL}/relay/open-position`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    })
+    const data: TeeResponse = await resp.json()
+    if (!data.ok) throw new Error(data.error ?? 'relay failed')
+    return { tx_hash: data.tx_hash ?? '' }
   },
 }
