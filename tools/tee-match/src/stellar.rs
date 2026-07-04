@@ -74,10 +74,15 @@ pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("xdr processing error") || stderr.contains("Transaction hash is") {
             // Extract tx hash from stderr for logging
-            let tx_hash = stderr.lines()
-                .find_map(|l| l.strip_prefix("Transaction hash is "))
-                .or_else(|| stderr.lines().find_map(|l| l.strip_prefix("Signing transaction: ")))
-                .map(|h| h.trim().to_string());
+            let tx_hash = stderr.lines().find_map(|l| {
+                if let Some(pos) = l.find("Transaction hash is ") {
+                    Some(l[pos + "Transaction hash is ".len()..].trim().to_string())
+                } else if let Some(pos) = l.find("Signing transaction: ") {
+                    Some(l[pos + "Signing transaction: ".len()..].trim().to_string())
+                } else {
+                    None
+                }
+            });
             log::info!("Match transaction submitted",
                 "contract", &perp_id[..8],
                 "tx_hash", tx_hash.as_deref().unwrap_or("unknown"),
@@ -253,10 +258,15 @@ fn stellar_invoke(contract_id: &str, src: &str, fn_args: &[&str]) -> Result<Stri
 
     let tx_hash = stderr.lines()
         .find_map(|l| {
-            l.strip_prefix("Transaction hash is ")
-                .or_else(|| l.strip_prefix("Signing transaction: "))
+            if let Some(pos) = l.find("Transaction hash is ") {
+                Some(l[pos + "Transaction hash is ".len()..].trim())
+            } else if let Some(pos) = l.find("Signing transaction: ") {
+                Some(l[pos + "Signing transaction: ".len()..].trim())
+            } else {
+                None
+            }
         })
-        .map(|h| h.trim().to_string());
+        .map(|h| h.to_string());
 
     if !output.status.success() {
         if stderr.contains("xdr processing error") || tx_hash.is_some() {
