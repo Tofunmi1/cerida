@@ -8,7 +8,7 @@ import {
   useState,
 } from 'react'
 import { tee, type OrderBookLevel } from '../lib/tee-client'
-import { fetchCandles, connectPythWs, type Candle as PythCandle } from '../lib/pyth'
+import { fetchCandles, fetchLatestPrices, connectPythWs, type Candle as PythCandle } from '../lib/pyth'
 
 export type Side = 'long' | 'short'
 
@@ -220,6 +220,28 @@ export function MarketProvider({
 
     return () => { cancelled = true }
   }, [symbol]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Seed symbolPrices from Hermes REST on mount ──────────────────
+  useEffect(() => {
+    const allIds = MARKET_CATALOG.map((m) => m.pythId).filter(Boolean)
+    fetchLatestPrices(allIds).then((priceById) => {
+      for (const mkt of MARKET_CATALOG) {
+        if (!mkt.pythId) continue
+        const price =
+          priceById.get(mkt.pythId) ??
+          priceById.get('0x' + mkt.pythId) ??
+          priceById.get(mkt.pythId.replace(/^0x/, ''))
+        if (price && price > 0) {
+          symbolPricesRef.current.set(mkt.symbol, price)
+          allPricesRef.current.set(mkt.pythId, price)
+        }
+      }
+      if (symbolPricesRef.current.size > 0) {
+        setSymbolPrices(new Map(symbolPricesRef.current))
+        setAllPrices(new Map(allPricesRef.current))
+      }
+    })
+  }, []) // once on mount
 
   // ── Pyth WebSocket — all markets ─────────────────────────────────
   useEffect(() => {

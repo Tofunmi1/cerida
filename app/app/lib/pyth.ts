@@ -74,6 +74,32 @@ export async function fetchCandles(
   }
 }
 
+// ── Pyth Hermes REST — latest prices for a batch of feed IDs ──────
+const HERMES_REST = 'https://hermes.pyth.network/v2/updates/price/latest'
+
+export async function fetchLatestPrices(
+  pythIds: string[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>()
+  if (!pythIds.length) return out
+  try {
+    const params = pythIds.map((id) => `ids[]=${id}`).join('&')
+    const resp = await fetch(`${HERMES_REST}?${params}&parsed=true`, {
+      signal: AbortSignal.timeout(8_000),
+    })
+    if (!resp.ok) return out
+    const json = await resp.json() as {
+      parsed?: Array<{ id: string; price: { price: string; expo: number } }>
+    }
+    for (const feed of json.parsed ?? []) {
+      const raw = Number(feed.price.price)
+      const price = raw * Math.pow(10, feed.price.expo)
+      if (price > 0) out.set(feed.id, price)
+    }
+  } catch {}
+  return out
+}
+
 // ── Pyth Hermes WebSocket ──────────────────────────────────────────
 // Subscribes to real-time price updates for a list of Pyth feed IDs.
 // Handles reconnect automatically.
