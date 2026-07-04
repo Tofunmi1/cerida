@@ -87,7 +87,9 @@ pub fn verify_attestation_token(
 
     // Decode header to find the key ID
     let header = jsonwebtoken::decode_header(token)?;
-    let kid = header.kid.ok_or_else(|| anyhow::anyhow!("no kid in token header"))?;
+    let kid = header
+        .kid
+        .ok_or_else(|| anyhow::anyhow!("no kid in token header"))?;
 
     // Find matching key in JWKS
     let jwk = jwks
@@ -155,13 +157,14 @@ pub fn verify_attestation_token(
 
     // Check nonce (TLS EKM channel binding)
     if !claims.eat_nonce.is_empty() {
-        let expected_b64 = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            expected_nonce,
-        );
+        let expected_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, expected_nonce);
         let nonce_match = claims.eat_nonce.iter().any(|n| n == &expected_b64);
         if !nonce_match {
-            bail!("nonce mismatch: expected {expected_b64}, got {:?}", claims.eat_nonce);
+            bail!(
+                "nonce mismatch: expected {expected_b64}, got {:?}",
+                claims.eat_nonce
+            );
         }
     }
 

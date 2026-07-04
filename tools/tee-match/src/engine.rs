@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 pub(crate) fn short_id(id: &str) -> &str {
-    if id.len() > 16 { &id[..16] } else { id }
+    if id.len() > 16 {
+        &id[..16]
+    } else {
+        id
+    }
 }
 
 // ── Types ──
@@ -102,49 +106,115 @@ impl OrderBook {
     pub fn place(&mut self, order: Order) -> Result<Vec<Fill>> {
         let prev_fills = self.fills.len();
         let prev_count = self.order_count();
-        log::info!("Book place",
-            "prev_orders", prev_count,
-            "id", short_id(&order.id),
-            "side", order.side as u64,
-            "price", order.price,
-            "size", order.size,
-            "type", format!("{:?}", order.order_type)
+        log::info!(
+            "Book place",
+            "prev_orders",
+            prev_count,
+            "id",
+            short_id(&order.id),
+            "side",
+            order.side as u64,
+            "price",
+            order.price,
+            "size",
+            order.size,
+            "type",
+            format!("{:?}", order.order_type)
         );
 
         match order.order_type {
             OrderType::Market => {
-                log::info!("Placing market order", "side", order.side as u64, "size", order.size);
+                log::info!(
+                    "Placing market order",
+                    "side",
+                    order.side as u64,
+                    "size",
+                    order.size
+                );
                 self.match_market(order);
             }
             OrderType::Limit => {
-                log::info!("Placing limit order", "side", order.side as u64, "price", order.price, "size", order.size);
+                log::info!(
+                    "Placing limit order",
+                    "side",
+                    order.side as u64,
+                    "price",
+                    order.price,
+                    "size",
+                    order.size
+                );
                 self.match_limit(order);
             }
             OrderType::IOC => {
-                log::debug!("Placing IOC order", "side", order.side as u64, "price", order.price, "size", order.size);
+                log::debug!(
+                    "Placing IOC order",
+                    "side",
+                    order.side as u64,
+                    "price",
+                    order.price,
+                    "size",
+                    order.size
+                );
                 let _prev_fills = self.fills.len();
                 // Match but don't rest — use match_limit_inner which respects remaining
-                self.match_against_book(Order { remaining: order.size, ..order }, false);
+                self.match_against_book(
+                    Order {
+                        remaining: order.size,
+                        ..order
+                    },
+                    false,
+                );
             }
             OrderType::FOK => {
-                log::debug!("Placing FOK order", "side", order.side as u64, "price", order.price, "size", order.size);
+                log::debug!(
+                    "Placing FOK order",
+                    "side",
+                    order.side as u64,
+                    "price",
+                    order.price,
+                    "size",
+                    order.size
+                );
                 let total_available = self.liquidity_at_price(order.side.opposite(), order.price);
                 if order.size <= total_available {
-                    self.match_limit(Order { remaining: order.size, ..order });
+                    self.match_limit(Order {
+                        remaining: order.size,
+                        ..order
+                    });
                 } else {
-                    log::debug!("FOK would not fill fully, cancelling",
-                        "size", order.size, "available", total_available);
+                    log::debug!(
+                        "FOK would not fill fully, cancelling",
+                        "size",
+                        order.size,
+                        "available",
+                        total_available
+                    );
                 }
             }
             OrderType::StopLimit { stop_price } => {
-                log::debug!("Placing StopLimit order",
-                    "side", order.side as u64, "stop_price", stop_price,
-                    "limit_price", order.price, "size", order.size);
+                log::debug!(
+                    "Placing StopLimit order",
+                    "side",
+                    order.side as u64,
+                    "stop_price",
+                    stop_price,
+                    "limit_price",
+                    order.price,
+                    "size",
+                    order.size
+                );
                 self.add_stop_order(order, stop_price);
             }
             OrderType::StopMarket { stop_price } => {
-                log::debug!("Placing StopMarket order",
-                    "side", order.side as u64, "stop_price", stop_price, "size", order.size);
+                log::debug!(
+                    "Placing StopMarket order",
+                    "side",
+                    order.side as u64,
+                    "stop_price",
+                    stop_price,
+                    "size",
+                    order.size
+                );
                 self.add_stop_order(order, stop_price);
             }
         }
@@ -152,29 +222,52 @@ impl OrderBook {
         let new_fills: Vec<Fill> = self.fills[prev_fills..].to_vec();
 
         if !new_fills.is_empty() {
-            log::info!("Order book match complete",
-                "fills", new_fills.len(),
-                "last_price", self.last_price,
-                "best_bid", self.best_bid().map(|(p, s)| format!("{p}x{s}")).unwrap_or_default(),
-                "best_ask", self.best_ask().map(|(p, s)| format!("{p}x{s}")).unwrap_or_default()
+            log::info!(
+                "Order book match complete",
+                "fills",
+                new_fills.len(),
+                "last_price",
+                self.last_price,
+                "best_bid",
+                self.best_bid()
+                    .map(|(p, s)| format!("{p}x{s}"))
+                    .unwrap_or_default(),
+                "best_ask",
+                self.best_ask()
+                    .map(|(p, s)| format!("{p}x{s}"))
+                    .unwrap_or_default()
             );
         } else if self.order_count() > prev_count {
-            log::info!("Order added to book without fill",
-                "new_count", self.order_count()
+            log::info!(
+                "Order added to book without fill",
+                "new_count",
+                self.order_count()
             );
         }
 
         if self.order_count() != prev_count || !new_fills.is_empty() {
-            let new_bid = self.best_bid().map(|(p, s)| format!("{p}x{s}")).unwrap_or_default();
-            let new_ask = self.best_ask().map(|(p, s)| format!("{p}x{s}")).unwrap_or_default();
+            let new_bid = self
+                .best_bid()
+                .map(|(p, s)| format!("{p}x{s}"))
+                .unwrap_or_default();
+            let new_ask = self
+                .best_ask()
+                .map(|(p, s)| format!("{p}x{s}"))
+                .unwrap_or_default();
             let bid_count = self.bids.values().map(|q| q.len()).sum::<usize>();
             let ask_count = self.asks.values().map(|q| q.len()).sum::<usize>();
-            log::info!("Book state after place",
-                "total_orders", self.order_count(),
-                "bid_orders", bid_count,
-                "ask_orders", ask_count,
-                "best_bid", new_bid,
-                "best_ask", new_ask
+            log::info!(
+                "Book state after place",
+                "total_orders",
+                self.order_count(),
+                "bid_orders",
+                bid_count,
+                "ask_orders",
+                ask_count,
+                "best_bid",
+                new_bid,
+                "best_ask",
+                new_ask
             );
         }
 
@@ -186,7 +279,11 @@ impl OrderBook {
     /// No-op if the order is already present (avoids duplicates on crash-recovery).
     pub fn restore_order(&mut self, id: &str, side: Side, price: u64, size: u64) {
         if self.orders.contains_key(id) {
-            log::debug!("restore_order: order already in book, skipping", "id", short_id(id));
+            log::debug!(
+                "restore_order: order already in book, skipping",
+                "id",
+                short_id(id)
+            );
             return;
         }
         let order = Order {
@@ -212,7 +309,15 @@ impl OrderBook {
     pub fn cancel(&mut self, id: &str) -> Result<bool> {
         if let Some(order) = self.orders.remove(id) {
             self.remove_from_level(order.side, order.price, id);
-            log::debug!("Order cancelled", "id", short_id(id), "side", order.side as u64, "price", order.price);
+            log::debug!(
+                "Order cancelled",
+                "id",
+                short_id(id),
+                "side",
+                order.side as u64,
+                "price",
+                order.price
+            );
             Ok(true)
         } else {
             Ok(false)
@@ -223,7 +328,9 @@ impl OrderBook {
     pub fn cancel_stop(&mut self, id: &str) -> Result<bool> {
         if let Some(order) = self.stop_orders.remove(id) {
             let stop_price = match order.order_type {
-                OrderType::StopLimit { stop_price } | OrderType::StopMarket { stop_price } => stop_price,
+                OrderType::StopLimit { stop_price } | OrderType::StopMarket { stop_price } => {
+                    stop_price
+                }
                 _ => unreachable!(),
             };
             let book = match order.side {
@@ -287,7 +394,8 @@ impl OrderBook {
         };
         iter.take(levels)
             .map(|(&price, queue)| {
-                let total: u64 = queue.iter()
+                let total: u64 = queue
+                    .iter()
                     .filter_map(|id| self.orders.get(id))
                     .map(|o| o.remaining)
                     .sum();
@@ -310,14 +418,24 @@ impl OrderBook {
             order.remaining -= fill_size;
             let new_remaining = best.remaining - fill_size;
             if new_remaining > 0 {
-                self.add_to_book(Order { remaining: new_remaining, ..best });
+                self.add_to_book(Order {
+                    remaining: new_remaining,
+                    ..best
+                });
             } else {
                 self.orders.remove(&best.id);
             }
         }
         if order.remaining > 0 {
-            log::debug!("Market order partially filled", "id", short_id(&order.id),
-                "filled", order.size - order.remaining, "unfilled", order.remaining);
+            log::debug!(
+                "Market order partially filled",
+                "id",
+                short_id(&order.id),
+                "filled",
+                order.size - order.remaining,
+                "unfilled",
+                order.remaining
+            );
         }
     }
 
@@ -349,13 +467,19 @@ impl OrderBook {
             order.remaining -= fill_size;
             let new_remaining = best.remaining - fill_size;
             if new_remaining > 0 {
-                self.add_to_book(Order { remaining: new_remaining, ..best });
+                self.add_to_book(Order {
+                    remaining: new_remaining,
+                    ..best
+                });
             } else {
                 self.orders.remove(&best.id);
             }
         }
         if order.remaining > 0 && rest {
-            self.add_to_book(Order { remaining: order.remaining, ..order });
+            self.add_to_book(Order {
+                remaining: order.remaining,
+                ..order
+            });
         }
     }
 
@@ -380,7 +504,8 @@ impl OrderBook {
         let p = self.last_price;
 
         // Bid stops triggered when price >= stop_price (e.g., stop-loss on shorts / buy stop)
-        let triggered_bids: Vec<(u64, Vec<String>)> = self.stop_bids
+        let triggered_bids: Vec<(u64, Vec<String>)> = self
+            .stop_bids
             .range(..=p)
             .map(|(&k, v)| (k, v.clone()))
             .collect();
@@ -391,16 +516,27 @@ impl OrderBook {
                         order_type: OrderType::Market,
                         ..order
                     };
-                    log::debug!("Stop bid triggered",
-                        "id", short_id(&id), "stop_price", stop_price, "last_price", p);
-                    self.match_market(Order { remaining: trigger.size, ..trigger });
+                    log::debug!(
+                        "Stop bid triggered",
+                        "id",
+                        short_id(&id),
+                        "stop_price",
+                        stop_price,
+                        "last_price",
+                        p
+                    );
+                    self.match_market(Order {
+                        remaining: trigger.size,
+                        ..trigger
+                    });
                 }
             }
             self.stop_bids.remove(stop_price);
         }
 
         // Ask stops triggered when price <= stop_price (e.g., stop-loss on longs / sell stop)
-        let triggered_asks: Vec<(u64, Vec<String>)> = self.stop_asks
+        let triggered_asks: Vec<(u64, Vec<String>)> = self
+            .stop_asks
             .range(p..)
             .map(|(&k, v)| (k, v.clone()))
             .collect();
@@ -411,9 +547,19 @@ impl OrderBook {
                         order_type: OrderType::Market,
                         ..order
                     };
-                    log::debug!("Stop ask triggered",
-                        "id", short_id(id), "stop_price", stop_price, "last_price", p);
-                    self.match_market(Order { remaining: trigger.size, ..trigger });
+                    log::debug!(
+                        "Stop ask triggered",
+                        "id",
+                        short_id(id),
+                        "stop_price",
+                        stop_price,
+                        "last_price",
+                        p
+                    );
+                    self.match_market(Order {
+                        remaining: trigger.size,
+                        ..trigger
+                    });
                 }
             }
             self.stop_asks.remove(stop_price);
@@ -554,9 +700,20 @@ fn is_bid(side: u64) -> bool {
 }
 
 pub fn find_match(a: &crate::db::OrderSecrets, b: &crate::db::OrderSecrets) -> Option<MatchParams> {
-    log::debug!("Evaluating order pair for matchability",
-        "side_a", a.side, "price_a", a.price, "size_a", a.size,
-        "side_b", b.side, "price_b", b.price, "size_b", b.size
+    log::debug!(
+        "Evaluating order pair for matchability",
+        "side_a",
+        a.side,
+        "price_a",
+        a.price,
+        "size_a",
+        a.size,
+        "side_b",
+        b.side,
+        "price_b",
+        b.price,
+        "size_b",
+        b.size
     );
 
     if is_bid(a.side) == is_bid(b.side) {
@@ -567,13 +724,28 @@ pub fn find_match(a: &crate::db::OrderSecrets, b: &crate::db::OrderSecrets) -> O
     let (buy, sell) = if is_bid(a.side) { (a, b) } else { (b, a) };
 
     // For market orders (price=0), use the resting order's price
-    let buy_price = if buy.price == 0 { sell.price } else { buy.price };
-    let sell_price = if sell.price == 0 { buy.price } else { sell.price };
+    let buy_price = if buy.price == 0 {
+        sell.price
+    } else {
+        buy.price
+    };
+    let sell_price = if sell.price == 0 {
+        buy.price
+    } else {
+        sell.price
+    };
 
     if buy_price < sell_price {
         let spread = sell_price - buy_price;
-        log::debug!("Buyer price below seller price — no match possible",
-            "buy_price", buy_price, "sell_price", sell_price, "spread", spread);
+        log::debug!(
+            "Buyer price below seller price — no match possible",
+            "buy_price",
+            buy_price,
+            "sell_price",
+            sell_price,
+            "spread",
+            spread
+        );
         return None;
     }
 
@@ -581,13 +753,24 @@ pub fn find_match(a: &crate::db::OrderSecrets, b: &crate::db::OrderSecrets) -> O
     let mid = (buy_price + sell_price) / 2;
     let match_size = buy.size.min(sell.size);
 
-    log::info!("Order pair is matchable",
-        "buy_price", buy_price, "sell_price", sell_price,
-        "spread", spread, "mid_price", mid,
-        "match_size", match_size
+    log::info!(
+        "Order pair is matchable",
+        "buy_price",
+        buy_price,
+        "sell_price",
+        sell_price,
+        "spread",
+        spread,
+        "mid_price",
+        mid,
+        "match_size",
+        match_size
     );
 
-    Some(MatchParams { match_price: mid, match_size })
+    Some(MatchParams {
+        match_price: mid,
+        match_size,
+    })
 }
 
 #[cfg(test)]
@@ -623,15 +806,33 @@ mod tests {
     }
 
     fn stop_bid(id: &str, stop: u64, price: u64, size: u64) -> Order {
-        order(id, Side::Bid, price, size, OrderType::StopLimit { stop_price: stop })
+        order(
+            id,
+            Side::Bid,
+            price,
+            size,
+            OrderType::StopLimit { stop_price: stop },
+        )
     }
 
     fn stop_ask(id: &str, stop: u64, price: u64, size: u64) -> Order {
-        order(id, Side::Ask, price, size, OrderType::StopLimit { stop_price: stop })
+        order(
+            id,
+            Side::Ask,
+            price,
+            size,
+            OrderType::StopLimit { stop_price: stop },
+        )
     }
 
     fn stop_market_bid(id: &str, stop: u64, size: u64) -> Order {
-        order(id, Side::Bid, 0, size, OrderType::StopMarket { stop_price: stop })
+        order(
+            id,
+            Side::Bid,
+            0,
+            size,
+            OrderType::StopMarket { stop_price: stop },
+        )
     }
 
     // ── Tests ──
@@ -660,8 +861,8 @@ mod tests {
     #[test]
     fn test_price_priority_ask() {
         let mut ob = book();
-        ob.place(ask("a1", 110, 10)).unwrap();  // worse price
-        ob.place(ask("a2", 100, 10)).unwrap();  // best price — should match first
+        ob.place(ask("a1", 110, 10)).unwrap(); // worse price
+        ob.place(ask("a2", 100, 10)).unwrap(); // best price — should match first
         let fills = ob.place(bid("b1", 110, 15)).unwrap();
         assert_eq!(fills.len(), 2);
         assert_eq!(fills[0].maker_id, "a2");
@@ -673,8 +874,8 @@ mod tests {
     #[test]
     fn test_price_priority_bid() {
         let mut ob = book();
-        ob.place(bid("b1", 90, 10)).unwrap();   // worse price
-        ob.place(bid("b2", 100, 10)).unwrap();  // best price — should match first
+        ob.place(bid("b1", 90, 10)).unwrap(); // worse price
+        ob.place(bid("b2", 100, 10)).unwrap(); // best price — should match first
         let fills = ob.place(ask("a1", 90, 15)).unwrap();
         assert_eq!(fills.len(), 2);
         assert_eq!(fills[0].maker_id, "b2");
@@ -686,8 +887,8 @@ mod tests {
     #[test]
     fn test_time_priority_same_price() {
         let mut ob = book();
-        ob.place(ask("a1", 100, 10)).unwrap();  // first
-        ob.place(ask("a2", 100, 10)).unwrap();  // second
+        ob.place(ask("a1", 100, 10)).unwrap(); // first
+        ob.place(ask("a2", 100, 10)).unwrap(); // second
         let fills = ob.place(bid("b1", 100, 20)).unwrap();
         assert_eq!(fills.len(), 2);
         assert_eq!(fills[0].maker_id, "a1");
@@ -747,7 +948,7 @@ mod tests {
         let mut ob = book();
         ob.place(ask("a1", 100, 30)).unwrap();
         ob.place(ask("a2", 101, 20)).unwrap(); // total = 50
-        // FOK for exact amount
+                                               // FOK for exact amount
         ob.place(fok_bid("f1", 101, 50)).unwrap();
         assert_eq!(ob.fills.len(), 2);
 
@@ -861,7 +1062,8 @@ mod tests {
     #[test]
     fn test_order_id_string_clipping() {
         let mut ob = book();
-        ob.place(bid("a-very-long-order-id-that-should-work-fine", 100, 10)).unwrap();
+        ob.place(bid("a-very-long-order-id-that-should-work-fine", 100, 10))
+            .unwrap();
         assert_eq!(ob.order_count(), 1);
         let (price, remaining) = ob.best_bid().unwrap();
         assert_eq!(price, 100);
@@ -891,7 +1093,7 @@ mod tests {
         assert_eq!(fills[1].maker_id, "a2");
         assert_eq!(fills[1].size, 10);
         assert_eq!(fills[2].maker_id, "a3");
-        assert_eq!(fills[2].size, 5);  // partial fill
+        assert_eq!(fills[2].size, 5); // partial fill
         assert_eq!(ob.order_count(), 1); // a3 has 5 remaining
     }
 
@@ -924,7 +1126,7 @@ mod tests {
         let order_size = 5_000_000;
         // Place 20 alternating limit orders (10 bid, 10 ask) at non-crossing prices
         for j in 0..20 {
-            let side = (j % 2) as u64;  // 0=Bid, 1=Ask
+            let side = (j % 2) as u64; // 0=Bid, 1=Ask
             let shift = ((j / 2) as i64 + 1) * step;
             let price = if side == 0 {
                 center_price.saturating_sub(shift as u64)
@@ -933,9 +1135,11 @@ mod tests {
             };
             let id = format!("order-{j}");
             if side == 0 {
-                ob.place(order(&id, Side::Bid, price, order_size, OrderType::Limit)).unwrap();
+                ob.place(order(&id, Side::Bid, price, order_size, OrderType::Limit))
+                    .unwrap();
             } else {
-                ob.place(order(&id, Side::Ask, price, order_size, OrderType::Limit)).unwrap();
+                ob.place(order(&id, Side::Ask, price, order_size, OrderType::Limit))
+                    .unwrap();
             }
         }
         assert_eq!(ob.order_count(), 20, "all 20 orders should rest");
@@ -954,10 +1158,18 @@ mod tests {
         assert_eq!(ask_depth.len(), 10, "should have 10 ask levels");
         // Each level should have 1 order
         for level in &bid_depth {
-            assert_eq!(level.2, 1, "each bid level should have 1 order, got price={}", level.0);
+            assert_eq!(
+                level.2, 1,
+                "each bid level should have 1 order, got price={}",
+                level.0
+            );
         }
         for level in &ask_depth {
-            assert_eq!(level.2, 1, "each ask level should have 1 order, got price={}", level.0);
+            assert_eq!(
+                level.2, 1,
+                "each ask level should have 1 order, got price={}",
+                level.0
+            );
         }
     }
 

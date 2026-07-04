@@ -28,6 +28,9 @@ WORKDIR /build
 COPY tools/tee-match/Cargo.toml tools/tee-match/Cargo.toml
 COPY tools/tee-match/Cargo.lock tools/tee-match/Cargo.lock
 COPY tools/tee-match/src/ tools/tee-match/src/
+COPY tools/e2e/Cargo.toml tools/e2e/
+COPY tools/e2e/Cargo.lock tools/e2e/
+COPY tools/e2e/src/ tools/e2e/src/
 COPY tools/rust-circuits/Cargo.toml tools/rust-circuits/
 COPY tools/rust-circuits/src/ tools/rust-circuits/src/
 

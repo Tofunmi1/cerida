@@ -25,9 +25,12 @@ pub fn spawn(
                     match stellar::submit_liquidate(&perp_id, &cmt) {
                         Ok(()) => {
                             liq += 1;
-                            log::info!("Liquidated position",
-                                "cmt", &cmt[..16],
-                                "scan", scan_count
+                            log::info!(
+                                "Liquidated position",
+                                "cmt",
+                                &cmt[..16],
+                                "scan",
+                                scan_count
                             );
                         }
                         Err(e) => {
@@ -39,15 +42,21 @@ pub fn spawn(
                                 || msg.contains("must be matched")
                             {
                                 // Healthy — not an error
-                                log::debug!("Position healthy, skipping liquidation",
-                                    "cmt", &cmt[..16],
-                                    "reason", &msg[..msg.len().min(80)]
+                                log::debug!(
+                                    "Position healthy, skipping liquidation",
+                                    "cmt",
+                                    &cmt[..16],
+                                    "reason",
+                                    &msg[..msg.len().min(80)]
                                 );
                             } else {
                                 errors += 1;
-                                log::warning!("Liquidation error",
-                                    "cmt", &cmt[..16],
-                                    "err", e.to_string()
+                                log::warning!(
+                                    "Liquidation error",
+                                    "cmt",
+                                    &cmt[..16],
+                                    "err",
+                                    e.to_string()
                                 );
                             }
                         }
@@ -56,12 +65,18 @@ pub fn spawn(
                 }
             }
 
-            log::info!("Liquidation scan complete",
-                "scan", scan_count,
-                "checked", checked,
-                "liquidated", liq,
-                "errors", errors,
-                "took", log::duration_secs(&t.elapsed())
+            log::info!(
+                "Liquidation scan complete",
+                "scan",
+                scan_count,
+                "checked",
+                checked,
+                "liquidated",
+                liq,
+                "errors",
+                errors,
+                "took",
+                log::duration_secs(&t.elapsed())
             );
             std::thread::sleep(interval);
         }

@@ -55,13 +55,14 @@ pub fn unwrap_dek(wrapped: &WrappedKey) -> Result<[u8; 32]> {
     }
 
     let dr: DecryptResponse = resp.json()?;
-    let plaintext_bytes = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        &dr.plaintext,
-    )?;
+    let plaintext_bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &dr.plaintext)?;
 
     if plaintext_bytes.len() != 32 {
-        bail!("KMS returned key of unexpected length {}", plaintext_bytes.len());
+        bail!(
+            "KMS returned key of unexpected length {}",
+            plaintext_bytes.len()
+        );
     }
 
     let mut key = [0u8; 32];
@@ -110,10 +111,8 @@ pub fn wrap_dek(kms_key_name: &str, dek: &[u8; 32]) -> Result<WrappedKey> {
     }
 
     let er: EncryptResponse = resp.json()?;
-    let ciphertext = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        &er.ciphertext,
-    )?;
+    let ciphertext =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &er.ciphertext)?;
 
     Ok(WrappedKey {
         kms_key_name: kms_key_name.to_string(),

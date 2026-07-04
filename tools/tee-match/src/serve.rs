@@ -104,10 +104,20 @@ struct LevelJson {
     orders: usize,
 }
 
-pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<String>, liquidator_interval_secs: u64, http_port: Option<u16>) -> Result<()> {
-    log::info!("═══ Starting TEE Match Server ═══",
-        "version", env!("CARGO_PKG_VERSION"),
-        "listen_addr", addr
+pub fn run(
+    addr: &str,
+    db_path: PathBuf,
+    keys_dir: PathBuf,
+    perp_id: Option<String>,
+    liquidator_interval_secs: u64,
+    http_port: Option<u16>,
+) -> Result<()> {
+    log::info!(
+        "═══ Starting TEE Match Server ═══",
+        "version",
+        env!("CARGO_PKG_VERSION"),
+        "listen_addr",
+        addr
     );
 
     let start = Instant::now();
@@ -116,21 +126,31 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<Stri
     let book_store = db::BookStore::open(&sled_db)?;
     let books = book_store.load_all()?;
     let listener = TcpListener::bind(addr)?;
-    log::info!("TCP listener bound",
-        "addr", addr,
-        "took", log::duration_secs(&start.elapsed())
+    log::info!(
+        "TCP listener bound",
+        "addr",
+        addr,
+        "took",
+        log::duration_secs(&start.elapsed())
     );
 
     let local_addr = listener.local_addr().ok();
-    log::info!("Awaiting client connections",
-        "addr", format!("{}", local_addr.as_ref().map(|a| a.to_string()).unwrap_or_default()),
-        "keys_dir", format!("{}", keys_dir.display())
+    log::info!(
+        "Awaiting client connections",
+        "addr",
+        format!(
+            "{}",
+            local_addr
+                .as_ref()
+                .map(|a| a.to_string())
+                .unwrap_or_default()
+        ),
+        "keys_dir",
+        format!("{}", keys_dir.display())
     );
 
     let fills = db::FillLedger::open(&sled_db)?;
-    log::info!("Fill audit trail ready",
-        "existing_entries", fills.count()
-    );
+    log::info!("Fill audit trail ready", "existing_entries", fills.count());
 
     let store = Arc::new(store);
     let books = Arc::new(RwLock::new(books));
@@ -143,9 +163,12 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<Stri
         let perp = perp.clone();
         let liq_store = store.clone();
         let interval = liquidator_interval_secs;
-        log::info!("Starting liquidator thread",
-            "perp_id", &perp[..12],
-            "interval_secs", interval
+        log::info!(
+            "Starting liquidator thread",
+            "perp_id",
+            &perp[..12],
+            "interval_secs",
+            interval
         );
         crate::liquidator::spawn(liq_store, perp, interval);
     }
@@ -163,7 +186,16 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<Stri
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                http::run_http(&http_addr, http_store, http_books, http_book_store, http_fills, http_keys).await.unwrap();
+                http::run_http(
+                    &http_addr,
+                    http_store,
+                    http_books,
+                    http_book_store,
+                    http_fills,
+                    http_keys,
+                )
+                .await
+                .unwrap();
             });
         });
     }
@@ -186,10 +218,16 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<Stri
                 }
             };
 
-            let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
-            log::debug!("New TCP connection",
-                "peer", &peer,
-                "local_port", local_addr.as_ref().map(|a| a.port()).unwrap_or(0)
+            let peer = stream
+                .peer_addr()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
+            log::debug!(
+                "New TCP connection",
+                "peer",
+                &peer,
+                "local_port",
+                local_addr.as_ref().map(|a| a.port()).unwrap_or(0)
             );
 
             let mut reader = std::io::BufReader::new(&stream);
@@ -200,10 +238,14 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<Stri
                     return;
                 }
                 Ok(n) => {
-                    log::debug!("Raw request received",
-                        "peer", &peer,
-                        "bytes", n,
-                        "preview", &line[..line.len().min(120)]
+                    log::debug!(
+                        "Raw request received",
+                        "peer",
+                        &peer,
+                        "bytes",
+                        n,
+                        "preview",
+                        &line[..line.len().min(120)]
                     );
                 }
             }
@@ -211,21 +253,33 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<Stri
             let req: Request = match serde_json::from_str(&line) {
                 Ok(r) => r,
                 Err(e) => {
-                    log::error!("Failed to parse request JSON",
-                        "peer", &peer,
-                        "raw", &line[..line.len().min(200)],
-                        "err", e.to_string()
+                    log::error!(
+                        "Failed to parse request JSON",
+                        "peer",
+                        &peer,
+                        "raw",
+                        &line[..line.len().min(200)],
+                        "err",
+                        e.to_string()
                     );
-                    let resp = Response { ok: false, error: Some(format!("invalid JSON: {e}")), ..Default::default() };
+                    let resp = Response {
+                        ok: false,
+                        error: Some(format!("invalid JSON: {e}")),
+                        ..Default::default()
+                    };
                     let _ = writeln!(&mut stream, "{}", serde_json::to_string(&resp).unwrap());
                     return;
                 }
             };
 
-            log::info!("Processing command",
-                "cmd", &req.cmd,
-                "peer", &peer,
-                "req_id", NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed)
+            log::info!(
+                "Processing command",
+                "cmd",
+                &req.cmd,
+                "peer",
+                &peer,
+                "req_id",
+                NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed)
             );
 
             let resp = match req.cmd.as_str() {
@@ -243,7 +297,11 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<Stri
                 "get_market" => handle_get_market(&books, &req),
                 other => {
                     log::warning!("Unknown command", "cmd", other, "peer", &peer);
-                    Response { ok: false, error: Some(format!("unknown cmd: {other}")), ..Default::default() }
+                    Response {
+                        ok: false,
+                        error: Some(format!("unknown cmd: {other}")),
+                        ..Default::default()
+                    }
                 }
             };
 
@@ -252,23 +310,35 @@ pub fn run(addr: &str, db_path: PathBuf, keys_dir: PathBuf, perp_id: Option<Stri
 
             let elapsed = conn_start.elapsed();
             if resp.ok {
-                log::info!("Command completed",
-                    "peer", &peer,
-                    "cmd", &req.cmd,
-                    "elapsed", log::duration_secs(&elapsed)
+                log::info!(
+                    "Command completed",
+                    "peer",
+                    &peer,
+                    "cmd",
+                    &req.cmd,
+                    "elapsed",
+                    log::duration_secs(&elapsed)
                 );
             } else {
-                log::error!("Command failed",
-                    "peer", &peer,
-                    "cmd", &req.cmd,
-                    "elapsed", log::duration_secs(&elapsed),
-                    "error", resp.error.as_deref().unwrap_or("unknown")
+                log::error!(
+                    "Command failed",
+                    "peer",
+                    &peer,
+                    "cmd",
+                    &req.cmd,
+                    "elapsed",
+                    log::duration_secs(&elapsed),
+                    "error",
+                    resp.error.as_deref().unwrap_or("unknown")
                 );
             }
 
-            log::debug!("Connection closed",
-                "peer", &peer,
-                "duration", log::duration_secs(&elapsed)
+            log::debug!(
+                "Connection closed",
+                "peer",
+                &peer,
+                "duration",
+                log::duration_secs(&elapsed)
             );
         });
     }
@@ -280,7 +350,10 @@ fn handle_init(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respon
     let raw_side = req.side.unwrap_or(0);
     let is_market = raw_side >= 2;
     // Normalize: 0/3 → Bid(0), 1/2 → Ask(1) so circuits always see 0/1
-    let side = match raw_side { 0 | 3 => 0, _ => 1 };
+    let side = match raw_side {
+        0 | 3 => 0,
+        _ => 1,
+    };
     let secrets = db::OrderSecrets {
         side,
         price: req.price.unwrap_or(0),
@@ -292,21 +365,34 @@ fn handle_init(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respon
         is_market,
     };
 
-    log::info!("Initializing new order commitment",
-        "raw_side", raw_side,
-        "normalized_side", secrets.side,
-        "is_market", secrets.is_market,
-        "price", secrets.price,
-        "size", secrets.size,
-        "leverage", secrets.leverage,
-        "asset", secrets.asset,
-        "nonce", secrets.nonce
+    log::info!(
+        "Initializing new order commitment",
+        "raw_side",
+        raw_side,
+        "normalized_side",
+        secrets.side,
+        "is_market",
+        secrets.is_market,
+        "price",
+        secrets.price,
+        "size",
+        secrets.size,
+        "leverage",
+        secrets.leverage,
+        "asset",
+        secrets.asset,
+        "nonce",
+        secrets.nonce
     );
 
-    log::debug!("Generating commitment proof via native Rust circuits",
-        "side", secrets.side,
-        "price", secrets.price,
-        "size", secrets.size
+    log::debug!(
+        "Generating commitment proof via native Rust circuits",
+        "side",
+        secrets.side,
+        "price",
+        secrets.price,
+        "size",
+        secrets.size
     );
 
     let out = match proof::gen_commitment_proof(keys, &secrets) {
@@ -317,35 +403,56 @@ fn handle_init(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respon
         }
     };
 
-    let cmt_hex = format!("{:0>64x}", out.public_inputs[0].parse::<num_bigint::BigUint>().unwrap());
-    log::info!("Commitment computed successfully",
-        "commitment", log::hex_snippet(&cmt_hex, 12),
-        "full", &cmt_hex,
-        "side", secrets.side,
-        "price", secrets.price
+    let cmt_hex = format!(
+        "{:0>64x}",
+        out.public_inputs[0].parse::<num_bigint::BigUint>().unwrap()
+    );
+    log::info!(
+        "Commitment computed successfully",
+        "commitment",
+        log::hex_snippet(&cmt_hex, 12),
+        "full",
+        &cmt_hex,
+        "side",
+        secrets.side,
+        "price",
+        secrets.price
     );
 
     if let Err(e) = store.insert(&cmt_hex, &secrets) {
-        log::error!("Failed to store secrets in DB",
-            "cmt", &cmt_hex[..16],
-            "err", e.to_string()
+        log::error!(
+            "Failed to store secrets in DB",
+            "cmt",
+            &cmt_hex[..16],
+            "err",
+            e.to_string()
         );
         return err(e);
     }
 
-    log::info!("Order initialized and persisted",
-        "commitment", log::hex_snippet(&cmt_hex, 12),
-        "took", log::duration_secs(&start.elapsed())
+    log::info!(
+        "Order initialized and persisted",
+        "commitment",
+        log::hex_snippet(&cmt_hex, 12),
+        "took",
+        log::duration_secs(&start.elapsed())
     );
 
-    Response { ok: true, commitment: Some(cmt_hex), ..Default::default() }
+    Response {
+        ok: true,
+        commitment: Some(cmt_hex),
+        ..Default::default()
+    }
 }
 
 fn handle_fast_init(store: &db::SecretStore, req: &Request) -> Response {
     let start = Instant::now();
     let raw_side = req.side.unwrap_or(0);
     let is_market = raw_side >= 2;
-    let side = match raw_side { 0 | 3 => 0, _ => 1 };
+    let side = match raw_side {
+        0 | 3 => 0,
+        _ => 1,
+    };
     let secrets = db::OrderSecrets {
         side,
         price: req.price.unwrap_or(0),
@@ -358,18 +465,27 @@ fn handle_fast_init(store: &db::SecretStore, req: &Request) -> Response {
     };
 
     let cmt_hex = proof::compute_commitment_hex(&secrets);
-    log::info!("Fast init: commitment computed (no proof)",
-        "cmt", log::hex_snippet(&cmt_hex, 12),
-        "side", secrets.side,
-        "price", secrets.price,
-        "took", log::duration_secs(&start.elapsed())
+    log::info!(
+        "Fast init: commitment computed (no proof)",
+        "cmt",
+        log::hex_snippet(&cmt_hex, 12),
+        "side",
+        secrets.side,
+        "price",
+        secrets.price,
+        "took",
+        log::duration_secs(&start.elapsed())
     );
 
     if let Err(e) = store.insert(&cmt_hex, &secrets) {
         return err(e);
     }
 
-    Response { ok: true, commitment: Some(cmt_hex), ..Default::default() }
+    Response {
+        ok: true,
+        commitment: Some(cmt_hex),
+        ..Default::default()
+    }
 }
 
 fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Response {
@@ -379,8 +495,10 @@ fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
         None => return err("missing cmt"),
     };
 
-    log::info!("Generating commitment proof for on-chain placement",
-        "commitment", log::hex_snippet(cmt, 12)
+    log::info!(
+        "Generating commitment proof for on-chain placement",
+        "commitment",
+        log::hex_snippet(cmt, 12)
     );
 
     log::debug!("Looking up secrets in DB", "cmt", &cmt[..16]);
@@ -396,10 +514,14 @@ fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
         }
     };
 
-    log::debug!("Generating placement proof via native Rust circuits",
-        "side", secrets.side,
-        "price", secrets.price,
-        "size", secrets.size
+    log::debug!(
+        "Generating placement proof via native Rust circuits",
+        "side",
+        secrets.side,
+        "price",
+        secrets.price,
+        "size",
+        secrets.size
     );
 
     let result = match proof::gen_commitment_proof(keys, &secrets) {
@@ -410,7 +532,8 @@ fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
         }
     };
 
-    let proof_json = serde_json::json!({"a": result.proof.a, "b": result.proof.b, "c": result.proof.c});
+    let proof_json =
+        serde_json::json!({"a": result.proof.a, "b": result.proof.b, "c": result.proof.c});
 
     // Always return proof in response for frontend use
     let proof_str = serde_json::to_string(&proof_json).unwrap();
@@ -418,24 +541,38 @@ fn handle_commit_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
     // Also write to disk if out path provided
     if let Some(out_path) = req.out.as_ref() {
         match std::fs::write(out_path, &proof_str) {
-            Ok(_) => log::info!("Commitment proof written to disk",
-                "path", format!("{}", out_path.display()),
-                "size", log::bytes_label(proof_str.len())
+            Ok(_) => log::info!(
+                "Commitment proof written to disk",
+                "path",
+                format!("{}", out_path.display()),
+                "size",
+                log::bytes_label(proof_str.len())
             ),
-            Err(e) => log::error!("Failed to write proof file",
-                "path", format!("{}", out_path.display()),
-                "err", e.to_string()
+            Err(e) => log::error!(
+                "Failed to write proof file",
+                "path",
+                format!("{}", out_path.display()),
+                "err",
+                e.to_string()
             ),
         }
     }
 
-    log::info!("Commitment proof generated",
-        "cmt", log::hex_snippet(cmt, 12),
-        "proof_size", proof_str.len(),
-        "took", log::duration_secs(&start.elapsed())
+    log::info!(
+        "Commitment proof generated",
+        "cmt",
+        log::hex_snippet(cmt, 12),
+        "proof_size",
+        proof_str.len(),
+        "took",
+        log::duration_secs(&start.elapsed())
     );
 
-    Response { ok: true, proof: Some(proof_str), ..Default::default() }
+    Response {
+        ok: true,
+        proof: Some(proof_str),
+        ..Default::default()
+    }
 }
 
 /// Generate a cancel/close proof for a position. Returns proof JSON + nullifier.
@@ -447,7 +584,11 @@ fn handle_cancel_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
         None => return err("missing cmt"),
     };
 
-    log::info!("Generating cancel proof", "commitment", log::hex_snippet(cmt, 12));
+    log::info!(
+        "Generating cancel proof",
+        "commitment",
+        log::hex_snippet(cmt, 12)
+    );
 
     let secrets = match store.get(cmt) {
         Ok(Some(s)) => s,
@@ -460,14 +601,24 @@ fn handle_cancel_proof(store: &db::SecretStore, keys: &PathBuf, req: &Request) -
         Err(e) => return err(e),
     };
 
-    let nullifier = format!("{:0>64x}", result.public_inputs[0].parse::<num_bigint::BigUint>().unwrap());
-    let proof_json = serde_json::json!({"a": result.proof.a, "b": result.proof.b, "c": result.proof.c});
+    let nullifier = format!(
+        "{:0>64x}",
+        result.public_inputs[0]
+            .parse::<num_bigint::BigUint>()
+            .unwrap()
+    );
+    let proof_json =
+        serde_json::json!({"a": result.proof.a, "b": result.proof.b, "c": result.proof.c});
     let proof_str = serde_json::to_string(&proof_json).unwrap();
 
-    log::info!("Cancel proof generated",
-        "cmt", log::hex_snippet(cmt, 12),
-        "nullifier", log::hex_snippet(&nullifier, 12),
-        "took", log::duration_secs(&start.elapsed())
+    log::info!(
+        "Cancel proof generated",
+        "cmt",
+        log::hex_snippet(cmt, 12),
+        "nullifier",
+        log::hex_snippet(&nullifier, 12),
+        "took",
+        log::duration_secs(&start.elapsed())
     );
 
     Response {
@@ -498,10 +649,14 @@ fn handle_note_proof(keys: &PathBuf, req: &Request) -> Response {
                 "a": out.proof.proof.a,
                 "b": out.proof.proof.b,
                 "c": out.proof.proof.c,
-            }).to_string();
-            log::info!("Note spend proof generated",
-                "note_cmt", log::hex_snippet(&out.note_cmt, 12),
-                "took", log::duration_secs(&start.elapsed())
+            })
+            .to_string();
+            log::info!(
+                "Note spend proof generated",
+                "note_cmt",
+                log::hex_snippet(&out.note_cmt, 12),
+                "took",
+                log::duration_secs(&start.elapsed())
             );
             Response {
                 ok: true,
@@ -531,7 +686,12 @@ fn handle_note_cmt(req: &Request) -> Response {
         None => return err("missing secret"),
     };
     let (note_cmt, note_null) = proof::compute_note_cmt_hex(amount, secret);
-    Response { ok: true, note_cmt: Some(note_cmt), note_null: Some(note_null), ..Default::default() }
+    Response {
+        ok: true,
+        note_cmt: Some(note_cmt),
+        note_null: Some(note_null),
+        ..Default::default()
+    }
 }
 
 fn handle_match(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Response {
@@ -553,17 +713,34 @@ fn handle_match(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respo
         None => return err("missing source"),
     };
 
-    log::info!("═══ Processing match request ═══",
-        "cmt_a", log::hex_snippet(cmt_a, 12),
-        "cmt_b", log::hex_snippet(cmt_b, 12),
-        "perp_contract", &perp[..8],
-        "source", source
+    log::info!(
+        "═══ Processing match request ═══",
+        "cmt_a",
+        log::hex_snippet(cmt_a, 12),
+        "cmt_b",
+        log::hex_snippet(cmt_b, 12),
+        "perp_contract",
+        &perp[..8],
+        "source",
+        source
     );
 
-    match do_match(store, keys, cmt_a, cmt_b, perp, source, engine::Side::Bid, 0, 0) {
+    match do_match(
+        store,
+        keys,
+        cmt_a,
+        cmt_b,
+        perp,
+        source,
+        engine::Side::Bid,
+        0,
+        0,
+    ) {
         Some(r) => {
-            log::info!("Match confirmed on-chain",
-                "elapsed", log::duration_secs(&start.elapsed())
+            log::info!(
+                "Match confirmed on-chain",
+                "elapsed",
+                log::duration_secs(&start.elapsed())
             );
             Response {
                 ok: true,
@@ -575,10 +752,14 @@ fn handle_match(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respo
             }
         }
         None => {
-            log::error!("Match failed",
-                "cmt_a", log::hex_snippet(cmt_a, 12),
-                "cmt_b", log::hex_snippet(cmt_b, 12),
-                "elapsed", log::duration_secs(&start.elapsed())
+            log::error!(
+                "Match failed",
+                "cmt_a",
+                log::hex_snippet(cmt_a, 12),
+                "cmt_b",
+                log::hex_snippet(cmt_b, 12),
+                "elapsed",
+                log::duration_secs(&start.elapsed())
             );
             err("match failed")
         }
@@ -597,14 +778,22 @@ fn parse_order_type(s: &str) -> Option<engine::OrderType> {
     }
 }
 
-fn secrets_to_order(cmt: &str, secrets: &db::OrderSecrets, order_type: engine::OrderType) -> engine::Order {
+fn secrets_to_order(
+    cmt: &str,
+    secrets: &db::OrderSecrets,
+    order_type: engine::OrderType,
+) -> engine::Order {
     let price = match order_type {
         engine::OrderType::Market => 0,
         _ => secrets.price,
     };
     engine::Order {
         id: cmt.to_string(),
-        side: if secrets.side == 0 { engine::Side::Bid } else { engine::Side::Ask },
+        side: if secrets.side == 0 {
+            engine::Side::Bid
+        } else {
+            engine::Side::Ask
+        },
         price,
         size: secrets.size,
         remaining: secrets.size,
@@ -614,7 +803,14 @@ fn secrets_to_order(cmt: &str, secrets: &db::OrderSecrets, order_type: engine::O
     }
 }
 
-fn handle_place(store: &db::SecretStore, book_store: &db::BookStore, fills: &db::FillLedger, books: &RwLock<HashMap<u64, engine::OrderBook>>, keys: &PathBuf, req: &Request) -> Response {
+fn handle_place(
+    store: &db::SecretStore,
+    book_store: &db::BookStore,
+    fills: &db::FillLedger,
+    books: &RwLock<HashMap<u64, engine::OrderBook>>,
+    keys: &PathBuf,
+    req: &Request,
+) -> Response {
     let start = Instant::now();
     let cmt = match req.cmt.as_ref() {
         Some(c) => c,
@@ -640,16 +836,26 @@ fn handle_place(store: &db::SecretStore, book_store: &db::BookStore, fills: &db:
 
     let order = secrets_to_order(cmt, &secrets, ot);
     let asset = order.asset;
-    log::info!("handle_place: placing order",
-        "cmt", engine::short_id(cmt),
-        "asset", asset,
-        "secrets_side", secrets.side,
-        "secrets_price", secrets.price,
-        "secrets_size", secrets.size,
-        "order_side", order.side as u64,
-        "order_price", order.price,
-        "order_size", order.size,
-        "order_type", format!("{:?}", order.order_type)
+    log::info!(
+        "handle_place: placing order",
+        "cmt",
+        engine::short_id(cmt),
+        "asset",
+        asset,
+        "secrets_side",
+        secrets.side,
+        "secrets_price",
+        secrets.price,
+        "secrets_size",
+        secrets.size,
+        "order_side",
+        order.side as u64,
+        "order_price",
+        order.price,
+        "order_size",
+        order.size,
+        "order_type",
+        format!("{:?}", order.order_type)
     );
 
     // Phase 1: Mutate book (write lock)
@@ -674,42 +880,59 @@ fn handle_place(store: &db::SecretStore, book_store: &db::BookStore, fills: &db:
     let source = req.source.as_ref();
 
     // Phase 2: Attempt on-chain matches + audit trail
-    let fill_json: Vec<FillJson> = book_fills.into_iter().map(|f| {
-        let mut fj = FillJson {
-            maker_id: engine::short_id(&f.maker_id).to_string(),
-            price: f.price,
-            size: f.size,
-            match_price: None,
-            match_size: None,
-            nullifier_a: None,
-            nullifier_b: None,
-        };
-        if let (Some(perp), Some(source)) = (perp, source) {
-            let maker_side = f.taker_side.opposite();
-            let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
-            match do_match(store, keys, cmt, &f.maker_id, perp, source, maker_side, f.price, f.size) {
-                Some(result) => {
-                    fj.match_price = Some(result.match_price);
-                    fj.match_size = Some(result.match_size);
-                    fj.nullifier_a = Some(result.nullifier_a);
-                    fj.nullifier_b = Some(result.nullifier_b);
-                    let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
-                }
-                None => {
-                    let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "failed");
-                    // Restore maker to CLOB and persist immediately
-                    let mut books = books.write().unwrap();
-                    if let Some(book) = books.get_mut(&asset) {
-                        book.restore_order(&f.maker_id, maker_side, f.price, f.size);
-                        if let Err(e) = book_store.save_book(asset, book) {
-                            log::error!("Failed to persist after restore", "err", e.to_string());
+    let fill_json: Vec<FillJson> = book_fills
+        .into_iter()
+        .map(|f| {
+            let mut fj = FillJson {
+                maker_id: engine::short_id(&f.maker_id).to_string(),
+                price: f.price,
+                size: f.size,
+                match_price: None,
+                match_size: None,
+                nullifier_a: None,
+                nullifier_b: None,
+            };
+            if let (Some(perp), Some(source)) = (perp, source) {
+                let maker_side = f.taker_side.opposite();
+                let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
+                match do_match(
+                    store,
+                    keys,
+                    cmt,
+                    &f.maker_id,
+                    perp,
+                    source,
+                    maker_side,
+                    f.price,
+                    f.size,
+                ) {
+                    Some(result) => {
+                        fj.match_price = Some(result.match_price);
+                        fj.match_size = Some(result.match_size);
+                        fj.nullifier_a = Some(result.nullifier_a);
+                        fj.nullifier_b = Some(result.nullifier_b);
+                        let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
+                    }
+                    None => {
+                        let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "failed");
+                        // Restore maker to CLOB and persist immediately
+                        let mut books = books.write().unwrap();
+                        if let Some(book) = books.get_mut(&asset) {
+                            book.restore_order(&f.maker_id, maker_side, f.price, f.size);
+                            if let Err(e) = book_store.save_book(asset, book) {
+                                log::error!(
+                                    "Failed to persist after restore",
+                                    "err",
+                                    e.to_string()
+                                );
+                            }
                         }
                     }
                 }
             }
-        }
-        fj
-    }).collect();
+            fj
+        })
+        .collect();
 
     // Phase 3: Persist final book state (read lock)
     {
@@ -721,13 +944,20 @@ fn handle_place(store: &db::SecretStore, book_store: &db::BookStore, fills: &db:
         }
     }
 
-    log::info!("Order placed in book",
-        "cmt", engine::short_id(cmt),
-        "asset", asset,
-        "type", ot_str,
-        "fills", fill_json.len(),
-        "auto_matched", perp.is_some(),
-        "took", log::duration_secs(&start.elapsed())
+    log::info!(
+        "Order placed in book",
+        "cmt",
+        engine::short_id(cmt),
+        "asset",
+        asset,
+        "type",
+        ot_str,
+        "fills",
+        fill_json.len(),
+        "auto_matched",
+        perp.is_some(),
+        "took",
+        log::duration_secs(&start.elapsed())
     );
 
     Response {
@@ -741,7 +971,13 @@ fn handle_place(store: &db::SecretStore, book_store: &db::BookStore, fills: &db:
     }
 }
 
-fn handle_cancel(store: &db::SecretStore, book_store: &db::BookStore, books: &RwLock<HashMap<u64, engine::OrderBook>>, keys: &PathBuf, req: &Request) -> Response {
+fn handle_cancel(
+    store: &db::SecretStore,
+    book_store: &db::BookStore,
+    books: &RwLock<HashMap<u64, engine::OrderBook>>,
+    keys: &PathBuf,
+    req: &Request,
+) -> Response {
     let cmt = match req.cmt.as_ref() {
         Some(c) => c,
         None => return err("missing cmt"),
@@ -755,20 +991,41 @@ fn handle_cancel(store: &db::SecretStore, book_store: &db::BookStore, books: &Rw
     let asset = secrets.asset;
 
     // On-chain cancel (if perp/orderbook/owner are provided)
-    if let (Some(perp), Some(orderbook), Some(owner)) = (req.perp.as_ref(), req.orderbook.as_ref(), req.owner.as_ref()) {
+    if let (Some(perp), Some(orderbook), Some(owner)) = (
+        req.perp.as_ref(),
+        req.orderbook.as_ref(),
+        req.owner.as_ref(),
+    ) {
         let out = match proof::gen_cancel_proof(keys, &secrets) {
             Ok(o) => o,
             Err(e) => return err(format!("cancel proof generation failed: {e}")),
         };
 
-        let nullifier = format!("{:0>64x}", out.public_inputs[0].parse::<num_bigint::BigUint>().unwrap());
+        let nullifier = format!(
+            "{:0>64x}",
+            out.public_inputs[0].parse::<num_bigint::BigUint>().unwrap()
+        );
         let source = req.source.as_deref().unwrap_or("e2e");
 
-        if let Err(e) = stellar::submit_cancel(orderbook, perp, owner, cmt, &nullifier, &out, source) {
-            log::error!("Cancel on-chain submission failed", "cmt", &cmt[..16], "err", e.to_string());
+        if let Err(e) =
+            stellar::submit_cancel(orderbook, perp, owner, cmt, &nullifier, &out, source)
+        {
+            log::error!(
+                "Cancel on-chain submission failed",
+                "cmt",
+                &cmt[..16],
+                "err",
+                e.to_string()
+            );
             return err(format!("cancel on-chain submission failed: {e}"));
         }
-        log::info!("Order cancelled on-chain", "cmt", &cmt[..16], "nullifier", &nullifier[..16]);
+        log::info!(
+            "Order cancelled on-chain",
+            "cmt",
+            &cmt[..16],
+            "nullifier",
+            &nullifier[..16]
+        );
     }
 
     // CLOB cancel (always)
@@ -786,10 +1043,20 @@ fn handle_cancel(store: &db::SecretStore, book_store: &db::BookStore, books: &Rw
     }
 
     log::info!("Order cancelled on CLOB", "cmt", &cmt[..16]);
-    Response { ok: true, ..Default::default() }
+    Response {
+        ok: true,
+        ..Default::default()
+    }
 }
 
-fn handle_market(store: &db::SecretStore, book_store: &db::BookStore, fills: &db::FillLedger, books: &RwLock<HashMap<u64, engine::OrderBook>>, keys: &PathBuf, req: &Request) -> Response {
+fn handle_market(
+    store: &db::SecretStore,
+    book_store: &db::BookStore,
+    fills: &db::FillLedger,
+    books: &RwLock<HashMap<u64, engine::OrderBook>>,
+    keys: &PathBuf,
+    req: &Request,
+) -> Response {
     let start = Instant::now();
     let cmt = match req.cmt.as_ref() {
         Some(c) => c,
@@ -803,15 +1070,24 @@ fn handle_market(store: &db::SecretStore, book_store: &db::BookStore, fills: &db
 
     let order = secrets_to_order(cmt, &secrets, engine::OrderType::Market);
     let asset = order.asset;
-    log::info!("handle_market: placing order",
-        "cmt", engine::short_id(cmt),
-        "asset", asset,
-        "secrets_side", secrets.side,
-        "secrets_price", secrets.price,
-        "secrets_size", secrets.size,
-        "order_side", order.side as u64,
-        "order_price", order.price,
-        "order_size", order.size
+    log::info!(
+        "handle_market: placing order",
+        "cmt",
+        engine::short_id(cmt),
+        "asset",
+        asset,
+        "secrets_side",
+        secrets.side,
+        "secrets_price",
+        secrets.price,
+        "secrets_size",
+        secrets.size,
+        "order_side",
+        order.side as u64,
+        "order_price",
+        order.price,
+        "order_size",
+        order.size
     );
 
     // Phase 1: Mutate book (write lock)
@@ -836,42 +1112,59 @@ fn handle_market(store: &db::SecretStore, book_store: &db::BookStore, fills: &db
     let source = req.source.as_ref();
 
     // Phase 2: Attempt on-chain matches + audit trail
-    let fill_json: Vec<FillJson> = book_fills.into_iter().map(|f| {
-        let mut fj = FillJson {
-            maker_id: engine::short_id(&f.maker_id).to_string(),
-            price: f.price,
-            size: f.size,
-            match_price: None,
-            match_size: None,
-            nullifier_a: None,
-            nullifier_b: None,
-        };
-        if let (Some(perp), Some(source)) = (perp, source) {
-            let maker_side = f.taker_side.opposite();
-            let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
-            match do_match(store, keys, cmt, &f.maker_id, perp, source, maker_side, f.price, f.size) {
-                Some(result) => {
-                    fj.match_price = Some(result.match_price);
-                    fj.match_size = Some(result.match_size);
-                    fj.nullifier_a = Some(result.nullifier_a);
-                    fj.nullifier_b = Some(result.nullifier_b);
-                    let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
-                }
-                None => {
-                    let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "failed");
-                    // Restore maker to CLOB and persist immediately
-                    let mut books = books.write().unwrap();
-                    if let Some(book) = books.get_mut(&asset) {
-                        book.restore_order(&f.maker_id, maker_side, f.price, f.size);
-                        if let Err(e) = book_store.save_book(asset, book) {
-                            log::error!("Failed to persist after restore", "err", e.to_string());
+    let fill_json: Vec<FillJson> = book_fills
+        .into_iter()
+        .map(|f| {
+            let mut fj = FillJson {
+                maker_id: engine::short_id(&f.maker_id).to_string(),
+                price: f.price,
+                size: f.size,
+                match_price: None,
+                match_size: None,
+                nullifier_a: None,
+                nullifier_b: None,
+            };
+            if let (Some(perp), Some(source)) = (perp, source) {
+                let maker_side = f.taker_side.opposite();
+                let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
+                match do_match(
+                    store,
+                    keys,
+                    cmt,
+                    &f.maker_id,
+                    perp,
+                    source,
+                    maker_side,
+                    f.price,
+                    f.size,
+                ) {
+                    Some(result) => {
+                        fj.match_price = Some(result.match_price);
+                        fj.match_size = Some(result.match_size);
+                        fj.nullifier_a = Some(result.nullifier_a);
+                        fj.nullifier_b = Some(result.nullifier_b);
+                        let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
+                    }
+                    None => {
+                        let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "failed");
+                        // Restore maker to CLOB and persist immediately
+                        let mut books = books.write().unwrap();
+                        if let Some(book) = books.get_mut(&asset) {
+                            book.restore_order(&f.maker_id, maker_side, f.price, f.size);
+                            if let Err(e) = book_store.save_book(asset, book) {
+                                log::error!(
+                                    "Failed to persist after restore",
+                                    "err",
+                                    e.to_string()
+                                );
+                            }
                         }
                     }
                 }
             }
-        }
-        fj
-    }).collect();
+            fj
+        })
+        .collect();
 
     // Phase 3: Persist final book state (read lock)
     {
@@ -883,12 +1176,18 @@ fn handle_market(store: &db::SecretStore, book_store: &db::BookStore, fills: &db
         }
     }
 
-    log::info!("Market order executed",
-        "cmt", engine::short_id(cmt),
-        "asset", asset,
-        "fills", fill_json.len(),
-        "auto_matched", perp.is_some(),
-        "took", log::duration_secs(&start.elapsed())
+    log::info!(
+        "Market order executed",
+        "cmt",
+        engine::short_id(cmt),
+        "asset",
+        asset,
+        "fills",
+        fill_json.len(),
+        "auto_matched",
+        perp.is_some(),
+        "took",
+        log::duration_secs(&start.elapsed())
     );
 
     Response {
@@ -913,21 +1212,26 @@ fn handle_set_mark_price(req: &Request) -> Response {
     };
     let source = req.source.as_deref().unwrap_or("e2e");
 
-    log::info!("Setting mark price on-chain",
-        "perp", &perp[..8],
-        "price", price,
-        "source", source
+    log::info!(
+        "Setting mark price on-chain",
+        "perp",
+        &perp[..8],
+        "price",
+        price,
+        "source",
+        source
     );
 
     if let Err(e) = stellar::submit_mark_price(perp, source, price) {
-        log::error!("set_mark_price on-chain failed",
-            "err", e.to_string()
-        );
+        log::error!("set_mark_price on-chain failed", "err", e.to_string());
         return err(e);
     }
 
     log::info!("Mark price set on-chain", "price", price);
-    Response { ok: true, ..Default::default() }
+    Response {
+        ok: true,
+        ..Default::default()
+    }
 }
 
 fn handle_get_market(books: &RwLock<HashMap<u64, engine::OrderBook>>, req: &Request) -> Response {
@@ -940,13 +1244,44 @@ fn handle_get_market(books: &RwLock<HashMap<u64, engine::OrderBook>>, req: &Requ
             best_ask: book.best_ask().map(|(p, s)| format!("{p}x{s}")),
             spread: book.spread(),
             order_count: Some(book.order_count()),
-            depth: Some(book.depth(engine::Side::Bid, 32).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
-            bids: Some(book.depth(engine::Side::Bid, 32).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
-            asks: Some(book.depth(engine::Side::Ask, 32).iter().map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o }).collect()),
+            depth: Some(
+                book.depth(engine::Side::Bid, 32)
+                    .iter()
+                    .map(|&(p, s, o)| LevelJson {
+                        price: p,
+                        size: s,
+                        orders: o,
+                    })
+                    .collect(),
+            ),
+            bids: Some(
+                book.depth(engine::Side::Bid, 32)
+                    .iter()
+                    .map(|&(p, s, o)| LevelJson {
+                        price: p,
+                        size: s,
+                        orders: o,
+                    })
+                    .collect(),
+            ),
+            asks: Some(
+                book.depth(engine::Side::Ask, 32)
+                    .iter()
+                    .map(|&(p, s, o)| LevelJson {
+                        price: p,
+                        size: s,
+                        orders: o,
+                    })
+                    .collect(),
+            ),
             ..Default::default()
         }
     } else {
-        Response { ok: true, order_count: Some(0), ..Default::default() }
+        Response {
+            ok: true,
+            order_count: Some(0),
+            ..Default::default()
+        }
     }
 }
 
@@ -972,18 +1307,33 @@ fn do_match(
     let out = match proof::gen_match_proof(keys, &a, &b, params.match_price, params.match_size) {
         Ok(o) => o,
         Err(e) => {
-            log::error!("Auto-match: proof generation failed", "cmt_a", &cmt_a[..16], "err", e.to_string());
+            log::error!(
+                "Auto-match: proof generation failed",
+                "cmt_a",
+                &cmt_a[..16],
+                "err",
+                e.to_string()
+            );
             return None;
         }
     };
 
     if let Err(e) = stellar::submit_match(perp, source, cmt_a, cmt_b, &out) {
-        log::error!("Auto-match: on-chain submission failed", "cmt_a", &cmt_a[..16], "err", e.to_string());
+        log::error!(
+            "Auto-match: on-chain submission failed",
+            "cmt_a",
+            &cmt_a[..16],
+            "err",
+            e.to_string()
+        );
         return None;
     }
 
     let hex = |i: usize| -> String {
-        format!("{:0>64x}", out.public_inputs[i].parse::<num_bigint::BigUint>().unwrap())
+        format!(
+            "{:0>64x}",
+            out.public_inputs[i].parse::<num_bigint::BigUint>().unwrap()
+        )
     };
 
     Some(MatchResultData {
@@ -995,7 +1345,11 @@ fn do_match(
 }
 
 fn err(s: impl std::fmt::Display) -> Response {
-    Response { ok: false, error: Some(s.to_string()), ..Default::default() }
+    Response {
+        ok: false,
+        error: Some(s.to_string()),
+        ..Default::default()
+    }
 }
 
 // ── Secure HTTP Server (Attestation + Encryption) ───────────────────
@@ -1043,9 +1397,12 @@ pub mod secure {
             let liq_store = store_arc.clone();
             let perp = perp.clone();
             let interval = liquidator_interval_secs;
-            log::info!("Starting liquidator thread",
-                "perp_id", &perp[..12],
-                "interval_secs", interval
+            log::info!(
+                "Starting liquidator thread",
+                "perp_id",
+                &perp[..12],
+                "interval_secs",
+                interval
             );
             crate::liquidator::spawn(liq_store, perp, interval);
         }
@@ -1072,9 +1429,12 @@ pub mod secure {
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
-        log::info!("Secure HTTP server listening",
-            "addr", addr,
-            "note", "TLS must be terminated by a reverse proxy"
+        log::info!(
+            "Secure HTTP server listening",
+            "addr",
+            addr,
+            "note",
+            "TLS must be terminated by a reverse proxy"
         );
 
         axum::serve(listener, app).await?;
@@ -1094,9 +1454,12 @@ pub mod secure {
                 let policy = &*state.attestation_policy;
                 match attestation::verify_attestation_token(&token, policy, &nonce) {
                     Ok(claims) => {
-                        log::info!("Attestation token verified",
-                            "hwmodel", &claims.hwmodel,
-                            "dbgstat", &claims.dbgstat
+                        log::info!(
+                            "Attestation token verified",
+                            "hwmodel",
+                            &claims.hwmodel,
+                            "dbgstat",
+                            &claims.dbgstat
                         );
                         Json(serde_json::json!({"ok": true, "token": token}))
                     }
@@ -1138,10 +1501,14 @@ pub mod secure {
             None => return Json(serde_json::json!({"ok": false, "error": "missing encrypted"})),
         };
 
-        let encrypted = match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encrypted_b64) {
-            Ok(v) => v,
-            Err(e) => return Json(serde_json::json!({"ok": false, "error": format!("b64: {e}")})),
-        };
+        let encrypted =
+            match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encrypted_b64)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    return Json(serde_json::json!({"ok": false, "error": format!("b64: {e}")}))
+                }
+            };
 
         if encrypted.len() < 12 {
             return Json(serde_json::json!({"ok": false, "error": "too short"}));
@@ -1156,7 +1523,9 @@ pub mod secure {
 
         let plaintext = match crypto::decrypt(&dek_bytes, &payload) {
             Ok(p) => p,
-            Err(e) => return Json(serde_json::json!({"ok": false, "error": format!("decrypt: {e}")})),
+            Err(e) => {
+                return Json(serde_json::json!({"ok": false, "error": format!("decrypt: {e}")}))
+            }
         };
 
         let req: Request = match serde_json::from_slice(&plaintext) {
@@ -1174,17 +1543,24 @@ pub mod secure {
         let dek_hex = std::env::var("CER_DEK").map_err(|_| "CER_DEK not set".to_string())?;
         let dek_bytes: [u8; 32] = hex::decode(&dek_hex)
             .map_err(|_| "invalid CER_DEK hex".to_string())
-            .and_then(|v| v.try_into().map_err(|_| "CER_DEK must be 32 bytes".to_string()))?;
+            .and_then(|v| {
+                v.try_into()
+                    .map_err(|_| "CER_DEK must be 32 bytes".to_string())
+            })?;
 
         let encrypted_b64 = payload["encrypted"].as_str().ok_or("missing encrypted")?;
-        let encrypted = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encrypted_b64)
-            .map_err(|e| format!("b64: {e}"))?;
+        let encrypted =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encrypted_b64)
+                .map_err(|e| format!("b64: {e}"))?;
         if encrypted.len() < 12 {
             return Err("too short".to_string());
         }
         let mut nonce = [0u8; 12];
         nonce.copy_from_slice(&encrypted[..12]);
-        let ep = crypto::EncryptedPayload { nonce, ciphertext: encrypted[12..].to_vec() };
+        let ep = crypto::EncryptedPayload {
+            nonce,
+            ciphertext: encrypted[12..].to_vec(),
+        };
         let plaintext = crypto::decrypt(&dek_bytes, &ep).map_err(|e| format!("decrypt: {e}"))?;
         let req: Request = serde_json::from_slice(&plaintext).map_err(|e| format!("json: {e}"))?;
         Ok((dek_bytes, req))
@@ -1198,7 +1574,14 @@ pub mod secure {
             Ok((_, r)) => r,
             Err(e) => return Json(serde_json::json!({"ok": false, "error": e})),
         };
-        let resp = handle_place(&state.store, &state.book_store, &state.fills, &state.books, &state.keys_dir, &req);
+        let resp = handle_place(
+            &state.store,
+            &state.book_store,
+            &state.fills,
+            &state.books,
+            &state.keys_dir,
+            &req,
+        );
         Json(serde_json::json!(resp))
     }
 
@@ -1210,7 +1593,13 @@ pub mod secure {
             Ok((_, r)) => r,
             Err(e) => return Json(serde_json::json!({"ok": false, "error": e})),
         };
-        let resp = handle_cancel(&state.store, &state.book_store, &state.books, &state.keys_dir, &req);
+        let resp = handle_cancel(
+            &state.store,
+            &state.book_store,
+            &state.books,
+            &state.keys_dir,
+            &req,
+        );
         Json(serde_json::json!(resp))
     }
 
@@ -1234,7 +1623,14 @@ pub mod secure {
             Ok((_, r)) => r,
             Err(e) => return Json(serde_json::json!({"ok": false, "error": e})),
         };
-        let resp = handle_market(&state.store, &state.book_store, &state.fills, &state.books, &state.keys_dir, &req);
+        let resp = handle_market(
+            &state.store,
+            &state.book_store,
+            &state.fills,
+            &state.books,
+            &state.keys_dir,
+            &req,
+        );
         Json(serde_json::json!(resp))
     }
 
@@ -1273,13 +1669,13 @@ pub mod secure {
 #[cfg(feature = "secure")]
 pub mod http {
     use super::*;
-use axum::{
-    extract::{Path, Query, State},
-    routing::{get, post},
-    Json, Router,
-};
-use tower_http::cors::{Any, CorsLayer};
-use std::sync::Arc as StdArc;
+    use axum::{
+        extract::{Path, Query, State},
+        routing::{get, post},
+        Json, Router,
+    };
+    use std::sync::Arc as StdArc;
+    use tower_http::cors::{Any, CorsLayer};
 
     #[derive(Clone)]
     pub struct HttpState {
@@ -1318,8 +1714,16 @@ use std::sync::Arc as StdArc;
             .route("/match", post(handle_http_match))
             .route("/market", post(handle_http_market))
             .route("/get-market", get(handle_http_get_market))
-            .route("/relay/open-position", post(handle_http_relay_open_position))
-            .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
+            .route(
+                "/relay/open-position",
+                post(handle_http_relay_open_position),
+            )
+            .layer(
+                CorsLayer::new()
+                    .allow_origin(Any)
+                    .allow_methods(Any)
+                    .allow_headers(Any),
+            )
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -1332,7 +1736,11 @@ use std::sync::Arc as StdArc;
         State(state): State<HttpState>,
         Json(req): Json<Request>,
     ) -> Json<serde_json::Value> {
-        Json(serde_json::json!(handle_init(&state.store, &state.keys_dir, &req)))
+        Json(serde_json::json!(handle_init(
+            &state.store,
+            &state.keys_dir,
+            &req
+        )))
     }
 
     async fn handle_http_fast_init(
@@ -1346,14 +1754,22 @@ use std::sync::Arc as StdArc;
         State(state): State<HttpState>,
         Json(req): Json<Request>,
     ) -> Json<serde_json::Value> {
-        Json(serde_json::json!(handle_commit_proof(&state.store, &state.keys_dir, &req)))
+        Json(serde_json::json!(handle_commit_proof(
+            &state.store,
+            &state.keys_dir,
+            &req
+        )))
     }
 
     async fn handle_http_cancel_proof(
         State(state): State<HttpState>,
         Json(req): Json<Request>,
     ) -> Json<serde_json::Value> {
-        Json(serde_json::json!(handle_cancel_proof(&state.store, &state.keys_dir, &req)))
+        Json(serde_json::json!(handle_cancel_proof(
+            &state.store,
+            &state.keys_dir,
+            &req
+        )))
     }
 
     async fn handle_http_note_proof(
@@ -1374,28 +1790,52 @@ use std::sync::Arc as StdArc;
         State(state): State<HttpState>,
         Json(req): Json<Request>,
     ) -> Json<serde_json::Value> {
-        Json(serde_json::json!(handle_place(&state.store, &state.book_store, &state.fills, &state.books, &state.keys_dir, &req)))
+        Json(serde_json::json!(handle_place(
+            &state.store,
+            &state.book_store,
+            &state.fills,
+            &state.books,
+            &state.keys_dir,
+            &req
+        )))
     }
 
     async fn handle_http_cancel(
         State(state): State<HttpState>,
         Json(req): Json<Request>,
     ) -> Json<serde_json::Value> {
-        Json(serde_json::json!(handle_cancel(&state.store, &state.book_store, &state.books, &state.keys_dir, &req)))
+        Json(serde_json::json!(handle_cancel(
+            &state.store,
+            &state.book_store,
+            &state.books,
+            &state.keys_dir,
+            &req
+        )))
     }
 
     async fn handle_http_match(
         State(state): State<HttpState>,
         Json(req): Json<Request>,
     ) -> Json<serde_json::Value> {
-        Json(serde_json::json!(handle_match(&state.store, &state.keys_dir, &req)))
+        Json(serde_json::json!(handle_match(
+            &state.store,
+            &state.keys_dir,
+            &req
+        )))
     }
 
     async fn handle_http_market(
         State(state): State<HttpState>,
         Json(req): Json<Request>,
     ) -> Json<serde_json::Value> {
-        Json(serde_json::json!(handle_market(&state.store, &state.book_store, &state.fills, &state.books, &state.keys_dir, &req)))
+        Json(serde_json::json!(handle_market(
+            &state.store,
+            &state.book_store,
+            &state.fills,
+            &state.books,
+            &state.keys_dir,
+            &req
+        )))
     }
 
     async fn handle_http_get_market(
@@ -1403,7 +1843,11 @@ use std::sync::Arc as StdArc;
         axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
     ) -> Json<serde_json::Value> {
         let asset = params.get("asset").and_then(|v| v.parse().ok());
-        let req = Request { cmd: "get_market".to_string(), asset, ..Default::default() };
+        let req = Request {
+            cmd: "get_market".to_string(),
+            asset,
+            ..Default::default()
+        };
         Json(serde_json::json!(handle_get_market(&state.books, &req)))
     }
 
@@ -1447,24 +1891,27 @@ use std::sync::Arc as StdArc;
             let asset_id = asset_id.to_string();
             let note_proof = req.note_proof.clone();
             let commit_proof = req.commit_proof.clone();
-            move || stellar::relay_open_position(
-                &perp,
-                &orderbook,
-                &note_cmt,
-                &note_null,
-                &position_cmt,
-                req.hint_price,
-                req.hint_side,
-                req.hint_leverage,
-                req.hint_size,
-                req.tp_price,
-                req.sl_price,
-                &portfolio_key,
-                &asset_id,
-                &note_proof,
-                &commit_proof,
-            )
-        }).await;
+            move || {
+                stellar::relay_open_position(
+                    &perp,
+                    &orderbook,
+                    &note_cmt,
+                    &note_null,
+                    &position_cmt,
+                    req.hint_price,
+                    req.hint_side,
+                    req.hint_leverage,
+                    req.hint_size,
+                    req.tp_price,
+                    req.sl_price,
+                    &portfolio_key,
+                    &asset_id,
+                    &note_proof,
+                    &commit_proof,
+                )
+            }
+        })
+        .await;
 
         match result {
             Ok(Ok(tx_hash)) => Json(serde_json::json!({ "ok": true, "tx_hash": tx_hash })),

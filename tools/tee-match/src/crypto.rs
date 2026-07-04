@@ -61,7 +61,10 @@ pub fn decrypt(key: &[u8; KEY_SIZE], payload: &EncryptedPayload) -> Result<Vec<u
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| anyhow::anyhow!("AES-256-GCM init failed: {e}"))?;
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(&payload.nonce), payload.ciphertext.as_ref())
+        .decrypt(
+            Nonce::from_slice(&payload.nonce),
+            payload.ciphertext.as_ref(),
+        )
         .map_err(|e| anyhow::anyhow!("AES-256-GCM decrypt failed: {e}"))?;
     Ok(plaintext)
 }

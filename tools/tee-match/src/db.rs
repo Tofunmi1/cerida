@@ -35,11 +35,17 @@ impl SecretStore {
         let start = Instant::now();
         let tree = db.open_tree("secrets")?;
         let count = tree.len();
-        log::info!("Secret store opened",
-            "existing_entries", count,
-            "took", log::duration_secs(&start.elapsed())
+        log::info!(
+            "Secret store opened",
+            "existing_entries",
+            count,
+            "took",
+            log::duration_secs(&start.elapsed())
         );
-        Ok(Self { _db: db.clone(), tree })
+        Ok(Self {
+            _db: db.clone(),
+            tree,
+        })
     }
 
     pub fn insert(&self, cmt_hex: &str, secrets: &OrderSecrets) -> anyhow::Result<()> {
@@ -49,34 +55,44 @@ impl SecretStore {
         self.tree.insert(cmt_hex.as_bytes(), value)?;
         self.tree.flush()?;
         let total_entries = self.tree.len();
-        log::debug!("Secret inserted into DB",
-            "commitment", &cmt_hex[..16],
-            "value_bytes", log::bytes_label(value_size),
-            "total_entries", total_entries,
-            "took", log::duration_secs(&start.elapsed())
+        log::debug!(
+            "Secret inserted into DB",
+            "commitment",
+            &cmt_hex[..16],
+            "value_bytes",
+            log::bytes_label(value_size),
+            "total_entries",
+            total_entries,
+            "took",
+            log::duration_secs(&start.elapsed())
         );
         Ok(())
     }
 
     pub fn get(&self, cmt_hex: &str) -> anyhow::Result<Option<OrderSecrets>> {
         let start = Instant::now();
-        log::debug!("Looking up secrets in DB",
-            "commitment", &cmt_hex[..16]
-        );
+        log::debug!("Looking up secrets in DB", "commitment", &cmt_hex[..16]);
         match self.tree.get(cmt_hex.as_bytes())? {
             Some(value) => {
                 let secrets: OrderSecrets = serde_json::from_slice(&value)?;
-                log::debug!("Secrets found in DB",
-                    "commitment", &cmt_hex[..16],
-                    "value_bytes", log::bytes_label(value.len()),
-                    "took", log::duration_secs(&start.elapsed())
+                log::debug!(
+                    "Secrets found in DB",
+                    "commitment",
+                    &cmt_hex[..16],
+                    "value_bytes",
+                    log::bytes_label(value.len()),
+                    "took",
+                    log::duration_secs(&start.elapsed())
                 );
                 Ok(Some(secrets))
             }
             None => {
-                log::warning!("Secrets NOT found in DB",
-                    "commitment", &cmt_hex[..16],
-                    "took", log::duration_secs(&start.elapsed())
+                log::warning!(
+                    "Secrets NOT found in DB",
+                    "commitment",
+                    &cmt_hex[..16],
+                    "took",
+                    log::duration_secs(&start.elapsed())
                 );
                 Ok(None)
             }
@@ -119,13 +135,22 @@ impl FillLedger {
     pub fn open(db: &sled::Db) -> anyhow::Result<Self> {
         let tree = db.open_tree("fills")?;
         let count = tree.len() as u64;
-        log::info!("Fill ledger opened",
-            "existing_entries", count
-        );
-        Ok(Self { tree, counter: Arc::new(AtomicU64::new(count)) })
+        log::info!("Fill ledger opened", "existing_entries", count);
+        Ok(Self {
+            tree,
+            counter: Arc::new(AtomicU64::new(count)),
+        })
     }
 
-    pub fn record(&self, taker: &str, maker: &str, price: u64, size: u64, asset: u64, status: &str) -> anyhow::Result<()> {
+    pub fn record(
+        &self,
+        taker: &str,
+        maker: &str,
+        price: u64,
+        size: u64,
+        asset: u64,
+        status: &str,
+    ) -> anyhow::Result<()> {
         let id = self.counter.fetch_add(1, Ordering::Relaxed);
         let entry = FillEntry {
             taker_cmt: taker.to_string(),
@@ -137,15 +162,23 @@ impl FillLedger {
             timestamp_ns: engine::now_nanos(),
         };
         let key = format!("{:020}", id);
-        self.tree.insert(key.as_bytes(), serde_json::to_vec(&entry)?)?;
+        self.tree
+            .insert(key.as_bytes(), serde_json::to_vec(&entry)?)?;
         self.tree.flush()?;
-        log::debug!("Fill recorded",
-            "id", key,
-            "taker", engine::short_id(taker),
-            "maker", engine::short_id(maker),
-            "price", price,
-            "size", size,
-            "status", status
+        log::debug!(
+            "Fill recorded",
+            "id",
+            key,
+            "taker",
+            engine::short_id(taker),
+            "maker",
+            engine::short_id(maker),
+            "price",
+            price,
+            "size",
+            size,
+            "status",
+            status
         );
         Ok(())
     }
@@ -157,11 +190,18 @@ impl FillLedger {
 
 pub fn open_db(path: &std::path::Path) -> anyhow::Result<sled::Db> {
     let start = Instant::now();
-    log::debug!("Opening sled database", "path", format!("{}", path.display()));
+    log::debug!(
+        "Opening sled database",
+        "path",
+        format!("{}", path.display())
+    );
     let db = sled::open(path)?;
-    log::info!("Database opened",
-        "path", format!("{}", path.display()),
-        "took", log::duration_secs(&start.elapsed())
+    log::info!(
+        "Database opened",
+        "path",
+        format!("{}", path.display()),
+        "took",
+        log::duration_secs(&start.elapsed())
     );
     Ok(db)
 }
@@ -183,11 +223,16 @@ impl BookStore {
         let key = book_key(asset);
         self.tree.insert(&key, value)?;
         self.tree.flush()?;
-        log::debug!("OrderBook saved to DB",
-            "asset", asset,
-            "order_count", book.order_count(),
-            "size_bytes", size,
-            "took", log::duration_secs(&start.elapsed())
+        log::debug!(
+            "OrderBook saved to DB",
+            "asset",
+            asset,
+            "order_count",
+            book.order_count(),
+            "size_bytes",
+            size,
+            "took",
+            log::duration_secs(&start.elapsed())
         );
         Ok(())
     }
@@ -197,9 +242,12 @@ impl BookStore {
         match self.tree.get(&key)? {
             Some(value) => {
                 let book: engine::OrderBook = serde_json::from_slice(&value)?;
-                log::info!("OrderBook loaded from DB",
-                    "asset", asset,
-                    "order_count", book.order_count()
+                log::info!(
+                    "OrderBook loaded from DB",
+                    "asset",
+                    asset,
+                    "order_count",
+                    book.order_count()
                 );
                 Ok(Some(book))
             }
@@ -219,11 +267,23 @@ impl BookStore {
                         log::debug!("Loaded book", "asset", asset);
                         books.insert(asset, book);
                     }
-                    Err(e) => log::error!("Failed to deserialize book", "asset", asset, "err", e.to_string()),
+                    Err(e) => log::error!(
+                        "Failed to deserialize book",
+                        "asset",
+                        asset,
+                        "err",
+                        e.to_string()
+                    ),
                 }
             }
         }
-        log::info!("Loaded books from DB", "count", books.len(), "took", log::duration_secs(&start.elapsed()));
+        log::info!(
+            "Loaded books from DB",
+            "count",
+            books.len(),
+            "took",
+            log::duration_secs(&start.elapsed())
+        );
         Ok(books)
     }
 }
