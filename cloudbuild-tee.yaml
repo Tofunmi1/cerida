@@ -61,6 +61,8 @@ steps:
               -e STELLAR_SOURCE_SECRET=\"\$SOURCE\" \
               -v /var/lib/tee-keys:/keys \
               $$IMAGE
+            # Sync proving keys from image into the bind-mount so they're present on restart
+            docker run --rm -v /var/lib/tee-keys:/host-keys --entrypoint='' $$IMAGE sh -c 'cp -rn /keys/. /host-keys/'
             echo 'Container updated to $$IMAGE'
           "
         echo "VM container hot-swapped to $$IMAGE"
