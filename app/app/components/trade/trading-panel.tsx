@@ -9,6 +9,7 @@ import { useLevels } from '../../context/levels-context'
 import { type Side, useMarket } from '../../context/market-context'
 import { usePriceSelect } from '../../context/price-select-context'
 import { useWallet } from '../../context/wallet-context'
+import { useNav } from '../../context/nav-context'
 import {
   buildDepositNoteTx,
   crossMarginKey,
@@ -378,7 +379,7 @@ function PriceInput({
 const PRICE_SCALE = 1e7
 
 export default function TradingPanel() {
-  const { connected, publicKey, sign, balance, refreshBalance } = useWallet()
+  const { connected, publicKey, sign, balance, balanceLoading, refreshBalance } = useWallet()
   const { symbol, mark } = useMarket()
 
   const { subscribe } = usePriceSelect()
@@ -395,6 +396,7 @@ export default function TradingPanel() {
   const [slInput, setSlInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
+  const { openPortfolio } = useNav()
   const balanceDollars = Number(balance) / PRICE_SCALE
 
   const margin = Number(amount) || 0
@@ -404,6 +406,13 @@ export default function TradingPanel() {
     side === 'long'
       ? mark * (1 - 0.92 / leverage)
       : mark * (1 + 0.92 / leverage)
+
+  // Auto-open portfolio/fund modal when balance is zero (after loading)
+  useEffect(() => {
+    if (connected && !balanceLoading && balance === 0n) {
+      openPortfolio()
+    }
+  }, [connected, balance, balanceLoading, openPortfolio])
 
   // Receive price clicks from the order book — switch to limit and prefill price
   useEffect(() => {

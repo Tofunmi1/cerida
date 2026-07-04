@@ -106,8 +106,7 @@ impl SorobanRpc {
         function: &str,
         args: Vec<ScVal>,
     ) -> Result<String> {
-        let source_pk = source_pubkey(source)?;
-        let pk_bytes = pk_to_bytes(&source_pk)?;
+        let (source_pk, pk_bytes) = resolve_source(source)?;
 
         let contract_bytes = stellar_strkey::Contract::from_string(contract_id)
             .map_err(|e| anyhow::anyhow!("invalid contract id: {e}"))?
@@ -366,9 +365,9 @@ impl SorobanRpc {
                     eprintln!("  [tx]   still waiting… ({}s elapsed)", elapsed as u64);
                 }
                 match self.get_transaction(&current_hash)? {
-                    Some(TxStatus::Success(result)) => {
+                    Some(TxStatus::Success(_result)) => {
                         eprintln!("  [tx] ✓ {} confirmed hash={} ({:.2}s)", method, current_hash, start.elapsed().as_secs_f64());
-                        return Ok(result);
+                        return Ok(current_hash);
                     }
                     Some(TxStatus::Failed(err)) => {
                         eprintln!("  [tx] ✗ {} failed: {} ({:.2}s)", method, err, start.elapsed().as_secs_f64());
@@ -593,6 +592,10 @@ pub fn scval_bytes32(hex: &str) -> Result<ScVal> {
 pub fn scval_u64(n: u64) -> ScVal { ScVal::U64(n) }
 pub fn scval_u32(n: u32) -> ScVal { ScVal::U32(n) }
 
+pub fn scval_bytes(bytes: &[u8]) -> Result<ScVal> {
+    Ok(ScVal::Bytes(ScBytes(bytes.to_vec().try_into().map_err(|_| anyhow::anyhow!("scval_bytes: vec too large"))?)))
+}
+
 pub fn scval_u128(n: u128) -> ScVal {
     ScVal::U128(UInt128Parts {
         hi: (n >> 64) as u64,
@@ -769,6 +772,31 @@ fn get_sequence_number(_rpc: &SorobanRpc, account_id: &str) -> Result<i64> {
         .parse()
         .context("parse sequence")?;
     Ok(seq)
+}
+
+/// Resolve a source to (public_key_string, public_key_bytes).
+/// If `source` starts with "S", treat it as a secret key and derive the public key directly.
+/// Otherwise, treat it as a stellar CLI identity name and look it up.
+fn resolve_source(source: &str) -> Result<(String, [u8; 32])> {
+    if source.starts_with('S') {
+        use ed25519_dalek::SigningKey;
+        let key = stellar_strkey::Strkey::from_string(source)
+            .map_err(|e| anyhow::anyhow!("invalid secret key: {e}"))?;
+        match key {
+            stellar_strkey::Strkey::PrivateKeyEd25519(seed) => {
+                let signing_key = SigningKey::from_bytes(&seed.0);
+                let pk_bytes = signing_key.verifying_key().to_bytes();
+                let pk_strkey = stellar_strkey::ed25519::PublicKey(pk_bytes);
+                let pk_string = stellar_strkey::Strkey::PublicKeyEd25519(pk_strkey).to_string();
+                Ok((pk_string, pk_bytes))
+            }
+            _ => anyhow::bail!("expected Ed25519 private key strkey, got {key:?}"),
+        }
+    } else {
+        let pk_string = source_pubkey(source)?;
+        let pk_bytes = pk_to_bytes(&pk_string)?;
+        Ok((pk_string, pk_bytes))
+    }
 }
 
 fn source_pubkey(identity: &str) -> Result<String> {
