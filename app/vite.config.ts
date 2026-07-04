@@ -9,7 +9,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/tee': {
-        target: 'http://34.134.253.144:9721',
+        target: 'http://34.72.225.158:9721',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/tee/, ''),
       },
