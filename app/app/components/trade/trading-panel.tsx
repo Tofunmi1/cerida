@@ -7,7 +7,6 @@ import {
 } from 'framer-motion'
 import { useLevels } from '../../context/levels-context'
 import { type Side, useMarket } from '../../context/market-context'
-import { useNav } from '../../context/nav-context'
 import { usePriceSelect } from '../../context/price-select-context'
 import { useWallet } from '../../context/wallet-context'
 import {
@@ -381,7 +380,7 @@ const PRICE_SCALE = 1e7
 export default function TradingPanel() {
   const { connected, publicKey, sign, balance, refreshBalance } = useWallet()
   const { symbol, mark } = useMarket()
-  const { openPortfolio } = useNav()
+
   const { subscribe } = usePriceSelect()
   const levels = useLevels()
   const [side, setSide] = useState<Side>('long')
@@ -449,13 +448,7 @@ export default function TradingPanel() {
       return
     }
 
-    if (balanceDollars <= 0) {
-      openPortfolio()
-      return
-    }
-
     if (margin > balanceDollars) {
-      openPortfolio()
       toast.warning(
         'Insufficient balance',
         `You need ${formatUsd(margin)} but only have ${formatUsd(balanceDollars)}.`,
