@@ -93,19 +93,7 @@ export default function PositionsPanel() {
       toast.update(progressId, {
         type: 'success',
         title: `${symbol} closed`,
-        description: (
-          <span>
-            Collateral refunded to shielded note{' · '}
-            <a
-              href={`https://stellar.expert/explorer/testnet/tx/${closeTxHash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline hover:opacity-80"
-            >
-              View tx ↗
-            </a>
-          </span>
-        ),
+        description: 'Collateral refunded to shielded note',
         progress: undefined,
         duration: 5000,
       })

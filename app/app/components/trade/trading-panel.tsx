@@ -530,6 +530,7 @@ export default function TradingPanel() {
         note_proof: noteResult.proof,
         commit_proof: commitProofResult.proof,
       })
+
       const openTxHash = relayResult.tx_hash
       console.log('position opened, hash=', openTxHash)
 
@@ -537,23 +538,10 @@ export default function TradingPanel() {
       levels.setEntry(mark)
       refreshBalance()
 
-      const txUrl = `https://stellar.expert/explorer/testnet/tx/${openTxHash}`
       toast.update(progressId, {
         type: 'success',
         title: `${actionLabel} ${symbol} opened`,
-        description: (
-          <span>
-            {leverage}x · {formatUsd(notional)} notional{' · '}
-            <a
-              href={txUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline hover:opacity-80"
-            >
-              View tx ↗
-            </a>
-          </span>
-        ),
+        description: `${leverage}x · ${formatUsd(notional)} notional`,
         progress: undefined,
         duration: 8000,
       })
