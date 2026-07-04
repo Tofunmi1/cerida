@@ -142,12 +142,13 @@ export const tee = {
   },
 
   /**
-   * Relay open_position_from_note via the TEE's own key.
-   * The user's Stellar address never appears in this TX — the TEE submits it.
-   * Requires deposit_note to have already been confirmed on-chain.
+   * Relay place_order + open_position_from_note via the TEE's own key.
+   * User only signs deposit_note. TEE handles both orderbook placement and
+   * position opening — user address never appears in those TXs.
    */
   async relayOpenPosition(params: {
     perp: string
+    orderbook: string
     note_cmt: string
     note_null: string
     position_cmt: string

@@ -1410,6 +1410,7 @@ use std::sync::Arc as StdArc;
     #[derive(serde::Deserialize)]
     struct RelayOpenPositionReq {
         perp: String,
+        orderbook: String,
         note_cmt: String,
         note_null: String,
         position_cmt: String,
@@ -1438,6 +1439,7 @@ use std::sync::Arc as StdArc;
 
         let result = tokio::task::spawn_blocking({
             let perp = req.perp.clone();
+            let orderbook = req.orderbook.clone();
             let note_cmt = req.note_cmt.clone();
             let note_null = req.note_null.clone();
             let position_cmt = req.position_cmt.clone();
@@ -1447,6 +1449,7 @@ use std::sync::Arc as StdArc;
             let commit_proof = req.commit_proof.clone();
             move || stellar::relay_open_position(
                 &perp,
+                &orderbook,
                 &note_cmt,
                 &note_null,
                 &position_cmt,

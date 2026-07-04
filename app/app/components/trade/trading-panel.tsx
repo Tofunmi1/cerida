@@ -12,7 +12,6 @@ import { usePriceSelect } from '../../context/price-select-context'
 import { useWallet } from '../../context/wallet-context'
 import {
   buildDepositNoteTx,
-  buildPlaceOrderTx,
   crossMarginKey,
   proofJsonToScVal,
   submitAndWait,
@@ -514,30 +513,17 @@ export default function TradingPanel() {
 
       const commitScVal = proofJsonToScVal(commitProofResult.proof)
 
-      // Soroban only allows one InvokeHostFunctionOp per transaction.
-      // Flow: user signs two txs (place_order, then deposit_note), then TEE
-      // relays open_position_from_note — user address never appears in that TX.
-      toast.update(progressId, { description: 'Building transactions…', progress: 40 })
-
-      const placeOrderTx = await buildPlaceOrderTx(publicKey, {
-        commitment,
-        hintPrice,
-        hintSide: sideNum,
-        hintSize: 1_000_000_000,
-        hintLeverage: leverage,
-        portfolioKey,
-        proof: commitScVal,
-      })
-      toast.update(progressId, { description: 'Sign (1/2) — place order…', progress: 50 })
-      await submitAndWait(await sign(placeOrderTx.toXDR()))
-
+      // User signs one TX: deposit_note (needs their address to transfer USDC).
+      // TEE relays both place_order and open_position_from_note with its own key.
+      toast.update(progressId, { description: 'Building transaction…', progress: 40 })
       const depositNoteTx = await buildDepositNoteTx(publicKey, noteResult.note_cmt, collateralUnits)
-      toast.update(progressId, { description: 'Sign (2/2) — deposit collateral…', progress: 65 })
+      toast.update(progressId, { description: 'Sign — deposit collateral…', progress: 55 })
       await submitAndWait(await sign(depositNoteTx.toXDR()))
 
-      toast.update(progressId, { description: 'Opening position (relayed)…', progress: 80 })
+      toast.update(progressId, { description: 'Opening position (relayed)…', progress: 75 })
       const relayResult = await tee.relayOpenPosition({
         perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
+        orderbook: import.meta.env.VITE_ORDERBOOK_ID ?? '',
         note_cmt: noteResult.note_cmt,
         note_null: noteResult.note_null,
         position_cmt: commitment,
