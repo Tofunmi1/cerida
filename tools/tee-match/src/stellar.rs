@@ -1,23 +1,14 @@
 use crate::log;
 use crate::proof::MatchProof;
 use anyhow::Result;
+use e2e::soroban_rpc::{scval_bytes32, scval_proof, scval_u64, SorobanRpc};
 use std::time::Instant;
-
-const DEFAULT_RPC_URL: &str = "https://soroban-testnet.stellar.org";
-
-pub fn rpc_url() -> String {
-    std::env::var("SOROBAN_RPC_URL").unwrap_or_else(|_| DEFAULT_RPC_URL.to_string())
-}
-
-const NETWORK_PASSPHRASE: &str = "Test SDF Network ; September 2015";
 
 /// Returns the signing identity: raw secret key from env if available, else named identity.
 /// Set STELLAR_SOURCE_SECRET=S... in the container environment.
 fn signing_source(fallback: &str) -> String {
     std::env::var("STELLAR_SOURCE_SECRET").unwrap_or_else(|_| fallback.to_string())
 }
-
-const SOURCE_IDENTITY: &str = "e2e";
 
 pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof: &MatchProof) -> Result<()> {
     let start = Instant::now();
@@ -40,81 +31,39 @@ pub fn submit_match(perp_id: &str, source: &str, cmt_a: &str, cmt_b: &str, proof
     .to_string();
 
     let src = signing_source(source);
-    let mut cmd = std::process::Command::new("stellar");
-    cmd.args([
-        "contract", "invoke",
-        "--id", perp_id,
-        "--source", &src,
-        "--network-passphrase", NETWORK_PASSPHRASE,
-        "--rpc-url", &rpc_url(),
-        "--",
-        "match_positions",
-        "--cmt_a", cmt_a,
-        "--cmt_b", cmt_b,
-        "--nullifier_a", &nullifier_a_hex,
-        "--nullifier_b", &nullifier_b_hex,
-        "--match_price", &match_price_hex,
-        "--match_size", &match_size_hex,
-        "--proof", &proof_json,
-    ]);
-
-    log::debug!("Executing stellar CLI command",
+    log::debug!("Submitting match_positions via RPC",
         "contract", &perp_id[..8],
-        "source", SOURCE_IDENTITY,
-        "method", "match_positions",
         "cmt_a", &cmt_a[..16],
         "cmt_b", &cmt_b[..16]
     );
 
-    let exec_start = Instant::now();
-    let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar invoke: {e}"))?;
-    let exec_duration = exec_start.elapsed();
+    let rpc = SorobanRpc::new();
+    rpc.invoke_xdr(perp_id, &src, "match_positions", vec![
+        scval_bytes32(cmt_a)?,
+        scval_bytes32(cmt_b)?,
+        scval_bytes32(&nullifier_a_hex)?,
+        scval_bytes32(&nullifier_b_hex)?,
+        scval_bytes32(&match_price_hex)?,
+        scval_bytes32(&match_size_hex)?,
+        scval_proof(&proof_json)?,
+    ])?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("xdr processing error") || stderr.contains("Transaction hash is") {
-            // Extract tx hash from stderr for logging
-            let tx_hash = stderr.lines().find_map(|l| {
-                if let Some(pos) = l.find("Transaction hash is ") {
-                    Some(l[pos + "Transaction hash is ".len()..].trim().to_string())
-                } else if let Some(pos) = l.find("Signing transaction: ") {
-                    Some(l[pos + "Signing transaction: ".len()..].trim().to_string())
-                } else {
-                    None
-                }
-            });
-            log::info!("Match transaction submitted",
-                "contract", &perp_id[..8],
-                "tx_hash", tx_hash.as_deref().unwrap_or("unknown"),
-                "exec_time", log::duration_secs(&exec_duration),
-                "total_time", log::duration_secs(&start.elapsed()),
-                "nullifier_a", &nullifier_a_hex[..16],
-                "nullifier_b", &nullifier_b_hex[..16],
-                "match_price", &match_price_hex,
-                "match_size", &match_size_hex
-            );
-            return Ok(());
-        }
-        log::error!("Match transaction failed",
-            "contract", &perp_id[..8],
-            "stderr", &stderr[..stderr.len().min(500)]
-        );
-        anyhow::bail!("match failed:\n{stderr}");
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    log::info!("Match transaction submitted successfully",
+    let elapsed = start.elapsed();
+    log::info!("Match transaction submitted via RPC",
         "contract", &perp_id[..8],
-        "stdout", stdout.trim(),
-        "total_time", log::duration_secs(&start.elapsed())
+        "nullifier_a", &nullifier_a_hex[..16],
+        "nullifier_b", &nullifier_b_hex[..16],
+        "match_price", &match_price_hex,
+        "match_size", &match_size_hex,
+        "took", log::duration_secs(&elapsed)
     );
     Ok(())
 }
 
 pub fn submit_cancel(
     orderbook_id: &str,
-    perp_id: &str,
-    owner: &str,
+    _perp_id: &str,
+    _owner: &str,
     commitment: &str,
     nullifier: &str,
     proof: &MatchProof,
@@ -129,54 +78,22 @@ pub fn submit_cancel(
     .to_string();
 
     let src = signing_source(source);
-    let cancel_order = |contract_id: &str, method: &str| -> Result<()> {
-        let start = Instant::now();
-        let mut cmd = std::process::Command::new("stellar");
-        cmd.args([
-            "contract", "invoke",
-            "--id", contract_id,
-            "--source", &src,
-            "--network-passphrase", NETWORK_PASSPHRASE,
-            "--rpc-url", &rpc_url(),
-            "--",
-            method,
-            "--commitment", commitment,
-            "--nullifier", nullifier,
-            "--proof", &proof_json,
-        ]);
-        let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar {method}: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("xdr processing error") || stderr.contains("Transaction hash is") {
-                log::warning!("Cancel {method}: CLI reported error but tx likely submitted",
-                    "contract", &contract_id[..8],
-                    "stderr", &stderr[..stderr.len().min(300)]
-                );
-                return Ok(());
-            }
-            log::error!("Cancel {method} failed",
-                "contract", &contract_id[..8],
-                "stderr", &stderr[..stderr.len().min(500)]
-            );
-            anyhow::bail!("{method} on {contract_id} failed:\n{stderr}");
-        }
-        log::info!("Cancel submitted on-chain",
-            "contract", &contract_id[..8],
-            "method", method,
-            "commitment", &commitment[..16],
-            "nullifier", &nullifier[..16],
-            "took", log::duration_secs(&start.elapsed())
-        );
-        Ok(())
-    };
 
-    cancel_order(orderbook_id, "cancel_order")?;
-    cancel_order(perp_id, "cancel_position")?;
-
-    log::info!("Cancel submitted on-chain",
+    // Cancel the order in the orderbook
+    log::debug!("Submitting cancel_order via RPC",
         "orderbook", &orderbook_id[..8],
-        "perp", &perp_id[..8],
-        "commitment", &commitment[..16],
+        "cmt", &commitment[..16]
+    );
+    let rpc = SorobanRpc::new();
+    rpc.invoke_xdr(orderbook_id, &src, "cancel_order", vec![
+        scval_bytes32(commitment)?,
+        scval_bytes32(nullifier)?,
+        scval_proof(&proof_json)?,
+    ])?;
+
+    log::info!("Cancel order submitted on-chain via RPC",
+        "orderbook", &orderbook_id[..8],
+        "cmt", &commitment[..16],
         "nullifier", &nullifier[..16],
         "took", log::duration_secs(&start.elapsed())
     );
@@ -186,44 +103,14 @@ pub fn submit_cancel(
 pub fn submit_mark_price(perp_id: &str, source: &str, price: u64) -> Result<()> {
     let start = Instant::now();
     let src = signing_source(source);
-    let mut cmd = std::process::Command::new("stellar");
-    cmd.args([
-        "contract", "invoke",
-        "--id", perp_id,
-        "--source", &src,
-        "--network-passphrase", NETWORK_PASSPHRASE,
-        "--rpc-url", &rpc_url(),
-        "--",
-        "set_mark_price",
-        "--price", &price.to_string(),
-    ]);
 
-    log::debug!("Executing stellar CLI command",
-        "contract", &perp_id[..8],
-        "source", source,
-        "method", "set_mark_price",
-        "price", price
-    );
+    log::debug!("Submitting set_mark_price via RPC", "price", price);
+    let rpc = SorobanRpc::new();
+    rpc.invoke_xdr(perp_id, &src, "set_mark_price", vec![
+        scval_u64(price),
+    ])?;
 
-    let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar invoke set_mark_price: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("xdr processing error") || stderr.contains("Transaction hash is") {
-            log::info!("Mark price submitted (false-positive XDR error)",
-                "contract", &perp_id[..8],
-                "price", price,
-                "took", log::duration_secs(&start.elapsed())
-            );
-            return Ok(());
-        }
-        log::error!("set_mark_price failed",
-            "contract", &perp_id[..8],
-            "stderr", &stderr[..stderr.len().min(500)]
-        );
-        anyhow::bail!("set_mark_price failed:\n{stderr}");
-    }
-
-    log::info!("Mark price submitted on-chain",
+    log::info!("Mark price submitted on-chain via RPC",
         "contract", &perp_id[..8],
         "price", price,
         "took", log::duration_secs(&start.elapsed())
@@ -231,176 +118,17 @@ pub fn submit_mark_price(perp_id: &str, source: &str, price: u64) -> Result<()> 
     Ok(())
 }
 
-/// Returns `STELLAR_RELAYER_SECRET` if set, else falls back to `STELLAR_SOURCE_SECRET` / named identity.
-fn relayer_source(fallback: &str) -> String {
-    std::env::var("STELLAR_RELAYER_SECRET")
-        .or_else(|_| std::env::var("STELLAR_SOURCE_SECRET"))
-        .unwrap_or_else(|_| fallback.to_string())
-}
-
-/// Submit `open_position_from_note` using the relayer key (no user signature required).
-/// Returns the on-chain TX hash.
-#[allow(clippy::too_many_arguments)]
-fn stellar_invoke(contract_id: &str, src: &str, fn_args: &[&str]) -> Result<String> {
-    let mut cmd = std::process::Command::new("stellar");
-    cmd.args([
-        "contract", "invoke",
-        "--id", contract_id,
-        "--source", src,
-        "--network-passphrase", NETWORK_PASSPHRASE,
-        "--rpc-url", &rpc_url(),
-        "--",
-    ]);
-    cmd.args(fn_args);
-
-    let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar invoke: {e}"))?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    let tx_hash = stderr.lines()
-        .find_map(|l| {
-            if let Some(pos) = l.find("Transaction hash is ") {
-                Some(l[pos + "Transaction hash is ".len()..].trim())
-            } else if let Some(pos) = l.find("Signing transaction: ") {
-                Some(l[pos + "Signing transaction: ".len()..].trim())
-            } else {
-                None
-            }
-        })
-        .map(|h| h.to_string());
-
-    if !output.status.success() {
-        let stderr_preview = stderr.chars().take(800).collect::<String>();
-        if stderr.contains("xdr processing error") || tx_hash.is_some() {
-            log::info!("stellar invoke xdr/success with hash",
-                "fn", fn_args.first().copied().unwrap_or("?"),
-                "tx_hash", tx_hash.as_deref().unwrap_or("none"),
-                "stderr_preview", &stderr_preview
-            );
-            return Ok(tx_hash.unwrap_or_else(|| "unknown".to_string()));
-        }
-        log::info!("stellar invoke failed",
-            "fn", fn_args.first().copied().unwrap_or("?"),
-            "stderr_preview", &stderr_preview
-        );
-        anyhow::bail!("{stderr}");
-    }
-
-    Ok(tx_hash.unwrap_or_else(|| String::from_utf8_lossy(&output.stdout).trim().to_string()))
-}
-
-pub fn relay_open_position(
-    perp_id: &str,
-    orderbook_id: &str,
-    note_cmt_hex: &str,
-    note_null_hex: &str,
-    position_cmt_hex: &str,
-    hint_price: u64,
-    hint_side: u64,
-    hint_leverage: u64,
-    hint_size: u64,
-    tp_price: u64,
-    sl_price: u64,
-    portfolio_key_hex: &str,
-    asset_id_hex: &str,
-    note_proof_json: &str,
-    commit_proof_json: &str,
-) -> Result<String> {
-    let start = Instant::now();
-    let src = relayer_source(SOURCE_IDENTITY);
-    let zeros = "0".repeat(64);
-
-    // Step 1: place_order on the orderbook (authenticated by ZK proof — no user sig needed)
-    log::info!("Relaying place_order",
-        "orderbook", &orderbook_id[..8],
-        "position_cmt", &position_cmt_hex[..16],
-        "side", hint_side
-    );
-    stellar_invoke(orderbook_id, &src, &[
-        "place_order",
-        "--commitment", position_cmt_hex,
-        "--portfolio_key", portfolio_key_hex,
-        "--hint_price", &hint_price.to_string(),
-        "--hint_side", &hint_side.to_string(),
-        "--hint_size", &hint_size.to_string(),
-        "--hint_leverage", &hint_leverage.to_string(),
-        "--revealed", "15",
-        "--tif", "GTC",
-        "--expiry_ledger", "0",
-        "--asset_id", asset_id_hex,
-        "--proof", commit_proof_json,
-    ]).map_err(|e| anyhow::anyhow!("relay place_order failed: {e}"))?;
-
-    // Step 2: open_position_from_note on the perp engine
-    log::info!("Relaying open_position_from_note",
-        "contract", &perp_id[..8],
-        "note_cmt", &note_cmt_hex[..16],
-        "position_cmt", &position_cmt_hex[..16],
-        "side", hint_side,
-        "leverage", hint_leverage
-    );
-    let hash = stellar_invoke(perp_id, &src, &[
-        "open_position_from_note",
-        "--note_commitment", note_cmt_hex,
-        "--note_nullifier", note_null_hex,
-        "--position_commitment", position_cmt_hex,
-        "--hint_price", &hint_price.to_string(),
-        "--hint_side", &hint_side.to_string(),
-        "--hint_leverage", &hint_leverage.to_string(),
-        "--hint_size", &hint_size.to_string(),
-        "--tif", "GTC",
-        "--expiry_ledger", "0",
-        "--tp_price", &tp_price.to_string(),
-        "--sl_price", &sl_price.to_string(),
-        "--liquidation_recipient_note", &zeros,
-        "--portfolio_key", portfolio_key_hex,
-        "--asset_id", asset_id_hex,
-        "--note_proof", note_proof_json,
-        "--commit_proof", commit_proof_json,
-    ]).map_err(|e| anyhow::anyhow!("relay open_position_from_note failed: {e}"))?;
-
-    log::info!("Position relayed on-chain",
-        "contract", &perp_id[..8],
-        "tx_hash", &hash,
-        "took", log::duration_secs(&start.elapsed())
-    );
-    Ok(hash)
-}
-
 pub fn submit_liquidate(perp_id: &str, commitment: &str) -> Result<()> {
     let start = Instant::now();
-    let src = signing_source(SOURCE_IDENTITY);
-    let mut cmd = std::process::Command::new("stellar");
-    cmd.args([
-        "contract", "invoke",
-        "--id", perp_id,
-        "--source", &src,
-        "--network-passphrase", NETWORK_PASSPHRASE,
-        "--rpc-url", &rpc_url(),
-        "--",
-        "liquidate",
-        "--commitment", commitment,
-    ]);
+    let src = signing_source("e2e");
 
-    log::debug!("Liquidating position",
-        "contract", &perp_id[..8],
-        "cmt", &commitment[..16]
-    );
+    log::debug!("Liquidating position via RPC", "cmt", &commitment[..16]);
+    let rpc = SorobanRpc::new();
+    rpc.invoke_xdr(perp_id, &src, "liquidate", vec![
+        scval_bytes32(commitment)?,
+    ])?;
 
-    let output = cmd.output().map_err(|e| anyhow::anyhow!("stellar invoke liquidate: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("xdr processing error") || stderr.contains("Transaction hash is") {
-            log::info!("Liquidation submitted",
-                "contract", &perp_id[..8],
-                "cmt", &commitment[..16],
-                "took", log::duration_secs(&start.elapsed())
-            );
-            return Ok(());
-        }
-        anyhow::bail!("liquidate failed:\n{stderr}");
-    }
-
-    log::info!("Position liquidated on-chain",
+    log::info!("Position liquidated on-chain via RPC",
         "contract", &perp_id[..8],
         "cmt", &commitment[..16],
         "took", log::duration_secs(&start.elapsed())
