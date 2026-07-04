@@ -74,29 +74,36 @@ export async function fetchCandles(
   }
 }
 
-// ── Pyth Hermes REST — latest prices for a batch of feed IDs ──────
+// ── Pyth Hermes REST — latest price for a single feed ID ──────────
 const HERMES_REST = 'https://hermes.pyth.network/v2/updates/price/latest'
+
+async function fetchOnePrice(pythId: string): Promise<number> {
+  try {
+    const resp = await fetch(`${HERMES_REST}?ids[]=${pythId}&parsed=true`, {
+      signal: AbortSignal.timeout(8_000),
+    })
+    if (!resp.ok) return 0
+    const json = await resp.json() as {
+      parsed?: Array<{ id: string; price: { price: string; expo: number } }>
+    }
+    const feed = json.parsed?.[0]
+    if (!feed) return 0
+    const price = Number(feed.price.price) * Math.pow(10, feed.price.expo)
+    return price > 0 ? price : 0
+  } catch {
+    return 0
+  }
+}
 
 export async function fetchLatestPrices(
   pythIds: string[],
 ): Promise<Map<string, number>> {
   const out = new Map<string, number>()
   if (!pythIds.length) return out
-  try {
-    const params = pythIds.map((id) => `ids[]=${id}`).join('&')
-    const resp = await fetch(`${HERMES_REST}?${params}&parsed=true`, {
-      signal: AbortSignal.timeout(8_000),
-    })
-    if (!resp.ok) return out
-    const json = await resp.json() as {
-      parsed?: Array<{ id: string; price: { price: string; expo: number } }>
-    }
-    for (const feed of json.parsed ?? []) {
-      const raw = Number(feed.price.price)
-      const price = raw * Math.pow(10, feed.price.expo)
-      if (price > 0) out.set(feed.id, price)
-    }
-  } catch {}
+  const results = await Promise.allSettled(pythIds.map(fetchOnePrice))
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled' && r.value > 0) out.set(pythIds[i], r.value)
+  })
   return out
 }
 
