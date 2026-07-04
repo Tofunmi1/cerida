@@ -162,7 +162,7 @@ export const tee = {
     asset_id?: string
     note_proof: string
     commit_proof: string
-  }): Promise<{ tx_hash: string }> {
+  }): Promise<{ queued: boolean; tx_hash?: string }> {
     const resp = await fetch(`${TEE_URL}/relay/open-position`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -170,6 +170,6 @@ export const tee = {
     })
     const data: TeeResponse = await resp.json()
     if (!data.ok) throw new Error(data.error ?? 'relay failed')
-    return { tx_hash: data.tx_hash ?? '' }
+    return { queued: !!(data as Record<string, unknown>).queued, tx_hash: data.tx_hash }
   },
 }

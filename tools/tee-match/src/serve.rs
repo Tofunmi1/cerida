@@ -1677,6 +1677,27 @@ pub mod http {
     use std::sync::Arc as StdArc;
     use tower_http::cors::{Any, CorsLayer};
 
+    /// Relay request queued for the next batch window.
+    struct PendingRelay {
+        perp: String,
+        orderbook: String,
+        note_cmt: String,
+        note_null: String,
+        position_cmt: String,
+        hint_price: u64,
+        hint_side: u64,
+        hint_leverage: u64,
+        hint_size: u64,
+        tp_price: u64,
+        sl_price: u64,
+        portfolio_key: String,
+        asset_id: String,
+        note_proof: String,
+        commit_proof: String,
+    }
+
+    type RelayQueue = StdArc<std::sync::Mutex<Vec<PendingRelay>>>;
+
     #[derive(Clone)]
     pub struct HttpState {
         pub store: StdArc<db::SecretStore>,
@@ -1684,7 +1705,12 @@ pub mod http {
         pub book_store: StdArc<db::BookStore>,
         pub fills: StdArc<db::FillLedger>,
         pub keys_dir: PathBuf,
+        relay_queue: RelayQueue,
     }
+
+    /// How long the TEE waits before flushing and shuffling the relay queue.
+    /// Longer = more privacy (more orders mix together); 30s is a reasonable default.
+    const RELAY_BATCH_SECS: u64 = 30;
 
     pub async fn run_http(
         addr: &str,
@@ -1694,12 +1720,81 @@ pub mod http {
         fills: StdArc<db::FillLedger>,
         keys_dir: StdArc<PathBuf>,
     ) -> Result<()> {
+        let relay_queue: RelayQueue = StdArc::new(std::sync::Mutex::new(Vec::new()));
+
+        // Batch relay task: every RELAY_BATCH_SECS, drain the queue, shuffle it,
+        // then submit each relay to Stellar in randomised order.
+        // This breaks timing correlation between a user's HTTP request and the
+        // on-chain transaction — an observer cannot map deposit time → trade time.
+        {
+            let q = relay_queue.clone();
+            tokio::spawn(async move {
+                use rand::seq::SliceRandom;
+                let mut interval = tokio::time::interval(
+                    std::time::Duration::from_secs(RELAY_BATCH_SECS),
+                );
+                interval.tick().await; // discard immediate first tick
+                loop {
+                    interval.tick().await;
+                    let mut batch: Vec<PendingRelay> = {
+                        let mut guard = q.lock().unwrap();
+                        std::mem::take(&mut *guard)
+                    };
+                    if batch.is_empty() {
+                        continue;
+                    }
+                    batch.shuffle(&mut rand::thread_rng());
+                    log::info!("relay batch: flushing", "count", batch.len());
+                    for item in batch {
+                        let cmt_preview = item.position_cmt[..item.position_cmt.len().min(16)].to_string();
+                        let result = tokio::task::spawn_blocking(move || {
+                            stellar::relay_open_position(
+                                &item.perp,
+                                &item.orderbook,
+                                &item.note_cmt,
+                                &item.note_null,
+                                &item.position_cmt,
+                                item.hint_price,
+                                item.hint_side,
+                                item.hint_leverage,
+                                item.hint_size,
+                                item.tp_price,
+                                item.sl_price,
+                                &item.portfolio_key,
+                                &item.asset_id,
+                                &item.note_proof,
+                                &item.commit_proof,
+                            )
+                        })
+                        .await;
+                        match result {
+                            Ok(Ok(hash)) => log::info!(
+                                "relay batch: position opened",
+                                "cmt", &cmt_preview,
+                                "tx_hash", &hash
+                            ),
+                            Ok(Err(e)) => log::error!(
+                                "relay batch: submission failed",
+                                "cmt", &cmt_preview,
+                                "err", e.to_string()
+                            ),
+                            Err(e) => log::error!(
+                                "relay batch: task panic",
+                                "err", e.to_string()
+                            ),
+                        }
+                    }
+                }
+            });
+        }
+
         let state = HttpState {
             store: store.clone(),
             books: books.clone(),
             book_store: book_store.clone(),
             fills: fills.clone(),
             keys_dir: (*keys_dir).clone(),
+            relay_queue,
         };
 
         let app = Router::new()
@@ -1875,48 +1970,45 @@ pub mod http {
     }
 
     async fn handle_http_relay_open_position(
+        State(state): State<HttpState>,
         Json(req): Json<RelayOpenPositionReq>,
     ) -> Json<serde_json::Value> {
         let zeros = "0".repeat(64);
-        let portfolio_key = req.portfolio_key.as_deref().unwrap_or(&zeros);
-        let asset_id = req.asset_id.as_deref().unwrap_or(&zeros);
+        let portfolio_key = req.portfolio_key.as_deref().unwrap_or(&zeros).to_string();
+        let asset_id = req.asset_id.as_deref().unwrap_or(&zeros).to_string();
+        let cmt_preview = req.position_cmt[..req.position_cmt.len().min(16)].to_string();
 
-        let result = tokio::task::spawn_blocking({
-            let perp = req.perp.clone();
-            let orderbook = req.orderbook.clone();
-            let note_cmt = req.note_cmt.clone();
-            let note_null = req.note_null.clone();
-            let position_cmt = req.position_cmt.clone();
-            let portfolio_key = portfolio_key.to_string();
-            let asset_id = asset_id.to_string();
-            let note_proof = req.note_proof.clone();
-            let commit_proof = req.commit_proof.clone();
-            move || {
-                stellar::relay_open_position(
-                    &perp,
-                    &orderbook,
-                    &note_cmt,
-                    &note_null,
-                    &position_cmt,
-                    req.hint_price,
-                    req.hint_side,
-                    req.hint_leverage,
-                    req.hint_size,
-                    req.tp_price,
-                    req.sl_price,
-                    &portfolio_key,
-                    &asset_id,
-                    &note_proof,
-                    &commit_proof,
-                )
-            }
-        })
-        .await;
+        let pending = PendingRelay {
+            perp: req.perp,
+            orderbook: req.orderbook,
+            note_cmt: req.note_cmt,
+            note_null: req.note_null,
+            position_cmt: req.position_cmt,
+            hint_price: req.hint_price,
+            hint_side: req.hint_side,
+            hint_leverage: req.hint_leverage,
+            hint_size: req.hint_size,
+            tp_price: req.tp_price,
+            sl_price: req.sl_price,
+            portfolio_key,
+            asset_id,
+            note_proof: req.note_proof,
+            commit_proof: req.commit_proof,
+        };
 
-        match result {
-            Ok(Ok(tx_hash)) => Json(serde_json::json!({ "ok": true, "tx_hash": tx_hash })),
-            Ok(Err(e)) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
-            Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("task panic: {e}") })),
-        }
+        let depth = {
+            let mut guard = state.relay_queue.lock().unwrap();
+            guard.push(pending);
+            guard.len()
+        };
+
+        log::info!(
+            "relay queued for next batch",
+            "cmt", &cmt_preview,
+            "queue_depth", depth,
+            "batch_interval_secs", RELAY_BATCH_SECS
+        );
+
+        Json(serde_json::json!({ "ok": true, "queued": true }))
     }
 }

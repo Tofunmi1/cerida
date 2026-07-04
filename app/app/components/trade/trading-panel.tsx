@@ -513,8 +513,8 @@ export default function TradingPanel() {
       toast.update(progressId, { description: 'Sign — deposit collateral…', progress: 55 })
       await submitAndWait(await sign(depositNoteTx.toXDR()))
 
-      toast.update(progressId, { description: 'Opening position (relayed)…', progress: 75 })
-      const relayResult = await tee.relayOpenPosition({
+      toast.update(progressId, { description: 'Queuing position relay…', progress: 75 })
+      await tee.relayOpenPosition({
         perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
         orderbook: import.meta.env.VITE_ORDERBOOK_ID ?? '',
         note_cmt: noteResult.note_cmt,
@@ -531,17 +531,14 @@ export default function TradingPanel() {
         commit_proof: commitProofResult.proof,
       })
 
-      const openTxHash = relayResult.tx_hash
-      console.log('position opened, hash=', openTxHash)
-
       positionsStore.add({ commitment, wallet: publicKey, symbol, side: sideNum, leverage, openedAt: Date.now() })
       levels.setEntry(mark)
       refreshBalance()
 
       toast.update(progressId, {
         type: 'success',
-        title: `${actionLabel} ${symbol} opened`,
-        description: `${leverage}x · ${formatUsd(notional)} notional`,
+        title: `${actionLabel} ${symbol} queued`,
+        description: `${leverage}x · ${formatUsd(notional)} notional · opens within 30s`,
         progress: undefined,
         duration: 8000,
       })
