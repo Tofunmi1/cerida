@@ -11,11 +11,8 @@ import { useNav } from '../../context/nav-context'
 import { usePriceSelect } from '../../context/price-select-context'
 import { useWallet } from '../../context/wallet-context'
 import {
-  buildDepositAndPlaceTx,
   buildDepositNoteTx,
-  buildOpenPositionFromNoteTx,
   buildPlaceOrderTx,
-  buildTradeBundleTx,
   crossMarginKey,
   proofJsonToScVal,
   submitAndWait,
@@ -516,66 +513,45 @@ export default function TradingPanel() {
       console.log('step: commitProof done')
 
       const commitScVal = proofJsonToScVal(commitProofResult.proof)
-      const noteScVal   = proofJsonToScVal(noteResult.proof)
 
-      // Relay flow: user signs 1 TX (place_order + deposit_note), then the TEE
-      // relayer submits open_position_from_note with its own key — user address
-      // never appears in the position-opening TX.
-      toast.update(progressId, { description: 'Building transaction…', progress: 40 })
-      let openTxHash: string
-      try {
-        const depositPlaceTx = await buildDepositAndPlaceTx(publicKey, {
-          commitment,
-          hintPrice,
-          hintSide: sideNum,
-          hintSize: 1_000_000_000,
-          hintLeverage: leverage,
-          portfolioKey,
-          proof: commitScVal,
-          noteCmt: noteResult.note_cmt,
-          noteAmount: collateralUnits,
-        })
-        toast.update(progressId, { description: 'Sign — deposit collateral…', progress: 55 })
-        await submitAndWait(await sign(depositPlaceTx.toXDR()))
+      // Soroban only allows one InvokeHostFunctionOp per transaction.
+      // Flow: user signs two txs (place_order, then deposit_note), then TEE
+      // relays open_position_from_note — user address never appears in that TX.
+      toast.update(progressId, { description: 'Building transactions…', progress: 40 })
 
-        toast.update(progressId, { description: 'Opening position (relayed)…', progress: 75 })
-        const relayResult = await tee.relayOpenPosition({
-          perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
-          note_cmt: noteResult.note_cmt,
-          note_null: noteResult.note_null,
-          position_cmt: commitment,
-          hint_price: hintPrice,
-          hint_side: sideNum,
-          hint_leverage: leverage,
-          hint_size: 1_000_000_000,
-          tp_price: tpUnits,
-          sl_price: slUnits,
-          portfolio_key: portfolioKey,
-          note_proof: noteResult.proof,
-          commit_proof: commitProofResult.proof,
-        })
-        openTxHash = relayResult.tx_hash
-      } catch (relayErr) {
-        console.warn('Relay flow failed, falling back to single bundle TX:', relayErr)
-        // Fallback: try the original bundle TX (user signs everything)
-        const bundleTx = await buildTradeBundleTx(publicKey, {
-          commitment,
-          hintPrice,
-          hintSide: sideNum,
-          hintSize: 1_000_000_000,
-          hintLeverage: leverage,
-          portfolioKey,
-          noteCmt: noteResult.note_cmt,
-          noteNull: noteResult.note_null,
-          noteAmount: collateralUnits,
-          tpPrice: tpUnits,
-          slPrice: slUnits,
-          noteProof: noteScVal,
-          commitProof: commitScVal,
-        })
-        toast.update(progressId, { description: 'Sign transaction…', progress: 75 })
-        openTxHash = await submitAndWait(await sign(bundleTx.toXDR()))
-      }
+      const placeOrderTx = await buildPlaceOrderTx(publicKey, {
+        commitment,
+        hintPrice,
+        hintSide: sideNum,
+        hintSize: 1_000_000_000,
+        hintLeverage: leverage,
+        portfolioKey,
+        proof: commitScVal,
+      })
+      toast.update(progressId, { description: 'Sign (1/2) — place order…', progress: 50 })
+      await submitAndWait(await sign(placeOrderTx.toXDR()))
+
+      const depositNoteTx = await buildDepositNoteTx(publicKey, noteResult.note_cmt, collateralUnits)
+      toast.update(progressId, { description: 'Sign (2/2) — deposit collateral…', progress: 65 })
+      await submitAndWait(await sign(depositNoteTx.toXDR()))
+
+      toast.update(progressId, { description: 'Opening position (relayed)…', progress: 80 })
+      const relayResult = await tee.relayOpenPosition({
+        perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
+        note_cmt: noteResult.note_cmt,
+        note_null: noteResult.note_null,
+        position_cmt: commitment,
+        hint_price: hintPrice,
+        hint_side: sideNum,
+        hint_leverage: leverage,
+        hint_size: 1_000_000_000,
+        tp_price: tpUnits,
+        sl_price: slUnits,
+        portfolio_key: portfolioKey,
+        note_proof: noteResult.proof,
+        commit_proof: commitProofResult.proof,
+      })
+      const openTxHash = relayResult.tx_hash
       console.log('position opened, hash=', openTxHash)
 
       positionsStore.add({ commitment, symbol, side: sideNum, leverage, openedAt: Date.now() })
