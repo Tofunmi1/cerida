@@ -39,17 +39,31 @@ steps:
           --project $PROJECT_ID \
           --metadata "tee-image-reference=$$IMAGE"
 
-  # Step 4: Bounce the VM so it pulls the new image on boot
+  # Step 4: SSH into the VM and hot-swap the container to the new image
   - name: 'gcr.io/cloud-builders/gcloud'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        gcloud compute instances stop tee-match-vm \
-          --zone us-central1-a --project $PROJECT_ID --quiet
-        gcloud compute instances start tee-match-vm \
-          --zone us-central1-a --project $PROJECT_ID --quiet
-        echo "VM restarted — pulling new image on boot"
+        TAG=$(cat /workspace/new_tag.txt)
+        IMAGE="us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/tee-match:$$TAG"
+        gcloud compute ssh tee-match-vm \
+          --zone us-central1-a --project $PROJECT_ID \
+          --tunnel-through-iap --quiet \
+          --command="
+            docker pull $$IMAGE
+            docker stop tee-match 2>/dev/null || true
+            docker rm tee-match 2>/dev/null || true
+            RELAYER=\$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_RELAYER_SECRET -H Metadata-Flavor:Google)
+            SOURCE=\$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_SOURCE_SECRET -H Metadata-Flavor:Google)
+            docker run -d --name tee-match --restart=always --network=host \
+              -e STELLAR_RELAYER_SECRET=\"\$RELAYER\" \
+              -e STELLAR_SOURCE_SECRET=\"\$SOURCE\" \
+              -v /var/lib/tee-keys:/keys \
+              $$IMAGE
+            echo 'Container updated to $$IMAGE'
+          "
+        echo "VM container hot-swapped to $$IMAGE"
 
 images:
   - 'us-central1-docker.pkg.dev/$PROJECT_ID/tee-match-repo/tee-match:latest'
