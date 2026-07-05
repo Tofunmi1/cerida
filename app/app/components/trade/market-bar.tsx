@@ -14,10 +14,12 @@ import {
   IconPalette,
   IconWallet,
   IconX,
+  IconCoins,
 } from '@tabler/icons-react'
 import { MARKET_CATALOG, symbolToSlug, useMarket, type MarketDefinition } from '../../context/market-context'
 import { THEMES, useTheme } from '../../context/theme-context'
 import { formatContractBalance, useWallet } from '../../context/wallet-context'
+import { mintUsdcFromIssuer } from '../../lib/contracts'
 import { formatCompactUsd, formatUsd } from './format'
 import { toast } from '../toast/toast-context'
 
@@ -173,6 +175,7 @@ export default function MarketBar({
           <IconButton label="Settings" onClick={onOpenSettings}>
             <IconSettings size={15} stroke={1.8} />
           </IconButton>
+          <MintButton />
           <WalletButton />
         </div>
       </div>
@@ -394,6 +397,39 @@ function IconButton({
       className="grid h-9 w-9 place-items-center rounded-[8px] border border-border-subtle bg-surface-primary text-text-tertiary transition-colors hover:text-text-primary"
     >
       {children}
+    </button>
+  )
+}
+
+function MintButton() {
+  const { connected, publicKey, refreshBalance } = useWallet()
+  const [minting, setMinting] = useState(false)
+
+  if (!connected || !publicKey) return null
+
+  const handleMint = async () => {
+    setMinting(true)
+    try {
+      await mintUsdcFromIssuer(publicKey, BigInt(1000 * 10_000_000))
+      await refreshBalance()
+      toast.success('Minted', '1,000 USDC added to your wallet.', { duration: 4000 })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      toast.error('Mint failed', msg.slice(0, 120), { duration: 6000 })
+    } finally {
+      setMinting(false)
+    }
+  }
+
+  return (
+    <button
+      onClick={handleMint}
+      disabled={minting}
+      title="Mint 1,000 testnet USDC"
+      className="flex h-9 items-center gap-2 rounded-[8px] border border-brand-violet/40 bg-brand-violet/10 px-3 text-[12px] font-semibold text-brand-violet transition-colors hover:bg-brand-violet/20 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      <IconCoins size={14} stroke={2} />
+      <span className="hidden lg:inline">{minting ? 'Minting…' : 'Get USDC'}</span>
     </button>
   )
 }
