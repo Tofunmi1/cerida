@@ -27,7 +27,7 @@ export interface MarketState {
   index: number
   changePct: number
   funding: number
-  openInterest: number | null   // null = unknown / not indexed yet
+  openInterest: number
   volume24h: number | null
   candles: Candle[]
   candlesLoading: boolean
@@ -337,9 +337,11 @@ export function MarketProvider({
     // price is in 7-decimal scale (1e7), size is in contract units (also 1e7 based)
     const PRICE_SCALE = 1e7
     const clobLevels = [...bids, ...asks]
-    const openInterest = clobLevels.length > 0
-      ? clobLevels.reduce((acc, l) => acc + (l.price / PRICE_SCALE) * (l.size / PRICE_SCALE), 0)
-      : null
+    const openInterest = clobLevels.reduce((acc, l) => acc + (l.price / PRICE_SCALE) * (l.size / PRICE_SCALE), 0)
+
+    // 24h volume: sum candle volumes (Pyth Benchmarks v[] is in USD for crypto perps)
+    const rawVolume = candles.reduce((sum, c) => sum + c.volume, 0)
+    const volume24h = rawVolume > 0 ? rawVolume : null
 
     return {
       symbol,
@@ -348,7 +350,7 @@ export function MarketProvider({
       changePct: first > 0 ? ((last - first) / first) * 100 : 0,
       funding: calcFunding(mark, index),
       openInterest,
-      volume24h: null,
+      volume24h,
       candles,
       candlesLoading,
       bids,

@@ -1,10 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { IconArrowDownToArc, IconArrowUpFromArc, IconExternalLink, IconX } from '@tabler/icons-react'
 import { formatUsd } from './format'
 import { useWallet } from '../../context/wallet-context'
 import { buildDepositNoteTx, computeAmountCommitment, CONTRACT_IDS, submitAndWait } from '../../lib/contracts'
 import { tee } from '../../lib/tee-client'
 import { toast } from '../toast/toast-context'
+import { positionsStore } from '../../lib/positions-store'
+import { useMarket } from '../../context/market-context'
 
 const PRICE_SCALE = 1e7
 
@@ -318,15 +320,41 @@ function TxHistory({ publicKey }: { publicKey: string }) {
 
 export default function PortfolioPage({ onClose }: { onClose: () => void }) {
   const { connected, publicKey, balance } = useWallet()
+  const { symbolPrices } = useMarket()
   const [tab, setTab] = useState<'deposit' | 'withdraw'>('deposit')
 
   const walletUsdc = Number(balance) / PRICE_SCALE
 
+  const { shieldedPool, inPositions, unrealizedPnl } = useMemo(() => {
+    if (!connected || !publicKey) return { shieldedPool: null, inPositions: null, unrealizedPnl: null }
+
+    // Shielded pool: notes deposited via portfolio page, not yet spent in a position
+    const notes: Array<{ amount: number }> = JSON.parse(localStorage.getItem('cerida-notes') ?? '[]')
+    const shieldedPool = notes.reduce((sum, n) => sum + n.amount / PRICE_SCALE, 0)
+
+    // In positions: sum of collateral for this wallet's active positions
+    const positions = positionsStore.forWallet(publicKey)
+    const inPositions = positions.reduce((sum, p) => sum + p.collateral, 0)
+
+    // Unrealized PnL: (currentPrice - entry) / entry * size * direction
+    const unrealizedPnl = positions.reduce((sum, p) => {
+      const currentPrice = symbolPrices.get(p.symbol) ?? p.entryPrice
+      if (p.entryPrice === 0) return sum
+      const direction = p.side === 0 ? 1 : -1
+      return sum + direction * p.collateral * p.leverage * (currentPrice - p.entryPrice) / p.entryPrice
+    }, 0)
+
+    return { shieldedPool, inPositions, unrealizedPnl }
+  }, [connected, publicKey, symbolPrices])
+
+  const pnlStr = unrealizedPnl == null ? '—'
+    : `${unrealizedPnl >= 0 ? '+' : ''}${formatUsd(unrealizedPnl)}`
+
   const statCards = [
     { label: 'Wallet USDC',   value: connected ? formatUsd(walletUsdc) : '—' },
-    { label: 'Shielded Pool', value: '—' },
-    { label: 'In Positions',  value: '—' },
-    { label: 'Unrealized PnL', value: '—' },
+    { label: 'Shielded Pool', value: shieldedPool != null ? formatUsd(shieldedPool) : '—' },
+    { label: 'In Positions',  value: inPositions  != null ? formatUsd(inPositions)  : '—' },
+    { label: 'Unrealized PnL', value: pnlStr },
   ]
 
   return (
@@ -354,21 +382,27 @@ export default function PortfolioPage({ onClose }: { onClose: () => void }) {
 
         <div className="flex min-h-0 flex-1 flex-col overflow-auto bg-page px-6 py-5">
           <div className="mb-6 grid grid-cols-4 gap-3">
-            {statCards.map((card) => (
-              <div
-                key={card.label}
-                className="rounded-[8px] border border-border-subtle bg-surface-primary px-4 py-3"
-              >
-                <div className="text-[10px] uppercase tracking-widest text-text-quaternary">
-                  {card.label}
+            {statCards.map((card) => {
+              const isPnl = card.label === 'Unrealized PnL'
+              const pnlColor = isPnl && unrealizedPnl != null
+                ? unrealizedPnl >= 0 ? 'text-bullish-green' : 'text-bearish-red'
+                : 'text-text-primary'
+              return (
+                <div
+                  key={card.label}
+                  className="rounded-[8px] border border-border-subtle bg-surface-primary px-4 py-3"
+                >
+                  <div className="text-[10px] uppercase tracking-widest text-text-quaternary">
+                    {card.label}
+                  </div>
+                  <div className="mt-1.5">
+                    <span className={`text-[18px] font-semibold tabular-nums ${pnlColor}`}>
+                      {card.value}
+                    </span>
+                  </div>
                 </div>
-                <div className="mt-1.5">
-                  <span className="text-[18px] font-semibold tabular-nums text-text-primary">
-                    {card.value}
-                  </span>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
 
           <div className="grid min-h-0 grid-cols-[380px_1fr] gap-4">
