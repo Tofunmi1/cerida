@@ -560,17 +560,19 @@ export default function TradingPanel() {
         description: `${leverage}x · ${formatUsd(notional)} notional`,
         progress: undefined,
         duration: 30000,
+        loadingAction: true,
       })
       setAmount('')
       setPctSelected(null)
 
       // Poll for tx hash in background — relay is batched so hash arrives within ~10s
       tee.pollPositionTx(commitment).then(txHash => {
-        if (!txHash) return
+        if (!txHash) {
+          toast.update(progressId, { loadingAction: false })
+          return
+        }
         toast.update(progressId, {
-          type: 'success',
-          title: `${actionLabel} ${symbol} opened`,
-          description: `${leverage}x · ${formatUsd(notional)} notional`,
+          loadingAction: false,
           duration: 15000,
           action: {
             label: 'View TX',

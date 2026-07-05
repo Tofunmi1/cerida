@@ -12,6 +12,7 @@ export interface Toast {
   description?: ReactNode
   progress?: number
   action?: ToastAction
+  loadingAction?: boolean
   duration?: number | null
 }
 
