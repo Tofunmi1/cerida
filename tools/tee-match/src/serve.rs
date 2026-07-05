@@ -1652,8 +1652,8 @@ pub mod http {
     }
 
     /// How long the TEE waits before flushing and shuffling the relay queue.
-    /// Longer = more privacy (more orders mix together); 30s is a reasonable default.
-    const RELAY_BATCH_SECS: u64 = 30;
+    /// Longer = more privacy (more orders mix together).
+    const RELAY_BATCH_SECS: u64 = 10;
 
     pub async fn run_http(
         addr: &str,
@@ -1968,39 +1968,32 @@ pub mod http {
 
         let cmt_preview = req.position_cmt[..req.position_cmt.len().min(16)].to_string();
 
-        let result = tokio::task::spawn_blocking(move || {
-            stellar::relay_open_position(
-                &req.perp,
-                &req.orderbook,
-                &req.note_cmt,
-                &req.note_null,
-                &req.position_cmt,
-                &sealed_bytes,
-                req.collateral_amount,
-                &req.collateral_blinding,
-                &req.settlement_commitment,
-                &portfolio_key,
-                &asset_id,
-                &req.note_proof,
-                &req.commit_proof,
-                &state.store,
-            )
-        })
-        .await;
+        // Queue into the batch relay window for timing-correlation privacy.
+        // Returns immediately so the HTTP proxy (Vercel) never times out.
+        let pending = PendingRelay {
+            perp: req.perp,
+            orderbook: req.orderbook,
+            position_cmt: req.position_cmt,
+            sealed_params: sealed_bytes,
+            collateral_amount: req.collateral_amount,
+            collateral_blinding: req.collateral_blinding,
+            settlement_commitment: req.settlement_commitment,
+            portfolio_key,
+            asset_id,
+            commit_proof: req.commit_proof,
+            note_cmt: req.note_cmt,
+            note_null: req.note_null,
+            note_proof: req.note_proof,
+            pool_id: String::new(),
+            pool_root: String::new(),
+            pool_nullifier_hash: String::new(),
+            pool_spend_proof: String::new(),
+            liq_recipient_note: String::new(),
+        };
 
-        match result {
-            Ok(Ok(tx_hash)) => {
-                log::info!("relay: position opened via settle", "cmt", &cmt_preview, "tx", &tx_hash[..16]);
-                Json(serde_json::json!({ "ok": true, "tx_hash": tx_hash }))
-            }
-            Ok(Err(e)) => {
-                log::error!("relay: position open failed", "cmt", &cmt_preview, "err", e.to_string());
-                Json(serde_json::json!({ "ok": false, "error": e.to_string() }))
-            }
-            Err(e) => {
-                Json(serde_json::json!({ "ok": false, "error": format!("task panic: {e}") }))
-            }
-        }
+        state.relay_queue.lock().unwrap().push(pending);
+        log::info!("Note relay queued (batch window)", "cmt", &cmt_preview);
+        Json(serde_json::json!({ "ok": true, "queued": true }))
     }
 
     #[derive(serde::Deserialize)]
