@@ -634,7 +634,7 @@ export default function TradingPanel() {
         </button>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 py-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-2">
         <div className="flex items-center justify-between">
           <span className="text-[13px] text-text-secondary">Margin</span>
           <span className="text-[13px] text-text-tertiary">

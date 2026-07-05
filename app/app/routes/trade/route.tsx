@@ -1,16 +1,16 @@
-import { lazy, memo, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate, useParams } from 'react-router'
 import ReactGridLayout, { type Layout, type LayoutItem } from 'react-grid-layout/legacy'
 import 'react-grid-layout/css/styles.css'
-import { IconPlus, IconX } from '@tabler/icons-react'
+import { IconChevronDown, IconChevronUp, IconLogout, IconPlus, IconWallet, IconX } from '@tabler/icons-react'
 import { LevelsProvider } from '../../context/levels-context'
-import { MarketProvider, slugToSymbol } from '../../context/market-context'
+import { MARKET_CATALOG, MarketProvider, slugToSymbol, symbolToSlug, useMarket } from '../../context/market-context'
 import { NavProvider } from '../../context/nav-context'
 import { PriceSelectProvider } from '../../context/price-select-context'
 import { SettingsProvider } from '../../context/settings-context'
 import { ThemeProvider } from '../../context/theme-context'
-import { WalletProvider, useWallet } from '../../context/wallet-context'
+import { WalletProvider, formatContractBalance, useWallet } from '../../context/wallet-context'
 import { ToastContainer } from '../../components/toast/toast-container'
 import { ToastProvider } from '../../components/toast/toast-context'
 import MarketBar from '../../components/trade/market-bar'
@@ -19,6 +19,8 @@ import PortfolioPage from '../../components/trade/portfolio-page'
 import SettingsModal from '../../components/trade/settings-modal'
 import ShieldedPoolModal from '../../components/trade/shielded-pool-modal'
 import OnboardingModal from '../../components/trade/onboarding-modal'
+import { formatUsd } from '../../components/trade/format'
+import { toast } from '../../components/toast/toast-context'
 
 export const meta = () => [{ title: 'Cerida Perp' }]
 
@@ -131,6 +133,198 @@ const ADD_OPTIONS = (Object.keys(CATALOG) as WidgetType[]).map((type) => ({
   type,
   label: CATALOG[type].label,
 }))
+
+// ── Mobile detection ─────────────────────────────────────────────────────────
+function useIsMobile() {
+  const [mobile, setMobile] = useState(() => window.innerWidth < 768)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)')
+    const handler = (e: MediaQueryListEvent) => setMobile(e.matches)
+    mq.addEventListener('change', handler)
+    setMobile(mq.matches)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
+  return mobile
+}
+
+// ── Compact mobile wallet button ─────────────────────────────────────────────
+function MobileWalletButton() {
+  const { connected, connecting, publicKey, balance, balanceLoading, wrongNetwork, connect, disconnect } = useWallet()
+  const [open, setOpen] = useState(false)
+
+  if (!connected || !publicKey) {
+    return (
+      <button onClick={connect} disabled={connecting}
+        className="flex items-center gap-1.5 rounded-[8px] bg-brand-violet px-2.5 py-1.5 text-[12px] font-semibold text-white disabled:opacity-60">
+        <IconWallet size={14} stroke={2} />
+        {connecting ? '…' : 'Connect'}
+      </button>
+    )
+  }
+
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(v => !v)}
+        className="flex items-center gap-1.5 rounded-[8px] border border-border-subtle bg-surface-card px-2.5 py-1.5 text-[12px] font-semibold text-text-primary">
+        <IconWallet size={13} stroke={2} />
+        <span className="tabular-nums">{balanceLoading ? '…' : `$${formatContractBalance(balance)}`}</span>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-[70]" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-10 z-[71] w-56 rounded-[10px] border border-border-subtle bg-surface-primary p-1 shadow-xl">
+            <div className="px-3 py-2 text-[10px] font-mono text-text-tertiary truncate">{publicKey}</div>
+            <div className="mx-1 my-1 h-px bg-border-subtle" />
+            <button onClick={() => { disconnect(); setOpen(false) }}
+              className="flex w-full items-center gap-2 rounded-[7px] px-3 py-2 text-left text-[12px] font-medium text-bearish-red hover:bg-surface-card">
+              <IconLogout size={13} stroke={1.8} /> Disconnect
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Mobile trade layout ───────────────────────────────────────────────────────
+type MobileTab = 'chart' | 'trade'
+type MobileBottomTab = 'positions' | 'book'
+
+function MobileTradeLayout({ onNavigate }: { onNavigate: (path: string) => void }) {
+  const { symbol, mark, changePct } = useMarket()
+  const [tab, setTab] = useState<MobileTab>('chart')
+  const [bottomTab, setBottomTab] = useState<MobileBottomTab>('positions')
+  const [bottomOpen, setBottomOpen] = useState(false)
+  const [marketOpen, setMarketOpen] = useState(false)
+  const positive = changePct >= 0
+
+  return (
+    <div className="flex h-screen flex-col overflow-hidden bg-page">
+      {/* ── Header ── */}
+      <div className="flex shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-primary px-3 py-2">
+        <button onClick={() => setMarketOpen(true)}
+          className="flex items-center gap-1.5 rounded-[8px] border border-border-subtle bg-surface-card px-2.5 py-1.5">
+          {(() => {
+            const m = MARKET_CATALOG.find(m => m.symbol === symbol)
+            return m?.logo
+              ? <img src={m.logo} alt={m.name} className="h-5 w-5 rounded-full object-cover" />
+              : <span className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-[8px] font-bold text-white" style={{ background: m?.color }}>{m?.icon}</span>
+          })()}
+          <span className="text-[13px] font-bold text-text-primary">{symbol.replace('-PERP', '')}</span>
+          <IconChevronDown size={12} stroke={2} className="text-text-tertiary" />
+        </button>
+
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="text-[16px] font-bold tabular-nums text-text-primary leading-none">{formatUsd(mark)}</span>
+          <span className={`text-[11px] font-medium tabular-nums leading-none mt-0.5 ${positive ? 'text-bullish-green' : 'text-bearish-red'}`}>
+            {positive ? '+' : ''}{changePct.toFixed(2)}%
+          </span>
+        </div>
+
+        <MobileWalletButton />
+      </div>
+
+      {/* ── Chart / Trade toggle ── */}
+      <div className="flex shrink-0 gap-0 border-b border-border-subtle bg-surface-primary p-1">
+        {(['chart', 'trade'] as const).map((t) => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`flex-1 rounded-[6px] py-2 text-[12px] font-semibold uppercase tracking-widest transition-colors ${
+              tab === t ? 'bg-surface-card text-text-primary' : 'text-text-quaternary'
+            }`}>
+            {t === 'chart' ? 'Chart' : 'Trade'}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Main content ── */}
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <Suspense fallback={<Skeleton />}>
+          {tab === 'chart' ? <PriceChart /> : <TradingPanel />}
+        </Suspense>
+      </div>
+
+      {/* ── Bottom drawer ── */}
+      {bottomOpen && (
+        <div className="flex shrink-0 flex-col border-t border-border-subtle bg-surface-primary" style={{ height: '38vh' }}>
+          <div className="flex shrink-0 items-center border-b border-border-subtle px-3">
+            {(['positions', 'book'] as const).map((t) => (
+              <button key={t} onClick={() => setBottomTab(t)}
+                className={`relative py-2 pr-4 text-[11px] font-semibold uppercase tracking-widest transition-colors ${
+                  bottomTab === t ? 'text-text-primary' : 'text-text-quaternary'
+                }`}>
+                {t === 'positions' ? 'Positions' : 'Order Book'}
+                {bottomTab === t && <span className="absolute bottom-0 left-0 right-4 h-[2px] rounded-full bg-brand-violet" />}
+              </button>
+            ))}
+            <button onClick={() => setBottomOpen(false)} className="ml-auto text-text-quaternary hover:text-text-primary p-1">
+              <IconX size={14} stroke={2} />
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <Suspense fallback={<Skeleton />}>
+              {bottomTab === 'positions' ? <PositionsPanel /> : <OrderBook />}
+            </Suspense>
+          </div>
+        </div>
+      )}
+
+      {/* ── Bottom tab bar ── */}
+      <div className="flex shrink-0 border-t border-border-subtle bg-surface-primary">
+        {(['positions', 'book'] as const).map((t) => (
+          <button key={t}
+            onClick={() => {
+              if (bottomTab === t && bottomOpen) { setBottomOpen(false) }
+              else { setBottomTab(t); setBottomOpen(true) }
+            }}
+            className={`flex flex-1 items-center justify-center gap-1.5 py-3 text-[11px] font-semibold uppercase tracking-widest transition-colors ${
+              bottomOpen && bottomTab === t ? 'text-brand-violet' : 'text-text-quaternary'
+            }`}>
+            {t === 'positions' ? 'Positions' : 'Book'}
+            {bottomOpen && bottomTab === t
+              ? <IconChevronDown size={11} stroke={2.5} />
+              : <IconChevronUp size={11} stroke={2.5} />}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Market selector modal ── */}
+      {marketOpen && (
+        <div className="fixed inset-0 z-[80] flex flex-col bg-page">
+          <div className="flex items-center border-b border-border-subtle px-4 py-3">
+            <span className="text-[14px] font-bold text-text-primary">Select Market</span>
+            <button onClick={() => setMarketOpen(false)} className="ml-auto text-text-tertiary hover:text-text-primary">
+              <IconX size={18} stroke={2} />
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {MARKET_CATALOG.map((m) => (
+              <button key={m.symbol}
+                onClick={() => {
+                  setMarketOpen(false)
+                  onNavigate(`/trade/${symbolToSlug(m.symbol)}`)
+                }}
+                className={`flex w-full items-center gap-3 border-b border-border-subtle/60 px-4 py-3 text-left transition-colors hover:bg-surface-hover ${m.symbol === symbol ? 'bg-surface-card' : ''}`}>
+                {m.logo
+                  ? <img src={m.logo} alt={m.name} className="h-9 w-9 rounded-full object-cover shrink-0" />
+                  : <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-[10px] font-bold text-white" style={{ background: m.color }}>{m.icon}</span>}
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-bold text-text-primary">{m.name}</div>
+                  <div className="text-[11px] text-text-quaternary">{m.symbol}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="text-[13px] font-semibold tabular-nums text-text-primary">
+                    ${m.basePrice.toLocaleString('en-US', { maximumFractionDigits: 2 })}
+                  </div>
+                  <div className="text-[10px] text-bullish-green font-semibold">{m.category}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 const WidgetContent = memo(function WidgetContent({ type }: { type: WidgetType }) {
   return <>{CATALOG[type].render()}</>
@@ -316,6 +510,7 @@ function TradeBoard({
   onActive: (label: string) => void
   onNavigate: (path: string) => void
 }) {
+  const isMobile = useIsMobile()
   const [items, setItems] = useState(INITIAL_ITEMS)
   const [layout, setLayout] = useState(INITIAL_LAYOUT)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -367,6 +562,18 @@ function TradeBoard({
         return { ...item, tabs, active }
       }),
     )
+
+  if (isMobile) {
+    return (
+      <NavProvider onActive={onActive}>
+      <PriceSelectProvider>
+        {active === 'Portfolio' && <PortfolioPage onClose={() => onActive('Perps')} />}
+        {active === 'Pool' && <ShieldedPoolModal onClose={() => onActive('Perps')} />}
+        <MobileTradeLayout onNavigate={onNavigate} />
+      </PriceSelectProvider>
+      </NavProvider>
+    )
+  }
 
   return (
     <NavProvider onActive={onActive}>
