@@ -16,6 +16,9 @@ const PILLS = [
   'Up to 50× Leverage',
   'ZK-Verified',
   'Non-Custodial',
+  'TEE Matching',
+  'Shielded Pool',
+  'Real-World Assets',
 ];
 
 const STATS = [

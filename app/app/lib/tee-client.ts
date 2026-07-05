@@ -41,7 +41,7 @@ async function call(endpoint: string, body?: unknown): Promise<TeeResponse> {
 }
 
 async function getCall(endpoint: string): Promise<TeeResponse> {
-  const resp = await fetch(`${TEE_URL}/${endpoint}`)
+  const resp = await fetch(`${TEE_URL}/${endpoint}`, { cache: 'no-store' })
   return resp.json()
 }
 

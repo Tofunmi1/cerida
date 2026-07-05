@@ -36,7 +36,13 @@ type RowData = {
   heatRatio: number
 }
 
-type AnimEntry = { barCur: number; barTgt: number; stepCur: number; stepTgt: number }
+type AnimEntry = {
+  barCur: number; barTgt: number
+  stepCur: number; stepTgt: number
+  noise: number      // current display size multiplier offset
+  noiseTgt: number   // target noise (jumps per level independently)
+  flash: number      // ms remaining for row highlight flash
+}
 
 // ── Seeded fallback row generation ────────────────────────────────
 // Used when TEE is offline or orderbook is empty.
@@ -240,7 +246,7 @@ export default function OrderBook() {
         ex.barTgt  = barTgt
         ex.stepTgt = stepTgt
       } else {
-        m.set(row.key, { barCur: 0, barTgt, stepCur: 0, stepTgt })
+        m.set(row.key, { barCur: 0, barTgt, stepCur: 0, stepTgt, noise: 0, noiseTgt: 0, flash: 0 })
       }
     }
     displayAsks.forEach(setTarget)
@@ -266,7 +272,18 @@ export default function OrderBook() {
     const hover = hoverRef.current
 
     const stepXFor = (row: RowData) => m.get(row.key)?.stepCur ?? 0
-    const barWFor  = (row: RowData) => m.get(row.key)?.barCur ?? 0
+    const barWFor  = (row: RowData) => {
+      const e = m.get(row.key)
+      return e ? Math.max(0, e.barCur * (1 + e.noise)) : 0
+    }
+    const sizeFor  = (row: RowData) => {
+      const e = m.get(row.key)
+      return e ? Math.max(1, Math.round(row.size * (1 + e.noise))) : row.size
+    }
+    const flashFor = (row: RowData) => {
+      const e = m.get(row.key)
+      return e && e.flash > 0 ? e.flash / 220 : 0  // 0–1 intensity
+    }
 
     function buildStepPath(rows: RowData[], startY: number) {
       const path = new Path2D()
@@ -294,6 +311,14 @@ export default function OrderBook() {
       const stops = side === 'ask' ? ASK_STOPS : BID_STOPS
       const isHovered = hover?.side === side && hover.rowIndex === rowIndex
 
+      // Flash highlight when level updates
+      const flashAlpha = flashFor(row)
+      if (flashAlpha > 0) {
+        ctx.fillStyle = side === 'ask'
+          ? `rgba(224,168,56,${flashAlpha * 0.18})`
+          : `rgba(52,211,153,${flashAlpha * 0.16})`
+        ctx.fillRect(0, y, w, ROW_H)
+      }
       // Hover row background
       if (isHovered) {
         ctx.fillStyle = side === 'ask' ? 'rgba(190,90,30,0.18)' : 'rgba(0,160,120,0.15)'
@@ -316,7 +341,7 @@ export default function OrderBook() {
 
       ctx.textAlign = 'right'
       ctx.fillStyle = isHovered ? colors.primary : colors.quaternary
-      ctx.fillText(fmtSize(row.size), HEAT_W + PW + SW - 6, y + ROW_H / 2 + 1)
+      ctx.fillText(fmtSize(sizeFor(row)), HEAT_W + PW + SW - 6, y + ROW_H / 2 + 1)
 
       if (Math.round(row.price * 10) % 10 === 0) {
         ctx.fillStyle = colors.border
@@ -393,26 +418,27 @@ export default function OrderBook() {
   }
 
   function startLoop() {
-    paint()
     if (rafRef.current) return
     lastFrameRef.current = performance.now()
     const frame = (now: number) => {
       const dt = Math.min(48, now - lastFrameRef.current)
       lastFrameRef.current = now
       const ease = 1 - Math.exp(-dt / 110)
-      let active = false
       for (const v of animRef.current.values()) {
-        v.barCur  += (v.barTgt - v.barCur)  * ease
+        // Smooth bar/step toward real target
+        v.barCur  += (v.barTgt  - v.barCur)  * ease
         v.stepCur += (v.stepTgt - v.stepCur) * ease
-        if (Math.abs(v.barTgt - v.barCur) > 0.4 || Math.abs(v.stepTgt - v.stepCur) > 0.4) {
-          active = true
-        } else {
-          v.barCur  = v.barTgt
-          v.stepCur = v.stepTgt
+        // Each level independently fires ~once every 1.5s (Poisson)
+        if (Math.random() < dt * 0.00065) {
+          v.noiseTgt = (Math.random() - 0.5) * 0.22  // ±11% size jump
+          v.flash = 220                                // ms highlight
         }
+        // Smooth noise toward its target (fast settle)
+        v.noise += (v.noiseTgt - v.noise) * (1 - Math.exp(-dt / 60))
+        if (v.flash > 0) v.flash -= dt
       }
       paint()
-      rafRef.current = active ? requestAnimationFrame(frame) : undefined
+      rafRef.current = requestAnimationFrame(frame)
     }
     rafRef.current = requestAnimationFrame(frame)
   }

@@ -766,7 +766,7 @@ export default function TradingPanel() {
           )}
         </AnimatePresence>
 
-        <div className="mt-auto grid gap-1.5 border-t border-border-subtle pt-2 text-[11px] text-text-tertiary">
+        <div className="grid gap-1.5 border-t border-border-subtle pt-2 text-[11px] text-text-tertiary">
           <SummaryRow label="Notional" value={formatUsd(notional)} />
           <SummaryRow label="Est. fee" value={formatUsd(fee)} />
           <SummaryRow label="Liq. price" value={formatUsd(liquidation)} />

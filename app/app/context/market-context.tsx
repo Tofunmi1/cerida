@@ -105,7 +105,7 @@ export const MARKET_CATALOG: MarketDefinition[] = [
   },
 ]
 
-const BOOK_POLL_MS = 3000
+const BOOK_POLL_MS = 1000
 
 export function symbolToSlug(symbol: string): string {
   return symbol.replace('-PERP', '').toLowerCase()
