@@ -52,7 +52,8 @@ RUN curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/downloa
 COPY --from=builder /build/tools/tee-match/target/release/tee-match /usr/local/bin/tee-match
 COPY --from=builder /usr/local/bin/stellar /usr/local/bin/stellar
 
-COPY circuits/keys/ /keys/
+# Pull proving keys from the previously deployed image — avoids uploading 45MB in build context
+COPY --from=us-central1-docker.pkg.dev/cer-perp-tee/tee-match-repo/tee-match:ts-1783261785 /keys/ /keys/
 
 RUN chown -R tee:tee /keys
 

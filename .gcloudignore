@@ -11,12 +11,9 @@ examples/
 design/
 deployments/
 
-# Heavy ceremony artifacts not needed at build or runtime
-circuits/keys/*.ptau
-circuits/keys/*.r1cs
-circuits/keys/*.sym
-circuits/keys/*.zkey
-circuits/keys/*_js/
+# Proving keys — pulled from existing registry image at build time
+circuits/keys/
+circuits/keys_js/
 
 # Large directories not needed for any Docker build
 tiny/

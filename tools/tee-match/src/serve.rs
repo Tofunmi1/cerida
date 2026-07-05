@@ -856,7 +856,27 @@ fn handle_place(
         (fills, bb, ba, sp, oc)
     };
 
-    let perp = req.perp.as_deref().unwrap();
+    let perp = match req.perp {
+        Some(ref p) => p.clone(),
+        None => return Response {
+            ok: true,
+            best_bid,
+            best_ask,
+            spread,
+            order_count: Some(order_count),
+            fills: Some(book_fills.into_iter().map(|f| FillJson {
+                maker_id: engine::short_id(&f.maker_id).to_string(),
+                price: f.price,
+                size: f.size,
+                match_price: None,
+                match_size: None,
+                nullifier_a: None,
+                nullifier_b: None,
+            }).collect()),
+            ..Default::default()
+        },
+    };
+    let perp = perp.as_str();
     let source = req.source.as_deref().unwrap_or("e2e");
 
     // Phase 2: Attempt on-chain matches + audit trail
@@ -1083,7 +1103,27 @@ fn handle_market(
         (fills, bb, ba, sp, oc)
     };
 
-    let perp = req.perp.as_deref().unwrap();
+    let perp = match req.perp {
+        Some(ref p) => p.clone(),
+        None => return Response {
+            ok: true,
+            best_bid,
+            best_ask,
+            spread,
+            order_count: Some(order_count),
+            fills: Some(book_fills.into_iter().map(|f| FillJson {
+                maker_id: engine::short_id(&f.maker_id).to_string(),
+                price: f.price,
+                size: f.size,
+                match_price: None,
+                match_size: None,
+                nullifier_a: None,
+                nullifier_b: None,
+            }).collect()),
+            ..Default::default()
+        },
+    };
+    let perp = perp.as_str();
     let source = req.source.as_deref().unwrap_or("e2e");
 
     // Phase 2: Attempt on-chain matches + audit trail
@@ -1640,6 +1680,14 @@ pub mod http {
 
     type RelayQueue = StdArc<std::sync::Mutex<Vec<PendingRelay>>>;
 
+    /// Pre-signed deposit TX XDR queued for batch submission.
+    /// The user signs deposit_note themselves (Stellar requires it for token auth),
+    /// but the TEE batches and shuffles submissions to break timing correlation.
+    struct PendingDeposit {
+        signed_xdr: String,
+    }
+    type DepositQueue = StdArc<std::sync::Mutex<Vec<PendingDeposit>>>;
+
     #[derive(Clone)]
     pub struct HttpState {
         pub store: StdArc<db::SecretStore>,
@@ -1648,6 +1696,7 @@ pub mod http {
         pub fills: StdArc<db::FillLedger>,
         pub keys_dir: PathBuf,
         relay_queue: RelayQueue,
+        deposit_queue: DepositQueue,
         store_for_relay: StdArc<db::SecretStore>,
     }
 
@@ -1664,6 +1713,40 @@ pub mod http {
         keys_dir: StdArc<PathBuf>,
     ) -> Result<()> {
         let relay_queue: RelayQueue = StdArc::new(std::sync::Mutex::new(Vec::new()));
+        let deposit_queue: DepositQueue = StdArc::new(std::sync::Mutex::new(Vec::new()));
+
+        // Deposit batch task: every RELAY_BATCH_SECS, drain deposit queue, shuffle,
+        // and submit each pre-signed XDR. The user signed the TX (Stellar requires it),
+        // but submitting in a shuffled batch breaks timing correlation with position opens.
+        {
+            let dq = deposit_queue.clone();
+            tokio::spawn(async move {
+                use rand::seq::SliceRandom;
+                let mut interval = tokio::time::interval(
+                    std::time::Duration::from_secs(RELAY_BATCH_SECS),
+                );
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    let mut batch: Vec<PendingDeposit> = {
+                        let mut guard = dq.lock().unwrap();
+                        std::mem::take(&mut *guard)
+                    };
+                    if batch.is_empty() { continue; }
+                    batch.shuffle(&mut rand::thread_rng());
+                    log::info!("deposit batch: flushing", "count", batch.len());
+                    for item in batch {
+                        let xdr = item.signed_xdr.clone();
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                            let rpc = e2e::soroban_rpc::SorobanRpc::new();
+                            rpc.send_transaction(&xdr)
+                        }).await {
+                            log::error!("deposit relay failed: {e}");
+                        }
+                    }
+                }
+            });
+        }
 
         // Batch relay task: every RELAY_BATCH_SECS, drain the queue, shuffle it,
         // then submit each relay to Stellar in randomised order.
@@ -1760,6 +1843,7 @@ pub mod http {
             fills: fills.clone(),
             keys_dir: (*keys_dir).clone(),
             relay_queue,
+            deposit_queue,
             store_for_relay: store.clone(),
         };
 
@@ -1791,6 +1875,10 @@ pub mod http {
             .route(
                 "/relay/cancel-position",
                 post(handle_http_relay_cancel_position),
+            )
+            .route(
+                "/relay/deposit-note",
+                post(handle_http_relay_deposit_note),
             )
             .route("/note-amount", get(handle_http_note_amount))
             .layer(
@@ -2150,6 +2238,19 @@ pub mod http {
             }
             Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("task panic: {e}") })),
         }
+    }
+
+    async fn handle_http_relay_deposit_note(
+        State(state): State<HttpState>,
+        Json(body): Json<serde_json::Value>,
+    ) -> Json<serde_json::Value> {
+        let signed_xdr = match body["signed_xdr"].as_str() {
+            Some(x) if !x.is_empty() => x.to_string(),
+            _ => return Json(serde_json::json!({ "ok": false, "error": "missing signed_xdr" })),
+        };
+        state.deposit_queue.lock().unwrap().push(PendingDeposit { signed_xdr });
+        log::info!("deposit relay queued (batch window)");
+        Json(serde_json::json!({ "ok": true, "queued": true }))
     }
 
     async fn handle_http_note_amount(

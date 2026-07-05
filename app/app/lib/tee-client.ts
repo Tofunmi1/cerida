@@ -155,6 +155,16 @@ export const tee = {
    * TEE handles: cancel_position_to_note → ZK note proof → withdraw_note → tokens back to recipient.
    * This is the only way to close a position since cancel_position_to_note requires TEE auth.
    */
+  async relayDepositNote(signedXdr: string): Promise<{ ok: boolean; queued: boolean }> {
+    const resp = await fetch(`${TEE_URL}/relay/deposit-note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ signed_xdr: signedXdr }),
+      cache: 'no-store',
+    })
+    return resp.json()
+  },
+
   async relayCancel(params: {
     perp: string
     position_cmt: string

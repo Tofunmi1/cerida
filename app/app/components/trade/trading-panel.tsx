@@ -408,10 +408,11 @@ export default function TradingPanel() {
       : mark * (1 + 0.92 / leverage)
 
   // Auto-open portfolio/fund modal when balance is zero (after loading)
+  const balanceFetched = useRef(false)
   useEffect(() => {
-    if (connected && !balanceLoading && balance === 0n) {
-      openPortfolio()
-    }
+    if (balanceLoading) return
+    if (!balanceFetched.current) { balanceFetched.current = true; return }
+    if (connected && balance === 0n) openPortfolio()
   }, [connected, balance, balanceLoading, openPortfolio])
 
   // Receive price clicks from the order book — switch to limit and prefill price
@@ -456,6 +457,7 @@ export default function TradingPanel() {
       toast.warning('Enter margin', 'Choose an amount before submitting the order.')
       return
     }
+
 
     if (margin > balanceDollars) {
       toast.warning(
@@ -528,7 +530,11 @@ export default function TradingPanel() {
       toast.update(progressId, { description: 'Building transaction…', progress: 40 })
       const depositNoteTx = await buildDepositNoteTx(publicKey, noteResult.note_cmt, collateralUnits, amountCommitment)
       toast.update(progressId, { description: 'Sign — deposit collateral…', progress: 55 })
-      const depositHash = await submitAndWait(await sign(depositNoteTx.toXDR()))
+      const signedDepositXdr = await sign(depositNoteTx.toXDR())
+      // Queue through TEE batch relay — breaks timing correlation with position open.
+      // TEE shuffles deposits from all users and submits together every 10s.
+      await tee.relayDepositNote(signedDepositXdr)
+      const depositHash = 'queued'
 
       toast.update(progressId, { description: 'Queuing position relay…', progress: 75 })
       const relayResult = await tee.relayOpenPosition({
@@ -664,24 +670,6 @@ export default function TradingPanel() {
           </span>
         </div>
 
-        {orderType !== 'market' && (
-          <div className="flex items-center gap-2 rounded-[8px] border border-border-subtle bg-surface-primary px-3 py-1.5">
-            <span className="shrink-0 text-[11px] uppercase tracking-widest text-text-tertiary">
-              {orderType === 'limit' ? 'Limit' : 'Trigger'}
-            </span>
-            <input
-              type="number"
-              value={limitPrice}
-              onChange={(e) => setLimitPrice(e.target.value)}
-              placeholder={mark.toFixed(2)}
-              min="0"
-              step="0.01"
-              className="min-w-0 flex-1 bg-transparent text-right text-[14px] font-medium text-text-primary outline-none placeholder:text-text-quaternary"
-              style={{ fontFamily: 'var(--font-mono)' }}
-            />
-          </div>
-        )}
-
         <div className="flex items-center gap-1.5">
           {pctOptions.map((pct) => (
             <button
@@ -713,6 +701,25 @@ export default function TradingPanel() {
             MAX
           </button>
         </div>
+
+        {orderType !== 'market' && (
+          <div className="flex items-center gap-2 rounded-[8px] border border-border-subtle bg-surface-primary px-3 py-1.5">
+            <span className="shrink-0 text-[11px] uppercase tracking-widest text-text-tertiary">
+              {orderType === 'limit' ? 'Limit' : 'Trigger'}
+            </span>
+            <input
+              type="number"
+              value={limitPrice}
+              onChange={(e) => setLimitPrice(e.target.value)}
+              placeholder={mark.toFixed(2)}
+              min="0"
+              step="0.01"
+              className="min-w-0 flex-1 bg-transparent text-right text-[14px] font-medium text-text-primary outline-none placeholder:text-text-quaternary"
+              style={{ fontFamily: 'var(--font-mono)' }}
+            />
+          </div>
+        )}
+
 
         <LeverageSlider value={leverage} onChange={setLeverage} maxValue={50} />
 

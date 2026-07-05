@@ -253,9 +253,6 @@ impl PerpEngine {
         amount_commitment: BytesN<32>,
     ) {
         from.require_auth();
-        if amount <= 0 {
-            panic!("PerpEngine: deposit amount must be positive");
-        }
         let note_key = DataKey::Note(note_commitment.clone());
         if env.storage().persistent().has(&note_key) {
             panic!("PerpEngine: note commitment already exists");
