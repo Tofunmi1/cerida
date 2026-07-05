@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Link } from 'react-router';
 import { MARKET_CATALOG, symbolToSlug } from '../context/market-context';
 
@@ -29,6 +29,8 @@ const D = 'rgba(255,255,255,0.45)';
 const B = 'rgba(255,255,255,0.08)';
 
 export default function HomePage() {
+  const lightImgRef = useRef<HTMLImageElement>(null);
+
   useEffect(() => {
     const els = document.querySelectorAll('[data-reveal]');
     const io = new IntersectionObserver(
@@ -44,6 +46,15 @@ export default function HomePage() {
     );
     els.forEach((el) => io.observe(el));
     return () => io.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const onScroll = () => {
+      const progress = Math.min(1, window.scrollY / 320);
+      if (lightImgRef.current) lightImgRef.current.style.opacity = String(progress);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
   return (
@@ -422,8 +433,14 @@ export default function HomePage() {
                 </div>
               </div>
               <div style={{ position: 'relative' }}>
-                <img src="/preview_dark.png" alt="Cerida trading interface" style={{ width: '100%', display: 'block' }} />
-                <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.28)', pointerEvents: 'none' }} />
+                <img src="/prev.png" alt="Cerida trading interface" style={{ width: '100%', display: 'block' }} />
+                <img
+                  ref={lightImgRef}
+                  src="/prev_light.png"
+                  alt=""
+                  aria-hidden="true"
+                  style={{ position: 'absolute', inset: 0, width: '100%', display: 'block', opacity: 0, pointerEvents: 'none' }}
+                />
                 <div style={{
                   position: 'absolute', bottom: 0, left: 0, right: 0, height: '45%',
                   background: 'linear-gradient(to top, #0c0c14 0%, transparent 100%)', pointerEvents: 'none',

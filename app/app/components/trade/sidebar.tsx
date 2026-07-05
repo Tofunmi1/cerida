@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router'
 import {
   IconActivity,
   IconBook,
@@ -80,14 +81,14 @@ export default function Sidebar({
           collapsed ? 'justify-center' : 'px-4'
         }`}
       >
-        <button
-          onClick={() => onActive('Perps')}
-          className="flex min-w-0 items-center gap-2"
+        <Link
+          to="/"
+          className="flex min-w-0 items-center gap-2 no-underline"
           title={collapsed ? 'Cerida' : undefined}
         >
           <img src="/apple-touch-icon.png" alt="Cerida" className="h-7 w-7 shrink-0 rounded-[6px] object-cover" />
           {!collapsed && <span className="truncate text-[14px] font-semibold text-text-primary">cerida</span>}
-        </button>
+        </Link>
       </div>
 
       <nav className="shrink-0 overflow-y-auto border-b border-border-subtle py-3">
