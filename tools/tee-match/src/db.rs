@@ -162,6 +162,21 @@ impl SecretStore {
             None => Ok(None),
         }
     }
+
+    pub fn insert_position_tx(&self, cmt_hex: &str, tx_hash: &str) -> anyhow::Result<()> {
+        let key = format!("tx_{}", cmt_hex);
+        self.tree.insert(key.as_bytes(), tx_hash.as_bytes())?;
+        self.tree.flush()?;
+        Ok(())
+    }
+
+    pub fn get_position_tx(&self, cmt_hex: &str) -> anyhow::Result<Option<String>> {
+        let key = format!("tx_{}", cmt_hex);
+        match self.tree.get(key.as_bytes())? {
+            Some(value) => Ok(Some(String::from_utf8(value.to_vec())?)),
+            None => Ok(None),
+        }
+    }
 }
 
 // ── Fill Audit Trail ──

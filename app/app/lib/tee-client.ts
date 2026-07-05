@@ -207,4 +207,17 @@ export const tee = {
     if (!data.ok) throw new Error(data.error ?? 'relay failed')
     return { queued: !!data.queued, tx_hash: data.tx_hash }
   },
+
+  async pollPositionTx(cmt: string, timeoutMs = 30000): Promise<string | null> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2000))
+      try {
+        const resp = await fetch(`${TEE_URL}/relay/position-tx?cmt=${encodeURIComponent(cmt)}`, { cache: 'no-store' })
+        const data = await resp.json() as { ok: boolean; tx_hash?: string | null }
+        if (data.ok && data.tx_hash) return data.tx_hash
+      } catch { /* network hiccup, keep polling */ }
+    }
+    return null
+  },
 }

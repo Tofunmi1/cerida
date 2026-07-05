@@ -550,8 +550,6 @@ export default function TradingPanel() {
         note_proof: noteResult.proof,
         commit_proof: commitProofResult.proof,
       })
-      const positionTxHash = relayResult.tx_hash ?? depositHash
-
       positionsStore.add({ commitment, wallet: publicKey, symbol, side: sideNum, leverage, openedAt: Date.now(), entryPrice: mark, collateral: margin, size: notional })
       levels.setEntry(mark)
       refreshBalance()
@@ -561,14 +559,25 @@ export default function TradingPanel() {
         title: `${actionLabel} ${symbol} opened`,
         description: `${leverage}x · ${formatUsd(notional)} notional`,
         progress: undefined,
-        duration: 8000,
-        action: {
-          label: 'View TX',
-          onClick: () => window.open(`https://stellar.expert/explorer/testnet/tx/${positionTxHash}`, '_blank', 'noopener'),
-        },
+        duration: 30000,
       })
       setAmount('')
       setPctSelected(null)
+
+      // Poll for tx hash in background — relay is batched so hash arrives within ~10s
+      tee.pollPositionTx(commitment).then(txHash => {
+        if (!txHash) return
+        toast.update(progressId, {
+          type: 'success',
+          title: `${actionLabel} ${symbol} opened`,
+          description: `${leverage}x · ${formatUsd(notional)} notional`,
+          duration: 15000,
+          action: {
+            label: 'View TX',
+            onClick: () => window.open(`https://stellar.expert/explorer/testnet/tx/${txHash}`, '_blank', 'noopener'),
+          },
+        })
+      })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error('trade error:', { err, msg, step: 'unknown' })

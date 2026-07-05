@@ -51,7 +51,7 @@ steps:
           --tunnel-through-iap --quiet \
           --command="
             docker-credential-gcr configure-docker --registries us-central1-docker.pkg.dev 2>/dev/null || true
-            docker pull $$IMAGE
+            DOCKER_CONFIG=\$HOME/.docker sudo -E docker pull $$IMAGE
             docker stop tee-match 2>/dev/null || true
             docker rm tee-match 2>/dev/null || true
             RELAYER=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_RELAYER_SECRET -H Metadata-Flavor:Google)

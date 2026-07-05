@@ -111,7 +111,7 @@ export function ToastCard({ toast, onClose }: ToastCardProps) {
                   toast.action?.onClick()
                   onClose(toast.id)
                 }}
-                className="px-2.5 py-0.5 text-[10px] font-bold text-text-primary bg-transparent border border-border-subtle rounded-[4px] hover:bg-surface-hover transition-all uppercase tracking-wider cursor-pointer"
+                className="px-2.5 py-0.5 text-[10px] font-bold text-text-primary bg-transparent border border-border-subtle rounded-[4px] hover:bg-surface-hover transition-all uppercase tracking-wider cursor-pointer underline underline-offset-2"
               >
                 {toast.action.label}
               </button>

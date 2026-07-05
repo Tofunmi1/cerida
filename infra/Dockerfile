@@ -53,7 +53,7 @@ COPY --from=builder /build/tools/tee-match/target/release/tee-match /usr/local/b
 COPY --from=builder /usr/local/bin/stellar /usr/local/bin/stellar
 
 # Pull proving keys from the previously deployed image — avoids uploading 45MB in build context
-COPY --from=us-central1-docker.pkg.dev/cer-perp-tee/tee-match-repo/tee-match:ts-1783261785 /keys/ /keys/
+COPY --from=us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/tee-match:keys /keys/ /keys/
 
 RUN chown -R tee:tee /keys
 

@@ -1774,6 +1774,7 @@ pub mod http {
                     log::info!("relay batch: flushing", "count", batch.len());
                     for item in batch {
                         let cmt_preview = item.position_cmt[..item.position_cmt.len().min(16)].to_string();
+                        let position_cmt = item.position_cmt.clone();
                         let store_ref = store_for_relay.clone();
                         let result = tokio::task::spawn_blocking(move || {
                             if !item.pool_id.is_empty() {
@@ -1816,11 +1817,14 @@ pub mod http {
                         })
                         .await;
                         match result {
-                            Ok(Ok(hash)) => log::info!(
-                                "relay batch: position opened",
-                                "cmt", &cmt_preview,
-                                "tx_hash", &hash
-                            ),
+                            Ok(Ok(hash)) => {
+                                log::info!(
+                                    "relay batch: position opened",
+                                    "cmt", &cmt_preview,
+                                    "tx_hash", &hash
+                                );
+                                let _ = store_for_relay.insert_position_tx(&position_cmt, &hash);
+                            }
                             Ok(Err(e)) => log::error!(
                                 "relay batch: submission failed",
                                 "cmt", &cmt_preview,
@@ -1881,6 +1885,7 @@ pub mod http {
                 post(handle_http_relay_deposit_note),
             )
             .route("/note-amount", get(handle_http_note_amount))
+            .route("/relay/position-tx", get(handle_http_position_tx))
             .layer(
                 CorsLayer::new()
                     .allow_origin(Any)
@@ -2268,6 +2273,21 @@ pub mod http {
                 "blinding": hex::encode(note.blinding),
             })),
             Ok(None) => Json(serde_json::json!({ "ok": false, "error": "note not found" })),
+            Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        }
+    }
+
+    async fn handle_http_position_tx(
+        State(state): State<HttpState>,
+        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let cmt = match params.get("cmt") {
+            Some(c) => c.clone(),
+            None => return Json(serde_json::json!({ "ok": false, "error": "missing cmt" })),
+        };
+        match state.store.get_position_tx(&cmt) {
+            Ok(Some(tx_hash)) => Json(serde_json::json!({ "ok": true, "tx_hash": tx_hash })),
+            Ok(None) => Json(serde_json::json!({ "ok": true, "tx_hash": null })),
             Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
         }
     }
