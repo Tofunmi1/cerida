@@ -407,13 +407,6 @@ export default function TradingPanel() {
       ? mark * (1 - 0.92 / leverage)
       : mark * (1 + 0.92 / leverage)
 
-  // Auto-open portfolio/fund modal when balance is zero (after loading)
-  const balanceFetched = useRef(false)
-  useEffect(() => {
-    if (balanceLoading) return
-    if (!balanceFetched.current) { balanceFetched.current = true; return }
-    if (connected && balance === 0n) openPortfolio()
-  }, [connected, balance, balanceLoading, openPortfolio])
 
   // Receive price clicks from the order book — switch to limit and prefill price
   useEffect(() => {
