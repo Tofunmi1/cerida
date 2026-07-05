@@ -193,8 +193,8 @@ type MobileBottomTab = 'positions' | 'book'
 function MobileTradeLayout({ onNavigate }: { onNavigate: (path: string) => void }) {
   const { symbol, mark, changePct } = useMarket()
   const [tab, setTab] = useState<MobileTab>('chart')
-  const [bottomTab, setBottomTab] = useState<MobileBottomTab>('positions')
-  const [bottomOpen, setBottomOpen] = useState(false)
+  const [bottomTab, setBottomTab] = useState<MobileBottomTab>('book')
+  const [bottomOpen, setBottomOpen] = useState(true)
   const [marketOpen, setMarketOpen] = useState(false)
   const positive = changePct >= 0
 
