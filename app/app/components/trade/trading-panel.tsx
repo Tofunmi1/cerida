@@ -501,7 +501,7 @@ export default function TradingPanel() {
       const rawSide = orderType === 'market' ? sideNum + 2 : sideNum
 
       // Generate collateral blinding — used to bind the deposit amount on-chain.
-      // The TEE relay reveals (collateral_amount, collateral_blinding) when opening the position.
+      // collateral_amount and collateral_blinding are stored by the TEE but never sent on-chain.
       const collateralBlindingBytes = crypto.getRandomValues(new Uint8Array(32))
       const collateralBlindingHex = Array.from(collateralBlindingBytes).map(b => b.toString(16).padStart(2, '0')).join('')
       const amountCommitment = await computeAmountCommitment(collateralUnits, collateralBlindingBytes)

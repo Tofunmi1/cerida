@@ -9,6 +9,12 @@ export const meta = () => [
     content:
       'Perpetual futures on any asset, settled on-chain with zero-knowledge proofs.',
   },
+  { property: 'og:title', content: 'Cerida — On-Chain Perpetuals' },
+  { property: 'og:description', content: 'Perpetual futures on any asset, settled on-chain with zero-knowledge proofs.' },
+  { property: 'og:image', content: '/prev_x.png' },
+  { property: 'og:type', content: 'website' },
+  { name: 'twitter:card', content: 'summary_large_image' },
+  { name: 'twitter:image', content: '/prev_x.png' },
 ];
 
 const PILLS = [

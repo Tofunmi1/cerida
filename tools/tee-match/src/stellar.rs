@@ -174,8 +174,6 @@ pub fn relay_open_position(
         scval_bytes32(&zeros)?,                  // liquidation_recipient_note
         scval_bytes32(portfolio_key_hex)?,
         scval_bytes32(asset_id_hex)?,
-        scval_i128(collateral_amount),
-        scval_bytes32(collateral_blinding)?,
         scval_bytes32(settlement_commitment)?,
         scval_proof(note_proof_json)?,
         scval_proof(commit_proof_json)?,
@@ -340,7 +338,6 @@ pub fn relay_open_position_from_pool(
         scval_bytes32(pool_nullifier_hash)?,
         scval_bytes32(position_cmt_hex)?,
         scval_bytes(sealed_params)?,
-        scval_bytes32(collateral_blinding)?,
         scval_bytes32(settlement_commitment)?,
         scval_bytes32(liq_note)?,
         scval_bytes32(portfolio_key_hex)?,

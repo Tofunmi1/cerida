@@ -146,8 +146,7 @@ export const tee = {
    * User only signs deposit_note. TEE handles both orderbook placement and
    * position opening — user address never appears in those TXs.
    *
-   * collateral_amount: same amount passed to deposit_note (in stroop-scale units)
-   * collateral_blinding: hex32 random blinding used to compute amount_commitment at deposit time
+   * collateral_amount and collateral_blinding are TEE-internal — not sent to contract
    * settlement_commitment: hex32 pre-committed note for settlement fund destination
    */
   /**
@@ -190,8 +189,8 @@ export const tee = {
     note_null: string
     position_cmt: string
     sealed_params?: string
-    collateral_amount: number
-    collateral_blinding: string     // hex32
+    collateral_amount: number       // TEE stores this; not forwarded to contract
+    collateral_blinding: string     // hex32 — TEE stores this; not forwarded to contract
     settlement_commitment: string   // hex32
     portfolio_key?: string
     asset_id?: string

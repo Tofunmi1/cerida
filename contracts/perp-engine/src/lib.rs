@@ -518,8 +518,6 @@ impl PerpEngine {
         liquidation_recipient_note: BytesN<32>,
         portfolio_key: BytesN<32>,
         asset_id: BytesN<32>,
-        collateral_amount: i128,
-        collateral_blinding: BytesN<32>,
         settlement_commitment: BytesN<32>,
         note_proof: Groth16Proof,
         commit_proof: Groth16Proof,
@@ -540,15 +538,8 @@ impl PerpEngine {
         }
 
         let note_key = DataKey::Note(note_commitment.clone());
-        let stored: BytesN<32> = env
-            .storage()
-            .persistent()
-            .get(&note_key)
-            .unwrap_or_else(|| panic!("PerpEngine: note not found"));
-
-        let expected = Self::note_amount_commitment(&env, collateral_amount, &collateral_blinding);
-        if expected != stored {
-            panic!("PerpEngine: collateral amount/blinding does not match stored note commitment");
+        if !env.storage().persistent().has(&note_key) {
+            panic!("PerpEngine: note not found");
         }
 
         let pos_key = DataKey::Position(position_commitment.clone());
@@ -624,7 +615,6 @@ impl PerpEngine {
         pool_nullifier_hash: BytesN<32>,
         position_commitment: BytesN<32>,
         sealed_params: Bytes,
-        _collateral_blinding: BytesN<32>,
         settlement_commitment: BytesN<32>,
         liquidation_recipient_note: BytesN<32>,
         portfolio_key: BytesN<32>,
@@ -1785,8 +1775,6 @@ mod test {
             &BytesN::from_array(&env, &[0u8; 32]),
             &BytesN::from_array(&env, &[0u8; 32]), // portfolio_key: isolated
             &BytesN::from_array(&env, &[0u8; 32]), // asset_id: default
-            &(amount as i128),
-            &BytesN::from_array(&env, &[0u8; 32]),
             &BytesN::from_array(&env, &[0u8; 32]),
             &note_proof,
             &commit_proof,
@@ -1821,8 +1809,6 @@ mod test {
             &BytesN::from_array(&env, &[0u8; 32]),
             &BytesN::from_array(&env, &[0u8; 32]), // portfolio_key: isolated
             &BytesN::from_array(&env, &[0u8; 32]), // asset_id: default
-            &0i128,
-            &BytesN::from_array(&env, &[0u8; 32]),
             &BytesN::from_array(&env, &[0u8; 32]),
             &note_proof,
             &commit_proof,
@@ -1872,8 +1858,6 @@ mod test {
             &BytesN::from_array(&env, &[0u8; 32]),
             &BytesN::from_array(&env, &[0u8; 32]), // portfolio_key: isolated
             &BytesN::from_array(&env, &[0u8; 32]), // asset_id: default
-            &(amount as i128),
-            &BytesN::from_array(&env, &[0u8; 32]),
             &BytesN::from_array(&env, &[0u8; 32]),
             &note_proof,
             &commit_proof,
@@ -2017,8 +2001,6 @@ mod test {
             &BytesN::from_array(&env, &[0u8; 32]),
             &portfolio_key,
             &BytesN::from_array(&env, &[0u8; 32]), // asset_id: default
-            &(amount_a as i128),
-            &BytesN::from_array(&env, &[0u8; 32]),
             &BytesN::from_array(&env, &[0u8; 32]),
             &make_groth16_proof(&env, &note_proof_a_json),
             &make_groth16_proof(&env, &commit_proof_a_json),
@@ -2057,8 +2039,6 @@ mod test {
             &BytesN::from_array(&env, &[0u8; 32]),
             &portfolio_key,
             &BytesN::from_array(&env, &[0u8; 32]), // asset_id: default
-            &(amount_b as i128),
-            &BytesN::from_array(&env, &[0u8; 32]),
             &BytesN::from_array(&env, &[0u8; 32]),
             &make_groth16_proof(&env, &note_proof_b_json),
             &make_groth16_proof(&env, &commit_proof_b_json),
@@ -2118,8 +2098,6 @@ mod test {
             &BytesN::from_array(&env, &[0u8; 32]),
             &portfolio_key,
             &BytesN::from_array(&env, &[0u8; 32]), // asset_id: default
-            &(amount as i128),
-            &BytesN::from_array(&env, &[0u8; 32]),
             &BytesN::from_array(&env, &[0u8; 32]),
             &make_groth16_proof(&env, &note_proof_json),
             &make_groth16_proof(&env, &commit_proof_json),

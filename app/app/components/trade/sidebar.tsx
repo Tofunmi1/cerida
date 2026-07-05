@@ -9,7 +9,6 @@ import {
   IconLayoutDashboard,
   IconLock,
   IconSettings,
-  IconShieldCheck,
 } from '@tabler/icons-react'
 
 const Divider = () => <div className="mx-3 my-1.5 h-px bg-border-subtle" />
@@ -123,20 +122,13 @@ export default function Sidebar({
           collapsed={collapsed}
           onClick={() => onActive('Pool')}
         />
-        <NavButton
-          icon={<IconShieldCheck size={18} stroke={1.75} />}
-          label="Risk"
-          collapsed={collapsed}
-          href="https://github.com/Tofunmi1/cerida/blob/main/audit/readme.md"
-        />
-
         <Divider />
 
         <NavButton
           icon={<IconBook size={18} stroke={1.75} />}
           label="Docs"
           collapsed={collapsed}
-          href="https://github.com/Tofunmi1/cerida"
+          href="/docs"
         />
         <NavButton
           icon={<IconSettings size={18} stroke={1.75} />}
