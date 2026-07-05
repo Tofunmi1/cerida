@@ -559,7 +559,7 @@ export default function TradingPanel() {
         title: `${actionLabel} ${symbol} opened`,
         description: `${leverage}x · ${formatUsd(notional)} notional`,
         progress: undefined,
-        duration: 30000,
+        duration: 45000,
         loadingAction: true,
       })
       setAmount('')
@@ -573,7 +573,7 @@ export default function TradingPanel() {
         }
         toast.update(progressId, {
           loadingAction: false,
-          duration: 15000,
+          duration: 30000,
           action: {
             label: 'View TX',
             onClick: () => window.open(`https://stellar.expert/explorer/testnet/tx/${txHash}`, '_blank', 'noopener'),
