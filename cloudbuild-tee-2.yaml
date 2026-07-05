@@ -1,0 +1,74 @@
+steps:
+  # Step 1: Build the image with a unique timestamp tag (busts any registry cache)
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        TAG="ts-$(date +%s)"
+        echo "$$TAG" > /workspace/new_tag.txt
+        docker build \
+          --no-cache \
+          -f infra/Dockerfile \
+          -t "us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/tee-match:$$TAG" \
+          -t "us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/tee-match:latest" \
+          .
+    timeout: '1800s'
+
+  # Step 2: Push both tags
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        TAG=$(cat /workspace/new_tag.txt)
+        docker push "us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/tee-match:$$TAG"
+        docker push "us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/tee-match:latest"
+
+  # Step 3: Update the VM metadata (informational)
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        TAG=$(cat /workspace/new_tag.txt)
+        IMAGE="us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/tee-match:$$TAG"
+        gcloud compute instances add-metadata tee-match-2 \
+          --zone us-central1-a \
+          --project cer-perp-tee-2 \
+          --metadata "tee-image-reference=$$IMAGE"
+
+  # Step 4: SSH into tee-match-2 and hot-swap the container
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        TAG=$(cat /workspace/new_tag.txt)
+        IMAGE="us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/tee-match:$$TAG"
+        gcloud compute ssh tee-match-2 \
+          --zone us-central1-a --project cer-perp-tee-2 \
+          --tunnel-through-iap --quiet \
+          --command="
+            docker-credential-gcr configure-docker --registries us-central1-docker.pkg.dev 2>/dev/null || true
+            docker pull $$IMAGE
+            docker stop tee-match 2>/dev/null || true
+            docker rm tee-match 2>/dev/null || true
+            RELAYER=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_RELAYER_SECRET -H Metadata-Flavor:Google)
+            SOURCE=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_SOURCE_SECRET -H Metadata-Flavor:Google)
+            docker run -d --name tee-match --restart=always --network=host \
+              -e STELLAR_RELAYER_SECRET=$$RELAYER \
+              -e STELLAR_SOURCE_SECRET=$$SOURCE \
+              -v /var/lib/tee-keys:/keys \
+              $$IMAGE
+            docker run --rm -v /var/lib/tee-keys:/host-keys --entrypoint='' $$IMAGE sh -c 'cp -rn /keys/. /host-keys/'
+            echo Container updated
+          "
+        echo "tee-match-2 hot-swapped to $$IMAGE"
+
+images:
+  - 'us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/tee-match:latest'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY

@@ -4,14 +4,11 @@
 // ─────────────────────────────────────────────────────────────────
 
 mod market_maker;
-mod oracle;
 
 use anyhow::Result;
 use clap::Parser;
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // ── Market catalog ─────────────────────────────────────────────────
 // asset_id: numeric ID used in the TEE CLOB (0 = DEFAULT_ASSET = BTC)
@@ -100,18 +97,10 @@ struct Cli {
     perp_id: String,
     #[arg(long, default_value = "127.0.0.1:9720")]
     tee_addr: String,
-    #[arg(long, default_value = "30")]
-    oracle_interval_secs: u64,
     #[arg(long, default_value = "60")]
     mm_interval_secs: u64,
-    #[arg(long, default_value = "30")]
-    liq_interval_secs: u64,
-    #[arg(long)]
-    no_oracle: bool,
     #[arg(long)]
     no_market_maker: bool,
-    #[arg(long)]
-    no_liquidator: bool,
 }
 
 fn main() -> Result<()> {
@@ -119,30 +108,10 @@ fn main() -> Result<()> {
     eprintln!("═══ CER-PERP Keepers ═══");
     eprintln!("  perp_engine:  {}", cli.perp_id);
     eprintln!("  tee_server:   {}", cli.tee_addr);
-    eprintln!("  markets:      {} ({})", MARKETS.len(),
-        MARKETS.iter().map(|m| m.symbol).collect::<Vec<_>>().join(", "));
-    eprintln!("  oracle:       {} (interval={}s)", if cli.no_oracle { "OFF" } else { "ON (Pyth)" }, cli.oracle_interval_secs);
     eprintln!("  market_maker: {} (interval={}s, levels={})", if cli.no_market_maker { "OFF" } else { "ON" }, cli.mm_interval_secs, market_maker::LEVELS);
-    eprintln!("  liquidator:   {} (interval={}s)", if cli.no_liquidator { "OFF" } else { "ON" }, cli.liq_interval_secs);
-
-    // Shared price store: symbol → scaled price (7 decimals)
-    let prices: Arc<RwLock<HashMap<String, u64>>> = Arc::new(RwLock::new(
-        MARKETS.iter().map(|m| (m.symbol.to_string(), m.base_price)).collect()
-    ));
-
-    let perp = cli.perp_id.clone();
-    let tee  = cli.tee_addr.clone();
-
-    if !cli.no_oracle {
-        let prices_w = prices.clone();
-        let perp_w   = perp.clone();
-        let interval = Duration::from_secs(cli.oracle_interval_secs);
-        thread::spawn(move || oracle_loop(&perp_w, interval, prices_w));
-    }
 
     if !cli.no_market_maker {
-        let prices_r = prices.clone();
-        let tee_mm   = tee.clone();
+        let tee_mm   = cli.tee_addr.clone();
         let interval = cli.mm_interval_secs;
         let mm_markets = MARKETS.iter().map(|m| market_maker::MarketConfig {
             symbol:     m.symbol,
@@ -155,15 +124,8 @@ fn main() -> Result<()> {
         let mm_cfg = market_maker::MmConfig {
             tee_addr: tee_mm,
             markets: mm_markets,
-            prices: prices_r,
         };
         thread::spawn(move || market_maker::run(mm_cfg, interval));
-    }
-
-    if !cli.no_liquidator {
-        let perp_liq = perp.clone();
-        let interval = Duration::from_secs(cli.liq_interval_secs);
-        thread::spawn(move || liquidator_loop(&perp_liq, interval));
     }
 
     loop {
@@ -171,141 +133,3 @@ fn main() -> Result<()> {
     }
 }
 
-// ── Oracle loop ────────────────────────────────────────────────────
-
-fn oracle_loop(perp_id: &str, interval: Duration, prices: Arc<RwLock<HashMap<String, u64>>>) {
-    let source = e2e::stellar::SOURCE;
-    let pyth_ids: Vec<&str> = MARKETS.iter().map(|m| m.pyth_id).collect();
-
-    loop {
-        let t = Instant::now();
-
-        // 1. Fetch from Pyth
-        match oracle::fetch(&pyth_ids) {
-            Ok(pyth_map) => {
-                let mut ok = 0;
-                let mut err = 0;
-
-                // Update shared price cache and submit on-chain mark prices
-                let mut price_updates: Vec<(String, u64)> = Vec::new();
-
-                for market in MARKETS {
-                    let scaled = if market.pyth_id.is_empty() {
-                        // No Pyth feed — keep base price
-                        market.base_price
-                    } else {
-                        pyth_map.get(market.pyth_id)
-                            .map(|p| p.scaled)
-                            .unwrap_or(market.base_price)
-                    };
-
-                    let usd = scaled as f64 / 1e7;
-                    eprintln!("  [oracle] {}: ${:.4}", market.symbol, usd);
-                    price_updates.push((market.symbol.to_string(), scaled));
-
-                    // Submit on-chain via stellar CLI
-                    let asset_id = format!("{:0>64x}", market.asset_id);
-                    match set_oracle_price(perp_id, &asset_id, scaled, source) {
-                        Ok(()) => ok += 1,
-                        Err(e) => {
-                            err += 1;
-                            eprintln!("  [oracle] {} set_price err: {e}", market.symbol);
-                        }
-                    }
-
-                    thread::sleep(Duration::from_secs(2));
-                }
-
-                // Write all updates to shared map
-                if let Ok(mut map) = prices.write() {
-                    for (sym, price) in price_updates {
-                        map.insert(sym, price);
-                    }
-                }
-
-                eprintln!("  [oracle] tick: {ok} ok, {err} err ({:.1}s)", t.elapsed().as_secs_f64());
-            }
-            Err(e) => {
-                eprintln!("  [oracle] pyth fetch failed: {e} (using cached prices)");
-            }
-        }
-
-        thread::sleep(interval);
-    }
-}
-
-fn set_oracle_price(perp_id: &str, asset_id: &str, price: u64, source: &str) -> Result<()> {
-    use e2e::soroban_rpc::{scval_address, scval_bytes32, scval_u64, SorobanRpc};
-    let rpc = SorobanRpc::new();
-    let admin = e2e::stellar::source_pubkey()?;
-    rpc.invoke_xdr(perp_id, source, "set_asset_price", vec![
-        scval_bytes32(asset_id)?,
-        scval_address(&admin)?,
-        scval_u64(price),
-    ])?;
-    Ok(())
-}
-
-// ── Liquidator ─────────────────────────────────────────────────────
-
-fn liquidator_loop(perp_id: &str, interval: Duration) {
-    let rpc = e2e::soroban_rpc::SorobanRpc::new();
-    let source = e2e::stellar::SOURCE;
-    let mut scanned = 0u64;
-
-    loop {
-        let t = Instant::now();
-        let mut liq_count = 0;
-        let mut checked = 0;
-
-        if let Some(watchlist) = load_watchlist() {
-            for cmt in &watchlist {
-                checked += 1;
-                match try_liquidate(&rpc, perp_id, source, cmt) {
-                    Ok(true) => {
-                        liq_count += 1;
-                        eprintln!("  [liquidator] liquidated {}", &cmt[..16]);
-                    }
-                    Ok(false) => {}
-                    Err(e) => eprintln!("  [liquidator] err {}: {}", &cmt[..8], e),
-                }
-                thread::sleep(Duration::from_secs(2));
-            }
-        }
-
-        scanned += 1;
-        eprintln!("  [liquidator] scan #{scanned}: {checked} checked, {liq_count} liquidated ({:.1}s)",
-            t.elapsed().as_secs_f64());
-        thread::sleep(interval);
-    }
-}
-
-fn load_watchlist() -> Option<Vec<String>> {
-    let data = std::fs::read_to_string("keepers/watchlist.json").ok()?;
-    let cmts: Vec<String> = serde_json::from_str(&data).ok()?;
-    if cmts.is_empty() { None } else { Some(cmts) }
-}
-
-fn try_liquidate(
-    rpc: &e2e::soroban_rpc::SorobanRpc,
-    perp_id: &str,
-    source: &str,
-    cmt: &str,
-) -> Result<bool> {
-    use e2e::soroban_rpc::scval_bytes32;
-    match rpc.invoke_xdr(perp_id, source, "liquidate", vec![scval_bytes32(cmt)?]) {
-        Ok(_) => Ok(true),
-        Err(e) => {
-            let msg = e.to_string().to_lowercase();
-            if msg.contains("not under-collateralized")
-                || msg.contains("can only liquidate a matched")
-                || msg.contains("position not found")
-                || msg.contains("solvent")
-            {
-                Ok(false)
-            } else {
-                Err(e)
-            }
-        }
-    }
-}

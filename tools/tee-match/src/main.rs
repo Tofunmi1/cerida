@@ -289,94 +289,16 @@ fn main() -> Result<()> {
         }
 
         Command::Match {
-            db,
-            perp,
-            cmt_a,
-            cmt_b,
-            source,
+            db: _db,
+            perp: _perp,
+            cmt_a: _cmt_a,
+            cmt_b: _cmt_b,
+            source: _source,
         } => {
-            log::info!(
-                "═══ TEE Match: Two-Order Settlement ═══",
-                "db",
-                format!("{}", db.display()),
-                "perp_contract",
-                &perp[..8],
-                "cmt_a",
-                log::hex_snippet(&cmt_a, 16),
-                "cmt_b",
-                log::hex_snippet(&cmt_b, 16),
-                "source",
-                &source
-            );
-
-            let sled_db = db::open_db(&db)?;
-            let store = db::SecretStore::open(&sled_db)?;
-
-            log::debug!("Loading order A secrets from DB", "cmt_a", &cmt_a[..16]);
-            let a = store
-                .get(&cmt_a)?
-                .ok_or_else(|| anyhow::anyhow!("secrets not found for cmt_a"))?;
-
-            log::debug!("Loading order B secrets from DB", "cmt_b", &cmt_b[..16]);
-            let b = store
-                .get(&cmt_b)?
-                .ok_or_else(|| anyhow::anyhow!("secrets not found for cmt_b"))?;
-
-            log::info!(
-                "Orders loaded from DB",
-                "order_a",
-                format!("side={} price={} size={}", a.side, a.price, a.size),
-                "order_b",
-                format!("side={} price={} size={}", b.side, b.price, b.size)
-            );
-
-            log::debug!(
-                "Running matching engine",
-                "side_a",
-                a.side,
-                "price_a",
-                a.price,
-                "side_b",
-                b.side,
-                "price_b",
-                b.price
-            );
-            let params = engine::find_match(&a, &b)
-                .ok_or_else(|| anyhow::anyhow!("orders are not matchable"))?;
-            log::info!(
-                "Match parameters computed",
-                "match_price",
-                params.match_price,
-                "match_size",
-                params.match_size
-            );
-
-            log::debug!("Generating Groth16 match proof via native Rust circuits");
-            let out =
-                proof::gen_match_proof(&keys_dir, &a, &b, params.match_price, params.match_size)?;
-            let proof_size = out.proof.a.len() + out.proof.b.len() + out.proof.c.len();
-            log::info!(
-                "ZK match proof generated",
-                "proof_total",
-                log::bytes_label(proof_size / 2)
-            );
-
             log::warning!(
-                "Submitting match to Soroban testnet",
-                "contract",
-                &perp[..8],
-                "source",
-                &source,
-                "cmt_a",
-                log::hex_snippet(&cmt_a, 10),
-                "cmt_b",
-                log::hex_snippet(&cmt_b, 10)
-            );
-            stellar::submit_match(&perp, &source, &cmt_a, &cmt_b, &out)?;
-            log::info!(
-                "Match completed successfully",
-                "total_time",
-                log::duration_secs(&start.elapsed())
+                "═══ TEE Match: Obsolete ═══",
+                "note",
+                "On-chain matching removed in Phase 2. Matching is handled by the CLOB server."
             );
         }
     }

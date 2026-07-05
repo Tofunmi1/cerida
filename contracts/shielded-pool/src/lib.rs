@@ -267,6 +267,54 @@ impl ShieldedPool {
         );
     }
 
+    /// Called by another contract (e.g. perp-engine) that has already transferred
+    /// `denomination` USDC to this pool address. Updates the Merkle state and emits
+    /// a deposit event — identical to `deposit` but without requiring depositor auth
+    /// or performing the token transfer (caller handles it).
+    pub fn deposit_from_contract(
+        env: Env,
+        commitment: BytesN<32>,
+        new_root: BytesN<32>,
+        proof: Groth16Proof,
+    ) {
+        Self::assert_initialized(&env);
+
+        let current_root: BytesN<32> = env.storage().instance().get(&DataKey::CurrentRoot).unwrap();
+        let next_index: u32 = env.storage().instance().get(&DataKey::NextIndex).unwrap();
+
+        let vk = load_vk(&env, &VK_INSERT_IC);
+        let mut pi: Vec<Bn254Fr> = Vec::new(&env);
+        pi.push_back(Bn254Fr::from_bytes(current_root.clone()));
+        pi.push_back(Bn254Fr::from_bytes(new_root.clone()));
+        pi.push_back(Bn254Fr::from_bytes(commitment.clone()));
+        let mut idx_bytes = [0u8; 32];
+        idx_bytes[28..32].copy_from_slice(&next_index.to_be_bytes());
+        pi.push_back(Bn254Fr::from_bytes(BytesN::from_array(&env, &idx_bytes)));
+
+        match verify_groth16(&env, &vk, &proof, &pi) {
+            Ok(true) => {}
+            _ => panic!("ShieldedPool: invalid insert proof"),
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrentRoot, &new_root);
+        let new_head = (next_index + 1) % ROOT_HISTORY;
+        env.storage()
+            .instance()
+            .set(&DataKey::Root(new_head), &new_root);
+        env.storage().instance().set(&DataKey::RootHead, &new_head);
+        env.storage()
+            .instance()
+            .set(&DataKey::NextIndex, &(next_index + 1));
+
+        #[allow(deprecated)]
+        env.events().publish(
+            (soroban_sdk::symbol_short!("deposit"),),
+            (commitment, new_root, next_index),
+        );
+    }
+
     pub fn is_spent(env: Env, nullifier_hash: BytesN<32>) -> bool {
         env.storage()
             .persistent()

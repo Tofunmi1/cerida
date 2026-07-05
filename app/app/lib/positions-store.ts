@@ -7,6 +7,9 @@ export interface StoredPosition {
   side: 0 | 1
   leverage: number
   openedAt: number
+  entryPrice: number  // USD mark price at open (for PnL / liq estimate)
+  collateral: number  // collateral in display units (e.g. USDC)
+  size: number        // notional = collateral * leverage
 }
 
 function load(): StoredPosition[] {

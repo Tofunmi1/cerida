@@ -1,0 +1,49 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--no-cache'
+      - '-f'
+      - 'keepers/Dockerfile'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/keepers:latest'
+      - '.'
+    timeout: '1800s'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/keepers:latest'
+
+  # SSH into keepers-vm-2 and hot-swap the container
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        IMAGE="us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/keepers:latest"
+        gcloud compute ssh keepers-vm-2 \
+          --zone us-central1-b --project cer-perp-tee-2 \
+          --tunnel-through-iap --quiet \
+          --command="
+            which docker || (curl -fsSL https://get.docker.com | sh)
+            gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+            docker pull $$IMAGE
+            docker stop keepers 2>/dev/null || true
+            docker rm keepers 2>/dev/null || true
+            ORACLE_SECRET=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/keeper-env-ORACLE_SECRET -H Metadata-Flavor:Google)
+            PERP_ID=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/keeper-env-PERP_ID -H Metadata-Flavor:Google)
+            TEE_ADDR=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/keeper-env-TEE_ADDR -H Metadata-Flavor:Google)
+            docker run -d --name keepers --restart=always \
+              -e ORACLE_SECRET=$$ORACLE_SECRET \
+              -e SOROBAN_RPC_URL=https://stellar-testnet.g.alchemy.com/v2/FqjaGAy9IMENhdv2i_3UUVDPZnNClYNq \
+              $$IMAGE --perp-id $$PERP_ID --tee-addr $$TEE_ADDR
+            echo Keepers container updated
+          "
+
+images:
+  - 'us-central1-docker.pkg.dev/cer-perp-tee-2/tee-match-repo/keepers:latest'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY

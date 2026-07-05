@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { IconArrowDownToArc, IconArrowUpFromArc, IconExternalLink, IconX } from '@tabler/icons-react'
 import { formatUsd } from './format'
 import { useWallet } from '../../context/wallet-context'
-import { buildDepositNoteTx, CONTRACT_IDS, submitAndWait } from '../../lib/contracts'
+import { buildDepositNoteTx, computeAmountCommitment, CONTRACT_IDS, submitAndWait } from '../../lib/contracts'
 import { tee } from '../../lib/tee-client'
 import { toast } from '../toast/toast-context'
 
@@ -44,13 +44,18 @@ function TransferPanel({ mode }: { mode: 'deposit' | 'withdraw' }) {
         toast.update(progressId, { description: 'Getting note commitment…', progress: 30 })
         const { note_cmt, note_null } = await tee.noteCmt(Number(collateralUnits), noteSecret)
 
+        // Generate blinding for amount_commitment = SHA256(amount_le || blinding)
+        const blindingBytes = crypto.getRandomValues(new Uint8Array(32))
+        const blindingHex = Array.from(blindingBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+        const amountCmt = await computeAmountCommitment(collateralUnits, blindingBytes)
+
         toast.update(progressId, { description: 'Sign transaction…', progress: 60 })
-        const tx = await buildDepositNoteTx(publicKey, note_cmt, collateralUnits)
+        const tx = await buildDepositNoteTx(publicKey, note_cmt, collateralUnits, amountCmt)
         await submitAndWait(await sign(tx.toXDR()))
 
-        // Persist note secret locally so user can spend it later
+        // Persist note secret + blinding locally so user can spend it later
         const notes = JSON.parse(localStorage.getItem('cerida-notes') ?? '[]')
-        notes.push({ note_cmt, secret: noteSecret, amount: Number(collateralUnits), depositedAt: Date.now() })
+        notes.push({ note_cmt, secret: noteSecret, blinding: blindingHex, amount: Number(collateralUnits), depositedAt: Date.now() })
         localStorage.setItem('cerida-notes', JSON.stringify(notes))
 
         // Also store in shielded pool format for the Pool modal

@@ -12,8 +12,8 @@ import { useWallet } from '../../context/wallet-context'
 import { useNav } from '../../context/nav-context'
 import {
   buildDepositNoteTx,
+  computeAmountCommitment,
   crossMarginKey,
-  proofJsonToScVal,
   submitAndWait,
 } from '../../lib/contracts'
 import { tee } from '../../lib/tee-client'
@@ -498,6 +498,16 @@ export default function TradingPanel() {
       // TEE encodes is_market via side>=2: 0=limit-bid, 1=limit-ask, 2=market-bid, 3=market-ask
       const rawSide = orderType === 'market' ? sideNum + 2 : sideNum
 
+      // Generate collateral blinding — used to bind the deposit amount on-chain.
+      // The TEE relay reveals (collateral_amount, collateral_blinding) when opening the position.
+      const collateralBlindingBytes = crypto.getRandomValues(new Uint8Array(32))
+      const collateralBlindingHex = Array.from(collateralBlindingBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+      const amountCommitment = await computeAmountCommitment(collateralUnits, collateralBlindingBytes)
+
+      // Pre-commit to a settlement note destination (TEE stores on-chain, uses when settling P&L).
+      const settlementCommitmentBytes = crypto.getRandomValues(new Uint8Array(32))
+      const settlementCommitmentHex = Array.from(settlementCommitmentBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+
       // Step 1: Ask TEE to store order secrets + generate both proofs in parallel
       // init stores secrets so the TEE can later match this order
       console.log('step: calling tee.init + tee.noteProof…')
@@ -513,43 +523,43 @@ export default function TradingPanel() {
       const commitProofResult = await tee.commitProof(commitment)
       console.log('step: commitProof done')
 
-      const commitScVal = proofJsonToScVal(commitProofResult.proof)
-
       // User signs one TX: deposit_note (needs their address to transfer USDC).
       // TEE relays both place_order and open_position_from_note with its own key.
       toast.update(progressId, { description: 'Building transaction…', progress: 40 })
-      const depositNoteTx = await buildDepositNoteTx(publicKey, noteResult.note_cmt, collateralUnits)
+      const depositNoteTx = await buildDepositNoteTx(publicKey, noteResult.note_cmt, collateralUnits, amountCommitment)
       toast.update(progressId, { description: 'Sign — deposit collateral…', progress: 55 })
-      await submitAndWait(await sign(depositNoteTx.toXDR()))
+      const depositHash = await submitAndWait(await sign(depositNoteTx.toXDR()))
 
       toast.update(progressId, { description: 'Queuing position relay…', progress: 75 })
-      await tee.relayOpenPosition({
+      const relayResult = await tee.relayOpenPosition({
         perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
         orderbook: import.meta.env.VITE_ORDERBOOK_ID ?? '',
         note_cmt: noteResult.note_cmt,
         note_null: noteResult.note_null,
         position_cmt: commitment,
-        hint_price: hintPrice,
-        hint_side: sideNum,
-        hint_leverage: leverage,
-        hint_size: 1_000_000_000,
-        tp_price: tpUnits,
-        sl_price: slUnits,
+        collateral_amount: Number(collateralUnits),
+        collateral_blinding: collateralBlindingHex,
+        settlement_commitment: settlementCommitmentHex,
         portfolio_key: portfolioKey,
         note_proof: noteResult.proof,
         commit_proof: commitProofResult.proof,
       })
+      const positionTxHash = relayResult.tx_hash ?? depositHash
 
-      positionsStore.add({ commitment, wallet: publicKey, symbol, side: sideNum, leverage, openedAt: Date.now() })
+      positionsStore.add({ commitment, wallet: publicKey, symbol, side: sideNum, leverage, openedAt: Date.now(), entryPrice: mark, collateral: margin, size: notional })
       levels.setEntry(mark)
       refreshBalance()
 
       toast.update(progressId, {
         type: 'success',
-        title: `${actionLabel} ${symbol} queued`,
-        description: `${leverage}x · ${formatUsd(notional)} notional · opens within 30s`,
+        title: `${actionLabel} ${symbol} opened`,
+        description: `${leverage}x · ${formatUsd(notional)} notional`,
         progress: undefined,
         duration: 8000,
+        action: {
+          label: 'View TX',
+          onClick: () => window.open(`https://stellar.expert/explorer/testnet/tx/${positionTxHash}`, '_blank', 'noopener'),
+        },
       })
       setAmount('')
       setPctSelected(null)

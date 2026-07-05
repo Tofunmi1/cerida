@@ -326,7 +326,9 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
                 let note_proof_json = o.note_proof_json.clone();
                 s.spawn(move || -> (usize, bool, String, String, String, u64, u64, u64, String, String) {
                     let ok = (|| -> Result<()> {
-                        crate::stellar::perp_deposit_note(&pe, &identity, &addr, &note_cmt, 1_000_000_000)?;
+                        let bm_blinding = [0u8; 32];
+                        let bm_amount_cmt = crate::stellar::sha256_note_commitment(1_000_000_000, &bm_blinding);
+                        crate::stellar::perp_deposit_note(&pe, &identity, &addr, &note_cmt, 1_000_000_000, &bm_amount_cmt)?;
                         if raw_side <= 1 {
                             crate::stellar::ob_place_order(&ob, &identity, &cmt, price, hint_side, size, hint_leverage, 15, &"0000000000000000000000000000000000000000000000000000000000000000", &proof)?;
                         }
@@ -344,13 +346,14 @@ pub fn run_benchmark(wasm_dir: &Path, keys_dir: &Path, cfg: BenchmarkConfig) -> 
         let zeros = "0000000000000000000000000000000000000000000000000000000000000000";
         for (i, ok, pe, note_cmt, note_nf, price, hint_side, hint_leverage, note_proof_json, proof) in open_position_inputs {
             if !ok { eprintln!("  [order-{i}] ✗ skipped (deposit/place failed)"); continue; }
+            let bm_blinding_hex = "0".repeat(64);
             let r = crate::stellar::perp_open_position(
                 &pe, crate::stellar::SOURCE,
                 &note_cmt, &note_nf, &orders[i].cmt,
-                price, hint_side, hint_leverage, 0,
-                0, 0, 0,
-                zeros, zeros,
-                &"0000000000000000000000000000000000000000000000000000000000000000",
+                hint_side, price, hint_leverage, 0,
+                0, 0, 0, 0,
+                zeros, zeros, zeros,
+                1_000_000_000i128, &bm_blinding_hex, zeros,
                 &note_proof_json, &proof,
             );
             match r {

@@ -289,11 +289,10 @@ pub fn run(
                 "cancel-proof" => handle_cancel_proof(&store, &keys, &req),
                 "note-proof" => handle_note_proof(&keys, &req),
                 "note-cmt" => handle_note_cmt(&req),
-                "match" => handle_match(&store, &keys, &req),
+                "settle" => handle_settle(&store, &keys, &req),
                 "place" => handle_place(&store, &book_store, &fills, &books, &keys, &req),
                 "cancel" => handle_cancel(&store, &book_store, &books, &keys, &req),
                 "market" => handle_market(&store, &book_store, &fills, &books, &keys, &req),
-                "set_mark_price" => handle_set_mark_price(&req),
                 "get_market" => handle_get_market(&books, &req),
                 other => {
                     log::warning!("Unknown command", "cmd", other, "peer", &peer);
@@ -694,74 +693,55 @@ fn handle_note_cmt(req: &Request) -> Response {
     }
 }
 
-fn handle_match(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Response {
+fn handle_settle(
+    store: &db::SecretStore,
+    keys: &PathBuf,
+    req: &Request,
+) -> Response {
     let start = Instant::now();
-    let cmt_a = match req.cmt_a.as_ref() {
+    let cmt = match req.cmt.as_ref() {
         Some(c) => c,
-        None => return err("missing cmt_a"),
-    };
-    let cmt_b = match req.cmt_b.as_ref() {
-        Some(c) => c,
-        None => return err("missing cmt_b"),
+        None => return err("missing cmt"),
     };
     let perp = match req.perp.as_ref() {
         Some(p) => p,
         None => return err("missing perp"),
     };
-    let source = match req.source.as_ref() {
-        Some(s) => s,
-        None => return err("missing source"),
+    let status = match req.cmd.as_str() {
+        "settle-close" => 2u32,
+        "settle-liq" => 4u32,
+        _ => return err("unknown settle type (use settle-close or settle-liq)"),
     };
 
-    log::info!(
-        "═══ Processing match request ═══",
-        "cmt_a",
-        log::hex_snippet(cmt_a, 12),
-        "cmt_b",
-        log::hex_snippet(cmt_b, 12),
-        "perp_contract",
-        &perp[..8],
-        "source",
-        source
-    );
+    let source = req.source.as_deref().unwrap_or("e2e");
+    let zero = "0".repeat(64);
+    let settlement_note = hex::encode(rand::random::<[u8; 32]>());
+    let blinding = hex::encode(rand::random::<[u8; 32]>());
 
-    match do_match(
-        store,
-        keys,
-        cmt_a,
-        cmt_b,
-        perp,
-        source,
-        engine::Side::Bid,
-        0,
-        0,
+    let settlement_amount = req.amount.unwrap_or(0) as i128;
+    let reward = 0i128;
+    let ins_delta = 0i128;
+    let bad_debt = 0i128;
+
+    match stellar::relay_settle_position(
+        perp, cmt, status, &settlement_note, settlement_amount, &blinding,
+        reward, ins_delta, bad_debt,
     ) {
-        Some(r) => {
-            log::info!(
-                "Match confirmed on-chain",
-                "elapsed",
-                log::duration_secs(&start.elapsed())
-            );
+        Ok(tx_hash) => {
+            let _ = store.insert_note_amount(&settlement_note, &db::NoteAmount {
+                amount: settlement_amount,
+                blinding: hex_to_arr32(&blinding),
+            });
+            log::info!("Settle position done", "cmt", &cmt[..16], "tx", &tx_hash[..16], "took", log::duration_secs(&start.elapsed()));
             Response {
                 ok: true,
-                match_price: Some(r.match_price),
-                match_size: Some(r.match_size),
-                nullifier_a: Some(r.nullifier_a),
-                nullifier_b: Some(r.nullifier_b),
+                tx_hash: Some(tx_hash),
                 ..Default::default()
             }
         }
-        None => {
-            log::error!(
-                "Match failed",
-                "cmt_a",
-                log::hex_snippet(cmt_a, 12),
-                "cmt_b",
-                log::hex_snippet(cmt_b, 12),
-                "elapsed",
-                log::duration_secs(&start.elapsed())
-            );
-            err("match failed")
+        Err(e) => {
+            log::error!("Settle position failed", "err", e.to_string());
+            err(e)
         }
     }
 }
@@ -876,8 +856,8 @@ fn handle_place(
         (fills, bb, ba, sp, oc)
     };
 
-    let perp = req.perp.as_ref();
-    let source = req.source.as_ref();
+    let perp = req.perp.as_deref().unwrap();
+    let source = req.source.as_deref().unwrap_or("e2e");
 
     // Phase 2: Attempt on-chain matches + audit trail
     let fill_json: Vec<FillJson> = book_fills
@@ -892,40 +872,35 @@ fn handle_place(
                 nullifier_a: None,
                 nullifier_b: None,
             };
-            if let (Some(perp), Some(source)) = (perp, source) {
-                let maker_side = f.taker_side.opposite();
-                let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
-                match do_match(
-                    store,
-                    keys,
-                    cmt,
-                    &f.maker_id,
-                    perp,
-                    source,
-                    maker_side,
-                    f.price,
-                    f.size,
-                ) {
-                    Some(result) => {
-                        fj.match_price = Some(result.match_price);
-                        fj.match_size = Some(result.match_size);
-                        fj.nullifier_a = Some(result.nullifier_a);
-                        fj.nullifier_b = Some(result.nullifier_b);
-                        let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
-                    }
-                    None => {
-                        let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "failed");
-                        // Restore maker to CLOB and persist immediately
-                        let mut books = books.write().unwrap();
-                        if let Some(book) = books.get_mut(&asset) {
-                            book.restore_order(&f.maker_id, maker_side, f.price, f.size);
-                            if let Err(e) = book_store.save_book(asset, book) {
-                                log::error!(
-                                    "Failed to persist after restore",
-                                    "err",
-                                    e.to_string()
-                                );
-                            }
+            let maker_side = f.taker_side.opposite();
+            let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
+            match do_match_and_settle(
+                store,
+                keys,
+                cmt,
+                &f.maker_id,
+                perp,
+                source,
+            ) {
+                Some(result) => {
+                    fj.match_price = Some(result.match_price);
+                    fj.match_size = Some(result.match_size);
+                    fj.nullifier_a = Some(result.nullifier_a);
+                    fj.nullifier_b = Some(result.nullifier_b);
+                    let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
+                }
+                None => {
+                    let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "failed");
+                    // Restore maker to CLOB and persist immediately
+                    let mut books = books.write().unwrap();
+                    if let Some(book) = books.get_mut(&asset) {
+                        book.restore_order(&f.maker_id, maker_side, f.price, f.size);
+                        if let Err(e) = book_store.save_book(asset, book) {
+                            log::error!(
+                                "Failed to persist after restore",
+                                "err",
+                                e.to_string()
+                            );
                         }
                     }
                 }
@@ -955,7 +930,7 @@ fn handle_place(
         "fills",
         fill_json.len(),
         "auto_matched",
-        perp.is_some(),
+        true,
         "took",
         log::duration_secs(&start.elapsed())
     );
@@ -1108,8 +1083,8 @@ fn handle_market(
         (fills, bb, ba, sp, oc)
     };
 
-    let perp = req.perp.as_ref();
-    let source = req.source.as_ref();
+    let perp = req.perp.as_deref().unwrap();
+    let source = req.source.as_deref().unwrap_or("e2e");
 
     // Phase 2: Attempt on-chain matches + audit trail
     let fill_json: Vec<FillJson> = book_fills
@@ -1124,40 +1099,35 @@ fn handle_market(
                 nullifier_a: None,
                 nullifier_b: None,
             };
-            if let (Some(perp), Some(source)) = (perp, source) {
-                let maker_side = f.taker_side.opposite();
-                let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
-                match do_match(
-                    store,
-                    keys,
-                    cmt,
-                    &f.maker_id,
-                    perp,
-                    source,
-                    maker_side,
-                    f.price,
-                    f.size,
-                ) {
-                    Some(result) => {
-                        fj.match_price = Some(result.match_price);
-                        fj.match_size = Some(result.match_size);
-                        fj.nullifier_a = Some(result.nullifier_a);
-                        fj.nullifier_b = Some(result.nullifier_b);
-                        let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
-                    }
-                    None => {
-                        let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "failed");
-                        // Restore maker to CLOB and persist immediately
-                        let mut books = books.write().unwrap();
-                        if let Some(book) = books.get_mut(&asset) {
-                            book.restore_order(&f.maker_id, maker_side, f.price, f.size);
-                            if let Err(e) = book_store.save_book(asset, book) {
-                                log::error!(
-                                    "Failed to persist after restore",
-                                    "err",
-                                    e.to_string()
-                                );
-                            }
+            let maker_side = f.taker_side.opposite();
+            let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
+            match do_match_and_settle(
+                store,
+                keys,
+                cmt,
+                &f.maker_id,
+                perp,
+                source,
+            ) {
+                Some(result) => {
+                    fj.match_price = Some(result.match_price);
+                    fj.match_size = Some(result.match_size);
+                    fj.nullifier_a = Some(result.nullifier_a);
+                    fj.nullifier_b = Some(result.nullifier_b);
+                    let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
+                }
+                None => {
+                    let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "failed");
+                    // Restore maker to CLOB and persist immediately
+                    let mut books = books.write().unwrap();
+                    if let Some(book) = books.get_mut(&asset) {
+                        book.restore_order(&f.maker_id, maker_side, f.price, f.size);
+                        if let Err(e) = book_store.save_book(asset, book) {
+                            log::error!(
+                                "Failed to persist after restore",
+                                "err",
+                                e.to_string()
+                            );
                         }
                     }
                 }
@@ -1185,7 +1155,7 @@ fn handle_market(
         "fills",
         fill_json.len(),
         "auto_matched",
-        perp.is_some(),
+        true,
         "took",
         log::duration_secs(&start.elapsed())
     );
@@ -1201,38 +1171,7 @@ fn handle_market(
     }
 }
 
-fn handle_set_mark_price(req: &Request) -> Response {
-    let perp = match req.perp.as_ref() {
-        Some(p) => p,
-        None => return err("missing perp"),
-    };
-    let price = match req.price {
-        Some(p) => p,
-        None => return err("missing price"),
-    };
-    let source = req.source.as_deref().unwrap_or("e2e");
 
-    log::info!(
-        "Setting mark price on-chain",
-        "perp",
-        &perp[..8],
-        "price",
-        price,
-        "source",
-        source
-    );
-
-    if let Err(e) = stellar::submit_mark_price(perp, source, price) {
-        log::error!("set_mark_price on-chain failed", "err", e.to_string());
-        return err(e);
-    }
-
-    log::info!("Mark price set on-chain", "price", price);
-    Response {
-        ok: true,
-        ..Default::default()
-    }
-}
 
 fn handle_get_market(books: &RwLock<HashMap<u64, engine::OrderBook>>, req: &Request) -> Response {
     let asset = req.asset.unwrap_or(0);
@@ -1285,63 +1224,74 @@ fn handle_get_market(books: &RwLock<HashMap<u64, engine::OrderBook>>, req: &Requ
     }
 }
 
-// ── Auto-match helper (proof + on-chain submission) ──────────────────────
-/// Returns match result on success. Caller is responsible for restoring the
-/// maker order to the CLOB book on failure.
-fn do_match(
+fn do_match_and_settle(
     store: &db::SecretStore,
     keys: &PathBuf,
     cmt_a: &str,
     cmt_b: &str,
     perp: &str,
     source: &str,
-    _maker_side: engine::Side,
-    _maker_price: u64,
-    _maker_size: u64,
 ) -> Option<MatchResultData> {
     let a = store.get(cmt_a).ok()??;
     let b = store.get(cmt_b).ok()??;
 
     let params = engine::find_match(&a, &b)?;
 
-    let out = match proof::gen_match_proof(keys, &a, &b, params.match_price, params.match_size) {
-        Ok(o) => o,
-        Err(e) => {
-            log::error!(
-                "Auto-match: proof generation failed",
-                "cmt_a",
-                &cmt_a[..16],
-                "err",
-                e.to_string()
-            );
-            return None;
-        }
-    };
+    // Look up position state
+    let state_a = store.get_position_state(cmt_a).ok()??;
+    let state_b = store.get_position_state(cmt_b).ok()??;
 
-    if let Err(e) = stellar::submit_match(perp, source, cmt_a, cmt_b, &out) {
-        log::error!(
-            "Auto-match: on-chain submission failed",
-            "cmt_a",
-            &cmt_a[..16],
-            "err",
-            e.to_string()
-        );
-        return None;
-    }
-
-    let hex = |i: usize| -> String {
-        format!(
-            "{:0>64x}",
-            out.public_inputs[i].parse::<num_bigint::BigUint>().unwrap()
-        )
+    // Compute settlement using match price
+    let oracle_price = params.match_price;
+    let notional_a = state_a.collateral * state_a.leverage as i128;
+    let pnl_a = if state_a.side == 0 {
+        (oracle_price as i128 - state_a.entry_price as i128) * notional_a / state_a.entry_price as i128
+    } else {
+        (state_a.entry_price as i128 - oracle_price as i128) * notional_a / state_a.entry_price as i128
     };
+    let settlement_a = state_a.collateral + pnl_a;
+
+    let notional_b = state_b.collateral * state_b.leverage as i128;
+    let pnl_b = if state_b.side == 0 {
+        (oracle_price as i128 - state_b.entry_price as i128) * notional_b / state_b.entry_price as i128
+    } else {
+        (state_b.entry_price as i128 - oracle_price as i128) * notional_b / state_b.entry_price as i128
+    };
+    let settlement_b = state_b.collateral + pnl_b;
+
+    // Submit settle_position for both
+    let note_a = hex::encode(rand::random::<[u8; 32]>());
+    let note_b = hex::encode(rand::random::<[u8; 32]>());
+    let blinding_a = hex::encode(rand::random::<[u8; 32]>());
+    let blinding_b = hex::encode(rand::random::<[u8; 32]>());
+
+    stellar::relay_settle_position(perp, cmt_a, 2, &note_a, settlement_a.max(0), &blinding_a, 0, 0, 0).ok()?;
+    stellar::relay_settle_position(perp, cmt_b, 2, &note_b, settlement_b.max(0), &blinding_b, 0, 0, 0).ok()?;
+
+    // Store note amounts
+    store.insert_note_amount(&note_a, &db::NoteAmount {
+        amount: settlement_a.max(0),
+        blinding: hex_to_arr32(&blinding_a),
+    }).ok()?;
+    store.insert_note_amount(&note_b, &db::NoteAmount {
+        amount: settlement_b.max(0),
+        blinding: hex_to_arr32(&blinding_b),
+    }).ok()?;
 
     Some(MatchResultData {
-        match_price: hex(2),
-        match_size: hex(3),
-        nullifier_a: hex(4),
-        nullifier_b: hex(5),
+        match_price: format!("{:0>64x}", params.match_price),
+        match_size: format!("{:0>64x}", params.match_size),
+        nullifier_a: note_a,
+        nullifier_b: note_b,
     })
+}
+
+fn hex_to_arr32(s: &str) -> [u8; 32] {
+    let bytes = hex::decode(s).unwrap_or_else(|_| vec![0u8; 32]);
+    let mut arr = [0u8; 32];
+    let len = bytes.len().min(32);
+    arr[..len].copy_from_slice(&bytes[..len]);
+    arr
 }
 
 fn err(s: impl std::fmt::Display) -> Response {
@@ -1421,10 +1371,9 @@ pub mod secure {
             .route("/init", post(handle_init_secure))
             .route("/place", post(handle_place_secure))
             .route("/cancel", post(handle_cancel_secure))
-            .route("/match", post(handle_match_secure))
+            .route("/settle", post(handle_settle_secure))
             .route("/market", post(handle_market_secure))
             .route("/get_market", get(handle_get_market_secure))
-            .route("/set_mark_price", post(handle_set_mark_price_secure))
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -1603,18 +1552,6 @@ pub mod secure {
         Json(serde_json::json!(resp))
     }
 
-    async fn handle_match_secure(
-        State(state): State<SecureState>,
-        Json(payload): Json<serde_json::Value>,
-    ) -> Json<serde_json::Value> {
-        let req = match decrypt_request(&payload) {
-            Ok((_, r)) => r,
-            Err(e) => return Json(serde_json::json!({"ok": false, "error": e})),
-        };
-        let resp = handle_match(&state.store, &state.keys_dir, &req);
-        Json(serde_json::json!(resp))
-    }
-
     async fn handle_market_secure(
         State(state): State<SecureState>,
         Json(payload): Json<serde_json::Value>,
@@ -1648,7 +1585,7 @@ pub mod secure {
         Json(serde_json::json!(resp))
     }
 
-    async fn handle_set_mark_price_secure(
+    async fn handle_settle_secure(
         State(state): State<SecureState>,
         Json(payload): Json<serde_json::Value>,
     ) -> Json<serde_json::Value> {
@@ -1656,7 +1593,7 @@ pub mod secure {
             Ok((_, r)) => r,
             Err(e) => return Json(serde_json::json!({"ok": false, "error": e})),
         };
-        let resp = handle_set_mark_price(&req);
+        let resp = handle_settle(&state.store, &state.keys_dir, &req);
         Json(serde_json::json!(resp))
     }
 }
@@ -1681,19 +1618,24 @@ pub mod http {
     struct PendingRelay {
         perp: String,
         orderbook: String,
-        note_cmt: String,
-        note_null: String,
         position_cmt: String,
-        hint_price: u64,
-        hint_side: u64,
-        hint_leverage: u64,
-        hint_size: u64,
-        tp_price: u64,
-        sl_price: u64,
+        sealed_params: Vec<u8>,
+        collateral_amount: i128,
+        collateral_blinding: String,
+        settlement_commitment: String,
         portfolio_key: String,
         asset_id: String,
-        note_proof: String,
         commit_proof: String,
+        // Note-based path (open_position_from_note)
+        note_cmt: String,
+        note_null: String,
+        note_proof: String,
+        // Pool-based path (open_position_from_pool) — if pool_id is set, use pool path
+        pool_id: String,
+        pool_root: String,
+        pool_nullifier_hash: String,
+        pool_spend_proof: String,
+        liq_recipient_note: String,
     }
 
     type RelayQueue = StdArc<std::sync::Mutex<Vec<PendingRelay>>>;
@@ -1706,6 +1648,7 @@ pub mod http {
         pub fills: StdArc<db::FillLedger>,
         pub keys_dir: PathBuf,
         relay_queue: RelayQueue,
+        store_for_relay: StdArc<db::SecretStore>,
     }
 
     /// How long the TEE waits before flushing and shuffling the relay queue.
@@ -1728,6 +1671,7 @@ pub mod http {
         // on-chain transaction — an observer cannot map deposit time → trade time.
         {
             let q = relay_queue.clone();
+            let store_for_relay = store.clone();
             tokio::spawn(async move {
                 use rand::seq::SliceRandom;
                 let mut interval = tokio::time::interval(
@@ -1747,24 +1691,45 @@ pub mod http {
                     log::info!("relay batch: flushing", "count", batch.len());
                     for item in batch {
                         let cmt_preview = item.position_cmt[..item.position_cmt.len().min(16)].to_string();
+                        let store_ref = store_for_relay.clone();
                         let result = tokio::task::spawn_blocking(move || {
-                            stellar::relay_open_position(
-                                &item.perp,
-                                &item.orderbook,
-                                &item.note_cmt,
-                                &item.note_null,
-                                &item.position_cmt,
-                                item.hint_price,
-                                item.hint_side,
-                                item.hint_leverage,
-                                item.hint_size,
-                                item.tp_price,
-                                item.sl_price,
-                                &item.portfolio_key,
-                                &item.asset_id,
-                                &item.note_proof,
-                                &item.commit_proof,
-                            )
+                            if !item.pool_id.is_empty() {
+                                stellar::relay_open_position_from_pool(
+                                    &item.perp,
+                                    &item.orderbook,
+                                    &item.pool_id,
+                                    &item.pool_root,
+                                    &item.pool_nullifier_hash,
+                                    &item.position_cmt,
+                                    &item.sealed_params,
+                                    item.collateral_amount,
+                                    &item.collateral_blinding,
+                                    &item.settlement_commitment,
+                                    &item.liq_recipient_note,
+                                    &item.portfolio_key,
+                                    &item.asset_id,
+                                    &item.pool_spend_proof,
+                                    &item.commit_proof,
+                                    &store_ref,
+                                )
+                            } else {
+                                stellar::relay_open_position(
+                                    &item.perp,
+                                    &item.orderbook,
+                                    &item.note_cmt,
+                                    &item.note_null,
+                                    &item.position_cmt,
+                                    &item.sealed_params,
+                                    item.collateral_amount,
+                                    &item.collateral_blinding,
+                                    &item.settlement_commitment,
+                                    &item.portfolio_key,
+                                    &item.asset_id,
+                                    &item.note_proof,
+                                    &item.commit_proof,
+                                    &store_ref,
+                                )
+                            }
                         })
                         .await;
                         match result {
@@ -1795,6 +1760,7 @@ pub mod http {
             fills: fills.clone(),
             keys_dir: (*keys_dir).clone(),
             relay_queue,
+            store_for_relay: store.clone(),
         };
 
         let app = Router::new()
@@ -1809,10 +1775,24 @@ pub mod http {
             .route("/match", post(handle_http_match))
             .route("/market", post(handle_http_market))
             .route("/get-market", get(handle_http_get_market))
+            .route("/settle", post(handle_http_settle))
             .route(
                 "/relay/open-position",
                 post(handle_http_relay_open_position),
             )
+            .route(
+                "/relay/open-position-pool",
+                post(handle_http_relay_open_position_pool),
+            )
+            .route(
+                "/relay/withdraw-to-pool",
+                post(handle_http_relay_withdraw_to_pool),
+            )
+            .route(
+                "/relay/cancel-position",
+                post(handle_http_relay_cancel_position),
+            )
+            .route("/note-amount", get(handle_http_note_amount))
             .layer(
                 CorsLayer::new()
                     .allow_origin(Any)
@@ -1912,7 +1892,7 @@ pub mod http {
         State(state): State<HttpState>,
         Json(req): Json<Request>,
     ) -> Json<serde_json::Value> {
-        Json(serde_json::json!(handle_match(
+        Json(serde_json::json!(handle_settle(
             &state.store,
             &state.keys_dir,
             &req
@@ -1953,14 +1933,11 @@ pub mod http {
         note_cmt: String,
         note_null: String,
         position_cmt: String,
-        hint_price: u64,
-        hint_side: u64,
-        hint_leverage: u64,
-        hint_size: u64,
         #[serde(default)]
-        tp_price: u64,
-        #[serde(default)]
-        sl_price: u64,
+        sealed_params: Option<String>,
+        collateral_amount: i128,
+        collateral_blinding: String,
+        settlement_commitment: String,
         #[serde(default)]
         portfolio_key: Option<String>,
         #[serde(default)]
@@ -1976,39 +1953,254 @@ pub mod http {
         let zeros = "0".repeat(64);
         let portfolio_key = req.portfolio_key.as_deref().unwrap_or(&zeros).to_string();
         let asset_id = req.asset_id.as_deref().unwrap_or(&zeros).to_string();
+
+        // Build sealed_params from DB-stored order secrets (TEE seals them, never sent by frontend)
+        let sealed_bytes = match state.store.get(&req.position_cmt) {
+            Ok(Some(secrets)) => {
+                match stellar::seal_from_secrets(&secrets) {
+                    Ok(b) => b,
+                    Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("seal: {e}") })),
+                }
+            }
+            Ok(None) => return Json(serde_json::json!({ "ok": false, "error": "secrets not found for commitment" })),
+            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("db error: {e}") })),
+        };
+
         let cmt_preview = req.position_cmt[..req.position_cmt.len().min(16)].to_string();
 
+        let result = tokio::task::spawn_blocking(move || {
+            stellar::relay_open_position(
+                &req.perp,
+                &req.orderbook,
+                &req.note_cmt,
+                &req.note_null,
+                &req.position_cmt,
+                &sealed_bytes,
+                req.collateral_amount,
+                &req.collateral_blinding,
+                &req.settlement_commitment,
+                &portfolio_key,
+                &asset_id,
+                &req.note_proof,
+                &req.commit_proof,
+                &state.store,
+            )
+        })
+        .await;
+
+        match result {
+            Ok(Ok(tx_hash)) => {
+                log::info!("relay: position opened via settle", "cmt", &cmt_preview, "tx", &tx_hash[..16]);
+                Json(serde_json::json!({ "ok": true, "tx_hash": tx_hash }))
+            }
+            Ok(Err(e)) => {
+                log::error!("relay: position open failed", "cmt", &cmt_preview, "err", e.to_string());
+                Json(serde_json::json!({ "ok": false, "error": e.to_string() }))
+            }
+            Err(e) => {
+                Json(serde_json::json!({ "ok": false, "error": format!("task panic: {e}") }))
+            }
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RelayOpenPositionPoolReq {
+        perp: String,
+        orderbook: String,
+        pool_id: String,
+        pool_root: String,
+        pool_nullifier_hash: String,
+        position_cmt: String,
+        #[serde(default)]
+        sealed_params: Option<String>,
+        collateral_amount: i128,
+        collateral_blinding: String,
+        settlement_commitment: String,
+        #[serde(default)]
+        portfolio_key: Option<String>,
+        #[serde(default)]
+        asset_id: Option<String>,
+        #[serde(default)]
+        liq_recipient_note: Option<String>,
+        spend_proof: String,
+        commit_proof: String,
+    }
+
+    async fn handle_http_relay_open_position_pool(
+        State(state): State<HttpState>,
+        Json(req): Json<RelayOpenPositionPoolReq>,
+    ) -> Json<serde_json::Value> {
+        let zeros = "0".repeat(64);
+        let portfolio_key = req.portfolio_key.as_deref().unwrap_or(&zeros).to_string();
+        let asset_id = req.asset_id.as_deref().unwrap_or(&zeros).to_string();
+        let liq_recipient = req.liq_recipient_note.as_deref().unwrap_or(&zeros).to_string();
+        let sealed_bytes = hex::decode(req.sealed_params.as_deref().unwrap_or("")).unwrap_or_default();
+
+        // Queue into batch relay for timing-correlation privacy (30s shuffle window)
         let pending = PendingRelay {
             perp: req.perp,
             orderbook: req.orderbook,
-            note_cmt: req.note_cmt,
-            note_null: req.note_null,
-            position_cmt: req.position_cmt,
-            hint_price: req.hint_price,
-            hint_side: req.hint_side,
-            hint_leverage: req.hint_leverage,
-            hint_size: req.hint_size,
-            tp_price: req.tp_price,
-            sl_price: req.sl_price,
+            position_cmt: req.position_cmt.clone(),
+            sealed_params: sealed_bytes,
+            collateral_amount: req.collateral_amount,
+            collateral_blinding: req.collateral_blinding,
+            settlement_commitment: req.settlement_commitment,
             portfolio_key,
             asset_id,
-            note_proof: req.note_proof,
             commit_proof: req.commit_proof,
+            note_cmt: String::new(),
+            note_null: String::new(),
+            note_proof: String::new(),
+            pool_id: req.pool_id,
+            pool_root: req.pool_root,
+            pool_nullifier_hash: req.pool_nullifier_hash,
+            pool_spend_proof: req.spend_proof,
+            liq_recipient_note: liq_recipient,
         };
 
-        let depth = {
-            let mut guard = state.relay_queue.lock().unwrap();
-            guard.push(pending);
-            guard.len()
-        };
+        state.relay_queue.lock().unwrap().push(pending);
 
-        log::info!(
-            "relay queued for next batch",
-            "cmt", &cmt_preview,
-            "queue_depth", depth,
-            "batch_interval_secs", RELAY_BATCH_SECS
-        );
-
+        let cmt_preview = req.position_cmt[..req.position_cmt.len().min(16)].to_string();
+        log::info!("Pool relay queued (batch window)", "cmt", &cmt_preview);
         Json(serde_json::json!({ "ok": true, "queued": true }))
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RelayWithdrawToPoolReq {
+        perp: String,
+        pool_id: String,
+        note_cmt: String,
+        nullifier: String,
+        amount: i128,
+        blinding: String,
+        new_pool_leaf: String,
+        new_pool_root: String,
+        remainder_note: String,
+        remainder_blinding: String,
+        note_spend_proof: String,
+        pool_insert_proof: String,
+    }
+
+    async fn handle_http_relay_withdraw_to_pool(
+        State(state): State<HttpState>,
+        Json(req): Json<RelayWithdrawToPoolReq>,
+    ) -> Json<serde_json::Value> {
+        let cmt_preview = req.note_cmt[..req.note_cmt.len().min(16)].to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            stellar::relay_withdraw_to_pool(
+                &req.perp,
+                &req.pool_id,
+                &req.note_cmt,
+                &req.nullifier,
+                req.amount,
+                &req.blinding,
+                &req.new_pool_leaf,
+                &req.new_pool_root,
+                &req.remainder_note,
+                &req.remainder_blinding,
+                &req.note_spend_proof,
+                &req.pool_insert_proof,
+            )
+        })
+        .await;
+
+        match result {
+            Ok(Ok(tx_hash)) => {
+                log::info!("withdraw_to_pool relayed", "note_cmt", &cmt_preview, "tx", &tx_hash[..16]);
+                Json(serde_json::json!({ "ok": true, "tx_hash": tx_hash }))
+            }
+            Ok(Err(e)) => {
+                log::error!("withdraw_to_pool failed", "err", e.to_string());
+                Json(serde_json::json!({ "ok": false, "error": e.to_string() }))
+            }
+            Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("task panic: {e}") })),
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RelayCancelPositionReq {
+        perp: String,
+        position_cmt: String,
+        cancel_nullifier: String,
+        cancel_proof: String,   // JSON proof string
+        recipient: String,      // Stellar address to receive refunded tokens
+    }
+
+    async fn handle_http_relay_cancel_position(
+        State(state): State<HttpState>,
+        Json(req): Json<RelayCancelPositionReq>,
+    ) -> Json<serde_json::Value> {
+        let cmt_preview = req.position_cmt[..req.position_cmt.len().min(16)].to_string();
+        let keys_dir = state.keys_dir.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            stellar::relay_cancel_position(
+                &req.perp,
+                &req.position_cmt,
+                &req.cancel_nullifier,
+                &req.cancel_proof,
+                &req.recipient,
+                &keys_dir,
+                &state.store,
+            )
+        })
+        .await;
+
+        match result {
+            Ok(Ok(tx_hash)) => {
+                log::info!("relay: cancel + withdraw complete", "cmt", &cmt_preview, "tx", &tx_hash[..16]);
+                Json(serde_json::json!({ "ok": true, "tx_hash": tx_hash }))
+            }
+            Ok(Err(e)) => {
+                log::error!("relay: cancel failed", "cmt", &cmt_preview, "err", e.to_string());
+                Json(serde_json::json!({ "ok": false, "error": e.to_string() }))
+            }
+            Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("task panic: {e}") })),
+        }
+    }
+
+    async fn handle_http_note_amount(
+        State(state): State<HttpState>,
+        axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        let cmt = match params.get("cmt") {
+            Some(c) => c.clone(),
+            None => return Json(serde_json::json!({ "ok": false, "error": "missing cmt" })),
+        };
+        match state.store.get_note_amount(&cmt) {
+            Ok(Some(note)) => Json(serde_json::json!({
+                "ok": true,
+                "amount": note.amount,
+                "blinding": hex::encode(note.blinding),
+            })),
+            Ok(None) => Json(serde_json::json!({ "ok": false, "error": "note not found" })),
+            Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct SettleReq {
+        perp: String,
+        commitment: String,
+        cmd: String,
+        amount: Option<u64>,
+        source: Option<String>,
+    }
+
+    async fn handle_http_settle(
+        State(state): State<HttpState>,
+        Json(req): Json<SettleReq>,
+    ) -> Json<serde_json::Value> {
+        let source = req.source.clone().unwrap_or_else(|| "e2e".to_string());
+        let request = Request {
+            cmd: req.cmd.clone(),
+            perp: Some(req.perp),
+            cmt: Some(req.commitment),
+            amount: req.amount,
+            source: Some(source),
+            ..Default::default()
+        };
+        let resp = handle_settle(&state.store, &state.keys_dir, &request);
+        Json(serde_json::json!(resp))
     }
 }

@@ -18,6 +18,26 @@ pub struct OrderSecrets {
     pub is_market: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PositionState {
+    pub collateral: i128,
+    pub matched_price: u64,
+    pub funding_at_open: i128,
+    pub effective_collateral: i128,
+    pub entry_price: u64,
+    pub leverage: u64,
+    pub side: u64,
+    pub partial_liq_done: bool,
+    #[serde(default)]
+    pub asset_id: String, // Pyth price feed ID hex (used by liquidator for oracle price)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteAmount {
+    pub amount: i128,
+    pub blinding: [u8; 32],
+}
+
 fn book_key(asset: u64) -> [u8; 13] {
     let mut buf = [0u8; 13];
     buf[..5].copy_from_slice(b"book_");
@@ -109,6 +129,38 @@ impl SecretStore {
             }
         }
         Ok(cmts)
+    }
+
+    pub fn insert_position_state(&self, cmt_hex: &str, state: &PositionState) -> anyhow::Result<()> {
+        let key = format!("pos_{}", cmt_hex);
+        let value = serde_json::to_vec(state)?;
+        self.tree.insert(key.as_bytes(), value)?;
+        self.tree.flush()?;
+        Ok(())
+    }
+
+    pub fn get_position_state(&self, cmt_hex: &str) -> anyhow::Result<Option<PositionState>> {
+        let key = format!("pos_{}", cmt_hex);
+        match self.tree.get(key.as_bytes())? {
+            Some(value) => Ok(Some(serde_json::from_slice(&value)?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn insert_note_amount(&self, note_cmt_hex: &str, note: &NoteAmount) -> anyhow::Result<()> {
+        let key = format!("note_{}", note_cmt_hex);
+        let value = serde_json::to_vec(note)?;
+        self.tree.insert(key.as_bytes(), value)?;
+        self.tree.flush()?;
+        Ok(())
+    }
+
+    pub fn get_note_amount(&self, note_cmt_hex: &str) -> anyhow::Result<Option<NoteAmount>> {
+        let key = format!("note_{}", note_cmt_hex);
+        match self.tree.get(key.as_bytes())? {
+            Some(value) => Ok(Some(serde_json::from_slice(&value)?)),
+            None => Ok(None),
+        }
     }
 }
 

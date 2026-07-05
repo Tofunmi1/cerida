@@ -383,7 +383,7 @@ export default function HomePage() {
                 margin: '0 0 24px',
               }}
             >
-              Privacy first perpetuals,
+              High Speed Privacy first perpetuals,
               <br /> on Stellar
             </h1>
 
@@ -658,7 +658,13 @@ export default function HomePage() {
                   <img
                     src={m.logo}
                     alt={m.name}
-                    style={{ width: 38, height: 38, borderRadius: '50%', flexShrink: 0, objectFit: 'cover' }}
+                    style={{
+                      width: 38,
+                      height: 38,
+                      borderRadius: '50%',
+                      flexShrink: 0,
+                      objectFit: 'cover',
+                    }}
                   />
                 ) : (
                   <span
@@ -1563,7 +1569,13 @@ export default function HomePage() {
                         <img
                           src={m.logo}
                           alt={m.name}
-                          style={{ width: 28, height: 28, borderRadius: '50%', objectFit: 'cover', margin: '0 auto 6px' }}
+                          style={{
+                            width: 28,
+                            height: 28,
+                            borderRadius: '50%',
+                            objectFit: 'cover',
+                            margin: '0 auto 6px',
+                          }}
                         />
                       ) : (
                         <div

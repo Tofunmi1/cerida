@@ -145,19 +145,44 @@ export const tee = {
    * Relay place_order + open_position_from_note via the TEE's own key.
    * User only signs deposit_note. TEE handles both orderbook placement and
    * position opening — user address never appears in those TXs.
+   *
+   * collateral_amount: same amount passed to deposit_note (in stroop-scale units)
+   * collateral_blinding: hex32 random blinding used to compute amount_commitment at deposit time
+   * settlement_commitment: hex32 pre-committed note for settlement fund destination
    */
+  /**
+   * Relay a full cancel + withdraw for a position.
+   * TEE handles: cancel_position_to_note → ZK note proof → withdraw_note → tokens back to recipient.
+   * This is the only way to close a position since cancel_position_to_note requires TEE auth.
+   */
+  async relayCancel(params: {
+    perp: string
+    position_cmt: string
+    cancel_nullifier: string
+    cancel_proof: string   // JSON proof string
+    recipient: string      // Stellar address to receive refunded tokens
+  }): Promise<{ tx_hash: string }> {
+    const resp = await fetch(`${TEE_URL}/relay/cancel-position`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    })
+    const data = await resp.json() as TeeResponse
+    console.log('[tee] relayCancel response:', data)
+    if (!data.ok) throw new Error(data.error ?? 'cancel relay failed')
+    return { tx_hash: data.tx_hash! }
+  },
+
   async relayOpenPosition(params: {
     perp: string
     orderbook: string
     note_cmt: string
     note_null: string
     position_cmt: string
-    hint_price: number
-    hint_side: number
-    hint_leverage: number
-    hint_size: number
-    tp_price?: number
-    sl_price?: number
+    sealed_params?: string
+    collateral_amount: number
+    collateral_blinding: string     // hex32
+    settlement_commitment: string   // hex32
     portfolio_key?: string
     asset_id?: string
     note_proof: string
@@ -168,8 +193,8 @@ export const tee = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     })
-    const data: TeeResponse = await resp.json()
+    const data = await resp.json() as TeeResponse & { queued?: boolean }
     if (!data.ok) throw new Error(data.error ?? 'relay failed')
-    return { queued: !!(data as Record<string, unknown>).queued, tx_hash: data.tx_hash }
+    return { queued: !!data.queued, tx_hash: data.tx_hash }
   },
 }

@@ -18,6 +18,7 @@ export const RPC_URL =
 
 export const CONTRACT_IDS = {
   perpEngine: import.meta.env.VITE_PERP_ENGINE_ID as string,
+  shieldedPool: import.meta.env.VITE_SHIELDED_POOL_ID as string,
   orderbook: import.meta.env.VITE_ORDERBOOK_ID as string,
   collateralToken: import.meta.env.VITE_COLLATERAL_TOKEN_ID as string,
 } as const
@@ -100,6 +101,25 @@ export async function buildBundleTx(
   return SorobanRpc.assembleTransaction(tx, simResult).build()
 }
 
+/**
+ * Compute amount_commitment = SHA256(amount_le_16bytes || blinding_32bytes).
+ * Matches the contract's `note_amount_commitment` function exactly.
+ * Must be revealed as (collateral_amount, collateral_blinding) to the TEE relay.
+ */
+export async function computeAmountCommitment(amount: bigint, blinding: Uint8Array): Promise<string> {
+  const amountLe = new Uint8Array(16)
+  let rem = amount
+  for (let i = 0; i < 16; i++) {
+    amountLe[i] = Number(rem & 0xffn)
+    rem >>= 8n
+  }
+  const preimage = new Uint8Array(48)
+  preimage.set(amountLe, 0)
+  preimage.set(blinding, 16)
+  const digest = await crypto.subtle.digest('SHA-256', preimage)
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
 // ── Note generation (client-side, for deposit) ────────────────────────────────
 // Note: commitment is random bytes for now. Real ZK commitment would use
 // Poseidon2 hash from the circuits. The contract stores the note by commitment
@@ -165,26 +185,22 @@ export function crossMarginKey(walletAddress: string): string {
 
 // ── Position Meta ─────────────────────────────────────────────────────────────
 
+// On-chain position data — only what the contract actually stores.
+// Financial data (entry price, collateral, size) is kept in StoredPosition (localStorage).
 export interface PositionMeta {
-  collateral: bigint
-  entryPrice: bigint
-  matchedPrice: bigint
-  side: bigint
-  leverage: bigint
-  status: bigint
+  status: bigint          // 0=Open 1=Matched 2=Closed 4=Liquidated
   createdAt: bigint
-  matchId: bigint
-  fundingAtOpen: bigint
-  hintSize: bigint
-  tpPrice: bigint
-  slPrice: bigint
-  effectiveCollateral: bigint
   partialLiqDone: boolean
-  marginMode: bigint
-  assetId: string
+  assetId: string         // hex32
 }
 
-export async function getPosition(commitment: string, sourcePublicKey?: string): Promise<PositionMeta | null> {
+// Sentinel: position exists on-chain but fields couldn't be parsed (shouldn't happen normally)
+export const POSITION_NOT_FOUND = 'not_found' as const
+
+export async function getPosition(
+  commitment: string,
+  sourcePublicKey?: string,
+): Promise<PositionMeta | null | typeof POSITION_NOT_FOUND> {
   try {
     const source = sourcePublicKey ?? 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN'
     const account = await rpc.getAccount(source)
@@ -198,28 +214,33 @@ export async function getPosition(commitment: string, sourcePublicKey?: string):
       .build()
 
     const result = await rpc.simulateTransaction(tx)
-    if (!SorobanRpc.Api.isSimulationSuccess(result) || !result.result?.retval) return null
+    // Simulation error (e.g. contract panicked because position doesn't exist)
+    if (!SorobanRpc.Api.isSimulationSuccess(result)) return POSITION_NOT_FOUND
+    if (!result.result?.retval) return POSITION_NOT_FOUND
 
     const raw = scValToNative(result.result.retval)
-    if (!raw) return null
+    if (!raw || typeof raw !== 'object') return POSITION_NOT_FOUND
+
+    // PositionStatus enum: Open=0, Matched=1, Closed=2, Liquidated=4
+    const statusVal = raw.status
+    const statusNum = typeof statusVal === 'object' && statusVal !== null
+      ? Object.keys(statusVal as Record<string, unknown>).length === 0 ? 0n
+        : BigInt(Object.keys(statusVal as Record<string, unknown>)[0] === 'Open' ? 0
+          : Object.keys(statusVal as Record<string, unknown>)[0] === 'Matched' ? 1
+          : Object.keys(statusVal as Record<string, unknown>)[0] === 'Closed' ? 2 : 4)
+      : BigInt(statusVal ?? 0)
+
+    const assetIdRaw = raw.asset_id
+    const assetIdHex = assetIdRaw instanceof Uint8Array
+      ? Array.from(assetIdRaw).map(b => b.toString(16).padStart(2, '0')).join('')
+      : typeof assetIdRaw === 'string' ? assetIdRaw
+      : '0'.repeat(64)
 
     return {
-      collateral: BigInt(raw.collateral),
-      entryPrice: BigInt(raw.entry_price),
-      matchedPrice: BigInt(raw.matched_price),
-      side: BigInt(raw.side),
-      leverage: BigInt(raw.leverage),
-      status: BigInt(raw.status),
-      createdAt: BigInt(raw.created_at),
-      matchId: BigInt(raw.match_id),
-      fundingAtOpen: BigInt(raw.funding_at_open),
-      hintSize: BigInt(raw.hint_size),
-      tpPrice: BigInt(raw.tp_price),
-      slPrice: BigInt(raw.sl_price),
-      effectiveCollateral: BigInt(raw.effective_collateral),
-      partialLiqDone: raw.partial_liq_done,
-      marginMode: BigInt(raw.margin_mode),
-      assetId: raw.asset_id ?? '0000000000000000000000000000000000000000000000000000000000000000',
+      status: statusNum,
+      createdAt: BigInt(raw.created_at ?? 0),
+      partialLiqDone: !!raw.partial_liq_done,
+      assetId: assetIdHex,
     }
   } catch (e) {
     console.warn('getPosition failed for cmt', commitment.slice(0, 12), ':', e)
@@ -234,6 +255,7 @@ export function depositNoteCall(
   sourcePublicKey: string,
   noteCommitment: string,
   amount: bigint,
+  amountCommitment: string,  // SHA256(amount_le_16bytes || blinding_32bytes) — see computeAmountCommitment
 ): ContractCall {
   return {
     contractId: CONTRACT_IDS.perpEngine,
@@ -242,6 +264,7 @@ export function depositNoteCall(
       addressToScVal(sourcePublicKey),
       bytes32ToScVal(noteCommitment),
       i128ToScVal(amount),
+      bytes32ToScVal(amountCommitment),
     ],
   }
 }
@@ -251,28 +274,33 @@ export async function buildDepositNoteTx(
   sourcePublicKey: string,
   noteCommitment: string,
   amount: bigint,
+  amountCommitment: string,
 ) {
-  return buildBundleTx(sourcePublicKey, [depositNoteCall(sourcePublicKey, noteCommitment, amount)])
+  return buildBundleTx(sourcePublicKey, [depositNoteCall(sourcePublicKey, noteCommitment, amount, amountCommitment)])
 }
 
-/** Withdraw from a shielded note to a recipient. Requires a valid NoteSpend proof. */
+/** Withdraw from a shielded note to a recipient. Requires a valid NoteSpend proof. TEE-only. */
 export async function buildWithdrawNoteTx(
   sourcePublicKey: string,
   noteCmt: string,
   noteNull: string,
   recipientPk: string,
+  amount: bigint,
+  blinding: string,  // hex32 — the blinding used in amount_commitment at deposit time
   noteProof?: xdr.ScVal,
 ) {
   return buildTx(sourcePublicKey, CONTRACT_IDS.perpEngine, 'withdraw_note', [
     bytes32ToScVal(noteCmt),
     bytes32ToScVal(noteNull),
     addressToScVal(recipientPk),
+    i128ToScVal(amount),
+    bytes32ToScVal(blinding),
     noteProof ?? zeroProof(),
   ])
 }
 
-/** Query a note balance by commitment. Returns amount in stroops or null. */
-export async function getNoteBalance(noteCommitment: string): Promise<bigint | null> {
+/** Query whether a note exists. Returns the stored amount_commitment hex (BytesN<32>) or null. */
+export async function getNoteBalance(noteCommitment: string): Promise<string | null> {
   try {
     const account = await rpc.getAccount('GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN')
     const contract = new Contract(CONTRACT_IDS.perpEngine)
@@ -286,7 +314,9 @@ export async function getNoteBalance(noteCommitment: string): Promise<bigint | n
 
     const result = await rpc.simulateTransaction(tx)
     if (!SorobanRpc.Api.isSimulationSuccess(result) || !result.result?.retval) return null
-    return scValToNative(result.result.retval) as bigint
+    const native = scValToNative(result.result.retval)
+    if (!native) return null
+    return Buffer.from(native as Uint8Array).toString('hex')
   } catch {
     return null
   }
@@ -294,20 +324,19 @@ export async function getNoteBalance(noteCommitment: string): Promise<bigint | n
 
 // ── Position APIs ─────────────────────────────────────────────────────────────
 
-/** Pure op-builder: open a position from a shielded note. */
+/** Pure op-builder: open a position from a shielded note. Called by the TEE relay, not the frontend directly. */
 export function openPositionFromNoteCall(
   opts: {
     noteCmt: string
     noteNull: string
     commitment: string
-    hintPrice: number
-    side: 0 | 1
-    leverage: number
-    size: number
-    tpPrice?: number
-    slPrice?: number
-    assetId?: string
+    sealedParams?: string           // hex-encoded Bytes blob (TEE-generated encrypted params)
+    liquidationRecipientNote?: string
     portfolioKey?: string
+    assetId?: string
+    collateralAmount: bigint
+    collateralBlinding: string      // hex32 — revealed to verify amount_commitment on-chain
+    settlementCommitment: string    // hex32 — pre-committed settlement note destination
     noteProof?: xdr.ScVal
     commitProof?: xdr.ScVal
   },
@@ -315,6 +344,9 @@ export function openPositionFromNoteCall(
   const zeroNote = bytes32ToScVal('0'.repeat(64))
   const pk = bytes32ToScVal(opts.portfolioKey ?? '0'.repeat(64))
   const aid = bytes32ToScVal(opts.assetId ?? DEFAULT_ASSET)
+  const sealedParams = opts.sealedParams
+    ? xdr.ScVal.scvBytes(Buffer.from(opts.sealedParams, 'hex'))
+    : xdr.ScVal.scvBytes(Buffer.alloc(0))
 
   return {
     contractId: CONTRACT_IDS.perpEngine,
@@ -323,17 +355,13 @@ export function openPositionFromNoteCall(
       bytes32ToScVal(opts.noteCmt),
       bytes32ToScVal(opts.noteNull),
       bytes32ToScVal(opts.commitment),
-      u64ToScVal(opts.hintPrice),
-      u64ToScVal(opts.side),
-      u64ToScVal(opts.leverage),
-      u64ToScVal(opts.size),
-      tifToScVal(TIF.GTC),
-      u64ToScVal(0),
-      u64ToScVal(opts.tpPrice ?? 0),
-      u64ToScVal(opts.slPrice ?? 0),
-      zeroNote,
+      sealedParams,
+      opts.liquidationRecipientNote ? bytes32ToScVal(opts.liquidationRecipientNote) : zeroNote,
       pk,
       aid,
+      i128ToScVal(opts.collateralAmount),
+      bytes32ToScVal(opts.collateralBlinding),
+      bytes32ToScVal(opts.settlementCommitment),
       opts.noteProof ?? zeroProof(),
       opts.commitProof ?? zeroProof(),
     ],
@@ -350,19 +378,16 @@ export async function buildOpenPositionFromNoteTx(
 
 // ── Order APIs ────────────────────────────────────────────────────────────────
 
-/** Pure op-builder: place an order in the orderbook. Requires an OrderCommitment proof. */
+/** Pure op-builder: place an order in the orderbook. Called by the TEE relay, not the frontend directly. */
 export function placeOrderCall(
   opts: {
     commitment: string
-    hintPrice: number
-    hintSide: number
-    hintSize: number
-    hintLeverage: number
+    portfolioKey?: string
+    encryptedHints: string  // hex-encoded Bytes blob (TEE-generated, contains price/side/size/leverage)
     revealed?: number
     tif?: number
     expiryLedger?: number
     assetId?: string
-    portfolioKey?: string
     proof?: xdr.ScVal
   },
 ): ContractCall {
@@ -374,10 +399,7 @@ export function placeOrderCall(
     args: [
       bytes32ToScVal(opts.commitment),
       pk,
-      u64ToScVal(opts.hintPrice),
-      u64ToScVal(opts.hintSide),
-      u64ToScVal(opts.hintSize),
-      u64ToScVal(opts.hintLeverage),
+      xdr.ScVal.scvBytes(Buffer.from(opts.encryptedHints, 'hex')),
       u64ToScVal(opts.revealed ?? 15),
       tifToScVal(opts.tif ?? TIF.GTC),
       u64ToScVal(opts.expiryLedger ?? 0),
@@ -404,29 +426,24 @@ export async function buildDepositAndPlaceTx(
   sourcePublicKey: string,
   opts: {
     commitment: string
-    hintPrice: number
-    hintSide: number
-    hintSize: number
-    hintLeverage: number
+    encryptedHints: string  // TEE-generated encrypted hints blob (hex)
     portfolioKey?: string
     assetId?: string
     proof: xdr.ScVal
     noteCmt: string
     noteAmount: bigint
+    noteAmountCommitment: string  // SHA256(amount_le || blinding)
   },
 ) {
   return buildBundleTx(sourcePublicKey, [
     placeOrderCall({
       commitment: opts.commitment,
-      hintPrice: opts.hintPrice,
-      hintSide: opts.hintSide,
-      hintSize: opts.hintSize,
-      hintLeverage: opts.hintLeverage,
+      encryptedHints: opts.encryptedHints,
       portfolioKey: opts.portfolioKey,
       assetId: opts.assetId,
       proof: opts.proof,
     }),
-    depositNoteCall(sourcePublicKey, opts.noteCmt, opts.noteAmount),
+    depositNoteCall(sourcePublicKey, opts.noteCmt, opts.noteAmount, opts.noteAmountCommitment),
   ])
 }
 
@@ -435,24 +452,23 @@ export async function buildDepositAndPlaceTx(
  *   1. place_order      (orderbook) — registers the order commitment
  *   2. deposit_note     (perp-engine) — stores the shielded note collateral
  *   3. open_position    (perp-engine) — spends the note + opens the position
- * Ops execute in order; storage writes from earlier ops are visible to later
- * ops within the same Soroban transaction, so open_position sees the note
- * that deposit_note just wrote. One signing prompt, one on-chain tx.
+ * In the relay flow, prefer the separate deposit + relayOpenPosition path instead.
  */
 export async function buildTradeBundleTx(
   sourcePublicKey: string,
   opts: {
     commitment: string
-    hintPrice: number
-    hintSide: 0 | 1
-    hintSize: number
-    hintLeverage: number
+    encryptedHints: string          // TEE-generated encrypted hints blob (hex)
     portfolioKey?: string
     noteCmt: string
     noteNull: string
     noteAmount: bigint
-    tpPrice?: number
-    slPrice?: number
+    noteAmountCommitment: string    // SHA256(amount_le || collateralBlinding)
+    collateralAmount: bigint
+    collateralBlinding: string      // hex32
+    settlementCommitment: string    // hex32
+    sealedParams?: string           // TEE-generated encrypted params blob (hex)
+    assetId?: string
     noteProof: xdr.ScVal
     commitProof: xdr.ScVal
   },
@@ -460,25 +476,22 @@ export async function buildTradeBundleTx(
   return buildBundleTx(sourcePublicKey, [
     placeOrderCall({
       commitment: opts.commitment,
-      hintPrice: opts.hintPrice,
-      hintSide: opts.hintSide,
-      hintSize: opts.hintSize,
-      hintLeverage: opts.hintLeverage,
+      encryptedHints: opts.encryptedHints,
       portfolioKey: opts.portfolioKey,
+      assetId: opts.assetId,
       proof: opts.commitProof,
     }),
-    depositNoteCall(sourcePublicKey, opts.noteCmt, opts.noteAmount),
+    depositNoteCall(sourcePublicKey, opts.noteCmt, opts.noteAmount, opts.noteAmountCommitment),
     openPositionFromNoteCall({
       noteCmt: opts.noteCmt,
       noteNull: opts.noteNull,
       commitment: opts.commitment,
-      hintPrice: opts.hintPrice,
-      side: opts.hintSide,
-      leverage: opts.hintLeverage,
-      size: opts.hintSize,
-      tpPrice: opts.tpPrice,
-      slPrice: opts.slPrice,
+      sealedParams: opts.sealedParams,
       portfolioKey: opts.portfolioKey,
+      assetId: opts.assetId,
+      collateralAmount: opts.collateralAmount,
+      collateralBlinding: opts.collateralBlinding,
+      settlementCommitment: opts.settlementCommitment,
       noteProof: opts.noteProof,
       commitProof: opts.commitProof,
     }),
@@ -499,11 +512,13 @@ export async function buildCancelOrderTx(
   ])
 }
 
-/** Pure op-builder: cancel a position on the perp engine and credit refund to a shielded note. */
+/** Pure op-builder: cancel a position on the perp engine and credit refund to a shielded note. TEE-only. */
 export function cancelPositionToNoteCall(opts: {
   positionCmt: string
   cancelNullifier: string
   recipientNote: string
+  refundAmount: bigint
+  refundBlinding: string  // hex32 — blinding for the recipient note amount_commitment
   cancelProof: xdr.ScVal
 }): ContractCall {
   return {
@@ -513,12 +528,14 @@ export function cancelPositionToNoteCall(opts: {
       bytes32ToScVal(opts.positionCmt),
       bytes32ToScVal(opts.cancelNullifier),
       bytes32ToScVal(opts.recipientNote),
+      i128ToScVal(opts.refundAmount),
+      bytes32ToScVal(opts.refundBlinding),
       opts.cancelProof,
     ],
   }
 }
 
-/** Cancel an open position; collateral refunds to a shielded note. Requires an OrderCancel proof. */
+/** Cancel an open position; collateral refunds to a shielded note. TEE-only — use TEE relay endpoint instead. */
 export async function buildCancelPositionTx(
   sourcePublicKey: string,
   opts: Parameters<typeof cancelPositionToNoteCall>[0],

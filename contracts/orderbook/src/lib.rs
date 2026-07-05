@@ -4,7 +4,7 @@
 use soroban_sdk::{
     contract, contractimpl, contracttype,
     crypto::bn254::{Bn254Fr, Bn254G1Affine as G1Affine, Bn254G2Affine as G2Affine},
-    BytesN, Env, Vec,
+    Bytes, BytesN, Env, Vec,
 };
 use types::{Groth16Error, Groth16Proof, OrderMeta, OrderStatus, TimeInForce};
 
@@ -94,23 +94,13 @@ impl Orderbook {
         env: Env,
         commitment: BytesN<32>,
         portfolio_key: BytesN<32>,
-        hint_price: u64,
-        hint_side: u64,
-        hint_size: u64,
-        hint_leverage: u64,
+        encrypted_hints: Bytes,
         revealed: u64,
         tif: TimeInForce,
         expiry_ledger: u64,
         asset_id: BytesN<32>,
         proof: Groth16Proof,
     ) {
-        if tif == TimeInForce::GTD && expiry_ledger == 0 {
-            panic!("Orderbook: GTD order requires expiry_ledger > 0");
-        }
-        if tif != TimeInForce::GTD && expiry_ledger != 0 {
-            panic!("Orderbook: expiry_ledger only valid for GTD orders");
-        }
-
         let order_key = DataKey::Order(commitment.clone());
         if env.storage().persistent().has(&order_key) {
             panic!("Orderbook: commitment already exists");
@@ -127,10 +117,7 @@ impl Orderbook {
         }
 
         let meta = OrderMeta {
-            hint_price,
-            hint_side,
-            hint_size,
-            hint_leverage,
+            encrypted_hints,
             revealed,
             asset_id,
             status: OrderStatus::Open,
@@ -147,15 +134,7 @@ impl Orderbook {
         #[allow(deprecated)]
         env.events().publish(
             (soroban_sdk::symbol_short!("place"),),
-            (
-                commitment,
-                hint_price,
-                hint_side,
-                hint_size,
-                hint_leverage,
-                revealed,
-                meta.created_at,
-            ),
+            (commitment, revealed, meta.created_at),
         );
     }
 
@@ -317,10 +296,7 @@ mod test {
     ) {
         env.as_contract(cid, || {
             let meta = OrderMeta {
-                hint_price: 100,
-                hint_side: 0,
-                hint_size: 1000,
-                hint_leverage: 5,
+                encrypted_hints: Bytes::from_array(env, &[0u8; 64]),
                 revealed: 15,
                 asset_id: BytesN::from_array(env, &[0u8; 32]),
                 status: OrderStatus::Open,

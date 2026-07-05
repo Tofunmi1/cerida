@@ -1,9 +1,16 @@
 use crate::db::SecretStore;
 use crate::log;
 use crate::stellar;
+use anyhow::Result;
+use rand::Rng;
+use serde_json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+// ── Constants ───────────────────────────────────────────────────────
+const MAINTENANCE_MARGIN_BPS: i128 = 500; // 5%
+
+/// Spawn the liquidation scanner thread.
 pub fn spawn(
     store: Arc<SecretStore>,
     perp_id: String,
@@ -21,44 +28,21 @@ pub fn spawn(
 
             if let Ok(commitments) = store.list() {
                 for cmt in commitments {
+                    // Skip non-position entries (notes, etc.)
+                    if !cmt.starts_with("pos_") {
+                        continue;
+                    }
+                    let actual_cmt = &cmt[4..]; // strip "pos_" prefix
                     checked += 1;
-                    match stellar::submit_liquidate(&perp_id, &cmt) {
-                        Ok(()) => {
+                    match check_and_liquidate(&perp_id, actual_cmt, &store) {
+                        Ok(Some(tx_hash)) => {
                             liq += 1;
-                            log::info!(
-                                "Liquidated position",
-                                "cmt",
-                                &cmt[..16],
-                                "scan",
-                                scan_count
-                            );
+                            log::info!("Liquidated position", "cmt", &actual_cmt[..16], "tx", &tx_hash[..16]);
                         }
+                        Ok(None) => {} // not liquidatable
                         Err(e) => {
-                            let msg = e.to_string().to_lowercase();
-                            if msg.contains("not under-collateralized")
-                                || msg.contains("can only liquidate a matched")
-                                || msg.contains("position not found")
-                                || msg.contains("solvent")
-                                || msg.contains("must be matched")
-                            {
-                                // Healthy — not an error
-                                log::debug!(
-                                    "Position healthy, skipping liquidation",
-                                    "cmt",
-                                    &cmt[..16],
-                                    "reason",
-                                    &msg[..msg.len().min(80)]
-                                );
-                            } else {
-                                errors += 1;
-                                log::warning!(
-                                    "Liquidation error",
-                                    "cmt",
-                                    &cmt[..16],
-                                    "err",
-                                    e.to_string()
-                                );
-                            }
+                            errors += 1;
+                            log::error!("Liquidation check failed", "cmt", &actual_cmt[..16], "err", e.to_string());
                         }
                     }
                     std::thread::sleep(Duration::from_secs(3));
@@ -67,18 +51,172 @@ pub fn spawn(
 
             log::info!(
                 "Liquidation scan complete",
-                "scan",
-                scan_count,
-                "checked",
-                checked,
-                "liquidated",
-                liq,
-                "errors",
-                errors,
-                "took",
-                log::duration_secs(&t.elapsed())
+                "scan", scan_count,
+                "checked", checked,
+                "liquidated", liq,
+                "errors", errors,
+                "took", log::duration_secs(&t.elapsed())
             );
             std::thread::sleep(interval);
         }
     })
+}
+
+/// Check if a position should be liquidated and submit liquidation.
+/// Returns Ok(Some(tx_hash)) if liquidated, Ok(None) if not liquidatable.
+pub fn check_and_liquidate(
+    perp_id: &str,
+    commitment: &str,
+    store: &SecretStore,
+) -> Result<Option<String>> {
+    let state = match store.get_position_state(commitment)? {
+        Some(s) => s,
+        None => return Ok(None), // not in TEE DB
+    };
+
+    let oracle_price = fetch_oracle_price(&state.asset_id)?;
+    if oracle_price == 0 {
+        return Ok(None);
+    }
+
+    // Compute PnL and settlement
+    let notional = state.collateral * state.leverage as i128;
+    let pnl = if state.side == 0 {
+        // Long
+        (oracle_price as i128 - state.entry_price as i128) * notional / state.entry_price as i128
+    } else {
+        // Short
+        (state.entry_price as i128 - oracle_price as i128) * notional / state.entry_price as i128
+    };
+    let settlement = state.effective_collateral + pnl;
+
+    // Check if position is solvent
+    let mm = state.effective_collateral * MAINTENANCE_MARGIN_BPS / 10_000;
+    if settlement >= mm {
+        return Ok(None); // solvent
+    }
+
+    // Determine if partial or full liquidation
+    let is_partial = !state.partial_liq_done && settlement > 0;
+
+    if is_partial {
+        // Tier 1: Partial liquidation — liquidate half, keep position alive via settle_partial.
+        let half_collateral = state.effective_collateral / 2;
+        let half_settlement = settlement / 2;
+        let reward = half_collateral * 100 / 10_000; // 1% of freed half-collateral
+        let to_note = (half_settlement - reward).max(0);
+
+        let reward_note = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
+        let reward_blinding = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
+        let new_settlement_commitment = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
+
+        let tx_hash = stellar::relay_settle_partial(
+            perp_id, commitment, &new_settlement_commitment,
+            &reward_note, reward, &reward_blinding,
+        )?;
+
+        // Update stored state — reduce effective collateral, mark partial done
+        let mut new_state = state.clone();
+        new_state.effective_collateral -= half_collateral;
+        new_state.partial_liq_done = true;
+        store.insert_position_state(commitment, &new_state)?;
+
+        let blinding_bytes = hex::decode(&reward_blinding)?;
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&blinding_bytes);
+        store.insert_note_amount(&reward_note, &crate::db::NoteAmount {
+            amount: reward,
+            blinding: arr,
+        })?;
+
+        log::info!("Partial liquidation executed", "cmt", &commitment[..16], "reward", reward, "tx", &tx_hash[..16]);
+        Ok(Some(tx_hash))
+    } else {
+        // Tier 2: Full liquidation
+        let eff = state.effective_collateral;
+        let base_reward = eff * 150 / 10_000; // 1.5%
+        let ins_fee = eff * 50 / 10_000; // 0.5%
+        let total_fees = base_reward + ins_fee;
+
+        let (actual_reward, ins_delta, to_note) = if settlement >= total_fees {
+            (base_reward, ins_fee, settlement - total_fees)
+        } else if settlement >= base_reward {
+            (base_reward, settlement - base_reward, 0i128)
+        } else {
+            let shortfall = base_reward - settlement;
+            // No insurance fund lookup on-chain anymore — TEE decides
+            (settlement, 0i128, 0i128)
+        };
+
+        let settlement_note = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
+        let blinding = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
+
+        let tx_hash = stellar::relay_settle_position(
+            perp_id, commitment, 4, // Liquidated
+            &settlement_note, to_note, &blinding,
+            actual_reward, ins_delta, 0,
+        )?;
+
+        // Remove from TEE DB
+        store.insert_position_state(commitment, &crate::db::PositionState {
+            effective_collateral: 0,
+            ..state
+        })?;
+
+        let blinding_bytes = hex::decode(&blinding)?;
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&blinding_bytes);
+        store.insert_note_amount(&settlement_note, &crate::db::NoteAmount {
+            amount: to_note,
+            blinding: arr,
+        })?;
+
+        log::info!("Full liquidation executed", "cmt", &commitment[..16], "reward", actual_reward);
+        Ok(Some(tx_hash))
+    }
+}
+
+/// Fetch the latest price from Pyth Hermes for the given price feed ID (hex string).
+/// Normalises to 8 decimal places (same precision as Pyth native expo=-8).
+/// Returns 0 if the feed ID is empty or the request fails gracefully.
+fn fetch_oracle_price(price_feed_id: &str) -> Result<u64> {
+    if price_feed_id.is_empty() {
+        return Ok(0);
+    }
+
+    let base = std::env::var("HERMES_URL")
+        .unwrap_or_else(|_| "https://hermes.pyth.network".to_string());
+    let url = format!("{}/v2/updates/price/latest?ids[]={}", base, price_feed_id);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+
+    let resp: serde_json::Value = client.get(&url).send()?.json()?;
+
+    let parsed = resp["parsed"]
+        .as_array()
+        .and_then(|a| a.first())
+        .ok_or_else(|| anyhow::anyhow!("Hermes: no parsed price in response"))?;
+
+    let raw_price: i64 = parsed["price"]["price"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Hermes: missing price string"))?
+        .parse()?;
+
+    let expo: i32 = parsed["price"]["expo"]
+        .as_i64()
+        .ok_or_else(|| anyhow::anyhow!("Hermes: missing expo"))? as i32;
+
+    // Normalise to 8 decimal places: price_8dec = raw_price * 10^(expo+8)
+    let shift = expo + 8;
+    let price_u64 = if raw_price <= 0 {
+        0u64
+    } else if shift >= 0 {
+        (raw_price as u64).saturating_mul(10u64.pow(shift as u32))
+    } else {
+        (raw_price as u64) / 10u64.pow((-shift) as u32)
+    };
+
+    Ok(price_u64)
 }

@@ -78,10 +78,7 @@ impl TryFrom<Bytes> for Groth16Proof {
 #[contracttype]
 #[derive(Clone)]
 pub struct OrderMeta {
-    pub hint_price: u64,
-    pub hint_side: u64,
-    pub hint_size: u64,
-    pub hint_leverage: u64,
+    pub encrypted_hints: Bytes,
     pub revealed: u64,
     pub asset_id: BytesN<32>,
     pub status: OrderStatus,
@@ -122,44 +119,29 @@ pub struct AssetConfig {
     pub active: bool,
 }
 
-// ── Oracle ──────────────────────────────────────────────────────────────
-#[contracttype]
-#[derive(Clone)]
-pub struct OracleConfig {
-    pub admin: Address,
-    pub price: u64,        // latest submitted spot price
-    pub last_updated: u64, // ledger of last update
-    pub heartbeat: u64,    // max ledgers before price is considered stale
-    pub twap: u64,         // arithmetic mean of last TWAP_WINDOW samples
-}
-
-/// A single price observation stored in the TWAP ring buffer.
-#[contracttype]
-#[derive(Clone)]
-pub struct PriceSample {
-    pub price: u64,
-    pub ledger: u64,
-}
-
-// ── Match record linking two matched positions ─────────────────────────
-#[contracttype]
-#[derive(Clone)]
-pub struct MatchRecord {
-    pub cmt_a: BytesN<32>,
-    pub cmt_b: BytesN<32>,
-    pub match_price: u64,
-    pub match_size: u64,
-    pub matched_at: u64,
-    pub closed: bool,
-}
-
-// ── Funding state for perpetual funding rate ───────────────────────────
-#[contracttype]
-#[derive(Clone)]
-pub struct FundingState {
-    pub last_update: u64,
-    pub cumulative: i128,
-    pub rate: i64,
+// ── ShieldedPool cross-contract client ────────────────────────────────
+#[soroban_sdk::contractclient(name = "ShieldedPoolClient")]
+pub trait IShieldedPool {
+    /// Verify a ShieldedWithdraw ZK proof and transfer `denomination` tokens to `recipient_addr`.
+    /// `recipient` is bound in the ZK proof (anti-front-running binding field).
+    fn withdraw(
+        env: Env,
+        root: BytesN<32>,
+        nullifier_hash: BytesN<32>,
+        recipient: BytesN<32>,
+        recipient_addr: Address,
+        proof: Groth16Proof,
+    );
+    /// Like `deposit` but called by a contract that has already transferred `denomination` USDC
+    /// to the pool address. No depositor auth or token transfer — just ZK verify + state update.
+    fn deposit_from_contract(
+        env: Env,
+        commitment: BytesN<32>,
+        new_root: BytesN<32>,
+        proof: Groth16Proof,
+    );
+    /// Fixed denomination for every deposit/withdraw in this pool (in token base units).
+    fn denomination(env: Env) -> u128;
 }
 
 // ── CollateralVault cross-contract client ──────────────────────────────

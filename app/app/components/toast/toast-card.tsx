@@ -121,15 +121,15 @@ export function ToastCard({ toast, onClose }: ToastCardProps) {
       )}
 
       {toast.type !== 'progress' && toast.action && (
-        <div className="flex justify-end mt-1">
+        <div className="flex justify-end mt-2">
           <button
             onClick={() => {
               toast.action?.onClick()
               onClose(toast.id)
             }}
-            className="px-2.5 py-0.5 text-[10px] font-bold text-text-primary bg-transparent border border-border-subtle rounded-[4px] hover:bg-surface-hover transition-all uppercase tracking-wider cursor-pointer"
+            className="px-4 py-1.5 text-[11px] font-bold text-white bg-brand-violet rounded-[6px] hover:bg-brand-violet/80 active:scale-95 transition-all cursor-pointer tracking-wide shadow-sm"
           >
-            {toast.action.label}
+            {toast.action.label} ↗
           </button>
         </div>
       )}

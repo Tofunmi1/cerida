@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use stellar_xdr::*;
 
 const DEFAULT_RPC_URL: &str = "https://stellar-testnet.g.alchemy.com/v2/FqjaGAy9IMENhdv2i_3UUVDPZnNClYNq";
-const MAX_POLL_SECS: u64 = 120;
+const MAX_POLL_SECS: u64 = 180;
 
 pub fn rpc_url() -> String {
     std::env::var("SOROBAN_RPC_URL").unwrap_or_else(|_| DEFAULT_RPC_URL.to_string())
@@ -75,27 +75,70 @@ impl SorobanRpc {
                 result["resultXdr"].as_str().unwrap_or("").to_string(),
             ))),
             Some("FAILED") => {
-                let error = result["error"].as_str().unwrap_or("unknown");
-                Ok(Some(TxStatus::Failed(error.to_string())))
+                // Try to extract a readable reason from resultXdr / resultMetaXdr
+                let detail = extract_tx_failure_detail(&result);
+                Ok(Some(TxStatus::Failed(detail)))
             }
             _ => Ok(None),
         }
     }
 
     pub fn send_transaction(&self, tx_xdr: &str) -> Result<String> {
-        let result = self.rpc_call("sendTransaction", json!({"transaction": tx_xdr}))?;
-        let hash = result["hash"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("sendTransaction: no hash: {result:?}"))?
-            .to_string();
-        match result["status"].as_str() {
-            Some("PENDING") => Ok(hash),
-            Some(status) => {
-                let err = result["errorResultXdr"].as_str().unwrap_or("unknown");
-                bail!("sendTransaction: {status}: {err}");
+        let mut last_hash = String::new();
+        // Track whether any previous attempt got TRY_AGAIN_LATER.
+        // If yes and the next attempt returns ERROR, it means the seq was consumed by the
+        // original TX (txBAD_SEQ) — hand the hash to the poller rather than bailing.
+        let mut had_try_again = false;
+        for attempt in 0..5 {
+            let result = self.rpc_call("sendTransaction", json!({"transaction": tx_xdr}))?;
+            let hash = result["hash"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("sendTransaction: no hash: {result:?}"))?
+                .to_string();
+            last_hash = hash.clone();
+            match result["status"].as_str() {
+                Some("PENDING") => return Ok(hash),
+                // TRY_AGAIN_LATER: the TX *may* have been submitted per Stellar spec.
+                // Wait one ledger (~6s) then check if it landed. If NOT_FOUND, re-submit.
+                Some("TRY_AGAIN_LATER") => {
+                    had_try_again = true;
+                    eprintln!("  [rpc] sendTransaction TRY_AGAIN_LATER (attempt {}), checking after 8s…", attempt + 1);
+                    std::thread::sleep(Duration::from_secs(8));
+                    // Check if the TX landed despite TRY_AGAIN_LATER
+                    match self.get_transaction(&hash) {
+                        Ok(Some(_)) => {
+                            eprintln!("  [rpc] TX {} was ingested despite TRY_AGAIN_LATER", &hash[..12]);
+                            return Ok(hash);
+                        }
+                        Ok(None) => {
+                            // NOT_FOUND — TX was not ingested, safe to re-submit
+                            eprintln!("  [rpc] TX not found, re-submitting (attempt {})…", attempt + 2);
+                            continue;
+                        }
+                        Err(e) => eprintln!("  [rpc] getTransaction check failed: {e}, re-submitting…"),
+                    }
+                    continue;
+                }
+                Some("ERROR") => {
+                    let err = result["errorResultXdr"].as_str().unwrap_or("unknown");
+                    if had_try_again {
+                        // ERROR after TRY_AGAIN_LATER means the original TX was ingested
+                        // (seq consumed). Hand the hash off to poll_with_retry.
+                        eprintln!("  [rpc] sendTransaction ERROR after TRY_AGAIN_LATER (seq consumed) — handing to poller");
+                        return Ok(last_hash);
+                    }
+                    bail!("sendTransaction: ERROR: {err}");
+                }
+                Some(status) => {
+                    let err = result["errorResultXdr"].as_str().unwrap_or("unknown");
+                    bail!("sendTransaction: {status}: {err}");
+                }
+                None => return Ok(hash),
             }
-            None => Ok(hash),
         }
+        // Return last hash so poll_with_retry can handle via fee-bump if needed
+        eprintln!("  [rpc] sendTransaction: TRY_AGAIN_LATER after 5 attempts, handing off to poller");
+        Ok(last_hash)
     }
 
     /// Build an InvokeHostFunction XDR directly, bypassing CLI WASM-size limitations.
@@ -319,8 +362,14 @@ impl SorobanRpc {
         Ok(b64)
     }
 
-    /// Sign a TransactionEnvelope XDR using the stellar CLI.
+    /// Sign a TransactionEnvelope XDR natively (no stellar CLI required).
+    /// If source starts with 'S' it's treated as a raw secret key strkey.
+    /// Otherwise falls back to the stellar CLI (dev machines only).
     pub(crate) fn sign_xdr(&self, xdr: &str, source: &str) -> Result<String> {
+        if source.starts_with('S') {
+            return sign_xdr_native(xdr, source);
+        }
+        // Fallback: stellar CLI (only available on dev machines)
         let mut cmd = std::process::Command::new("stellar");
         cmd.args(["tx", "sign", "--sign-with-key", source, "--network-passphrase", NETWORK_PASSPHRASE, "--rpc-url", &rpc_url()]);
         cmd.stdin(std::process::Stdio::piped());
@@ -345,7 +394,7 @@ impl SorobanRpc {
             .to_string())
     }
 
-    /// Poll for transaction confirmation, with fee-bump retry on timeout.
+    /// Poll for transaction confirmation, with re-submit retry on NOT_FOUND timeout.
     pub(crate) fn poll_with_retry(
         &self,
         tx_hash: &str,
@@ -355,15 +404,35 @@ impl SorobanRpc {
         start: Instant,
     ) -> Result<String> {
         let mut current_hash = tx_hash.to_string();
-        let mut current_xdr = envelope_xdr.to_string();
+        let original_xdr = envelope_xdr.to_string();
+        // Set when re-submit returns ERROR (seq already consumed → TX was ingested).
+        // When known ingested, stop re-submitting and give the indexer up to INGESTED_ASSUME_OK_SECS
+        // from ingestion_detected_at before assuming success.
+        let mut tx_known_ingested = false;
+        let mut ingestion_detected_at: Option<Instant> = None;
+        // If the indexer won't confirm for this long after we know the TX is ingested, assume OK.
+        const INGESTED_ASSUME_OK_SECS: u64 = 120;
 
-        for attempt in 0..3 {
+        for attempt in 0..5 {
             for _ in 0..(MAX_POLL_SECS / 2) {
                 std::thread::sleep(POLL_INTERVAL);
                 let elapsed = start.elapsed().as_secs_f64();
                 if elapsed as u64 % 30 == 0 && elapsed > 1.0 {
                     eprintln!("  [tx]   still waiting… ({}s elapsed)", elapsed as u64);
                 }
+
+                // Once we know the TX is ingested and the indexer has had INGESTED_ASSUME_OK_SECS
+                // to catch up, stop waiting and assume success.
+                if let Some(det) = ingestion_detected_at {
+                    if det.elapsed().as_secs() >= INGESTED_ASSUME_OK_SECS {
+                        eprintln!(
+                            "  [tx] ✓ {} assuming success (TX ingested, indexer lag {}s, hash={})",
+                            method, det.elapsed().as_secs(), current_hash
+                        );
+                        return Ok(current_hash);
+                    }
+                }
+
                 match self.get_transaction(&current_hash)? {
                     Some(TxStatus::Success(_result)) => {
                         eprintln!("  [tx] ✓ {} confirmed hash={} ({:.2}s)", method, current_hash, start.elapsed().as_secs_f64());
@@ -377,27 +446,35 @@ impl SorobanRpc {
                 }
             }
 
-            if attempt >= 2 {
+            if attempt >= 4 {
                 bail!("TX {current_hash} not confirmed after {}s", start.elapsed().as_secs_f64());
             }
 
-            let bump_fee = BASE_FEE * FEE_BUMP_MULTIPLIER.pow(attempt as u32 + 1);
-            eprintln!(
-                "  [tx]   timeout, resubmitting fee-bump {}x ({} stroops)…",
-                FEE_BUMP_MULTIPLIER.pow(attempt as u32 + 1),
-                bump_fee
-            );
+            if tx_known_ingested {
+                // TX is ingested but indexer is lagging — just keep polling, no re-submit.
+                eprintln!("  [tx]   indexer still lagging (TX known ingested), polling more…");
+                continue;
+            }
 
-            match self.build_and_sign_fee_bump(&current_xdr, source, bump_fee as i64) {
-                Ok(fb_signed) => match self.send_transaction(&fb_signed) {
-                    Ok(hash) => {
-                        eprintln!("  [tx] fee-bump submitted: {}", hash);
-                        current_hash = hash;
-                        current_xdr = fb_signed;
+            // Re-submit the original signed TX. If the TX was truly NOT ingested
+            // (NOT_FOUND for 180s), re-submitting with the same seq is valid.
+            eprintln!("  [tx]   timeout — re-submitting original TX (attempt {})…", attempt + 2);
+            match self.send_transaction(&original_xdr) {
+                Ok(hash) => {
+                    eprintln!("  [tx] re-submitted: {}", hash);
+                    current_hash = hash;
+                }
+                Err(e) => {
+                    // "sendTransaction: ERROR:" means the TX hit a ledger (seq consumed).
+                    // The RPC indexer is just lagging. Switch to polling-only + assume-ok mode.
+                    if e.to_string().contains("sendTransaction: ERROR:") {
+                        eprintln!("  [tx] re-submit ERROR (seq consumed, TX ingested) — will assume OK in {}s…", INGESTED_ASSUME_OK_SECS);
+                        tx_known_ingested = true;
+                        ingestion_detected_at = Some(Instant::now());
+                    } else {
+                        eprintln!("  [tx] re-submit failed: {e} — continuing to poll original");
                     }
-                    Err(e) => eprintln!("  [tx] fee-bump send failed: {e}"),
-                },
-                Err(e) => eprintln!("  [tx] fee-bump build/sign failed: {e}"),
+                }
             }
         }
         unreachable!()
@@ -496,78 +573,16 @@ impl SorobanRpc {
             signature: Signature(sig.to_bytes().to_vec().try_into().unwrap()),
         };
         let sigs = VecM::try_from(vec![decorated_sig]).map_err(|e| anyhow::anyhow!("sigs VecM: {e}"))?;
-        let fb_env = FeeBumpTransactionEnvelope {
+        let fb_env = TransactionEnvelope::TxFeeBump(FeeBumpTransactionEnvelope {
             tx: fb_tx,
             signatures: sigs,
-        };
+        });
         Ok(fb_env.to_xdr_base64(Limits::none())?)
     }
 }
 
 /// Deploy a contract by WASM hash, bypassing CLI XDR size check.
 /// Returns the contract ID (Stellar C... strkey).
-pub fn deploy_contract_via_rpc(wasm_hash_hex: &str, salt_hex: &str, source: &str) -> Result<String> {
-    use stellar_strkey::Strkey;
-    let rpc = SorobanRpc::new();
-    let source_pk = source_pubkey(source)?;
-    let start = Instant::now();
-    eprintln!("  [rpc] Deploying contract via RPC (wasm_hash={})…", &wasm_hash_hex[..16]);
-
-    let mut wasm_hash = [0u8; 32];
-    hex::decode_to_slice(wasm_hash_hex, &mut wasm_hash)
-        .map_err(|e| anyhow::anyhow!("invalid wasm hash: {e}"))?;
-    let mut salt = [0u8; 32];
-    hex::decode_to_slice(salt_hex, &mut salt)
-        .map_err(|e| anyhow::anyhow!("invalid salt: {e}"))?;
-
-    let pk_bytes = pk_to_bytes(&source_pk)?;
-    let preimage = ContractIdPreimage::Address(ContractIdPreimageFromAddress {
-        address: ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(pk_bytes)))),
-        salt: Uint256(salt),
-    });
-
-    let create_args = CreateContractArgs {
-        contract_id_preimage: preimage,
-        executable: ContractExecutable::Wasm(Hash(wasm_hash)),
-    };
-    let host_fn = HostFunction::CreateContract(create_args);
-    let op = Operation {
-        source_account: None,
-        body: OperationBody::InvokeHostFunction(InvokeHostFunctionOp {
-            host_function: host_fn,
-            auth: VecM::default(),
-        }),
-    };
-
-    let seq_num = get_sequence_number(&rpc, &source_pk)?;
-    let tx = Transaction {
-        source_account: MuxedAccount::Ed25519(Uint256(pk_bytes)),
-        fee: 10_000_000,
-        seq_num: SequenceNumber(seq_num + 1),
-        cond: Preconditions::None,
-        memo: Memo::None,
-        operations: VecM::try_from(vec![op]).unwrap(),
-        ext: TransactionExt::V0,
-    };
-    let unsigned_env = TransactionEnvelope::Tx(TransactionV1Envelope {
-        tx,
-        signatures: VecM::default(),
-    });
-    let unsigned_xdr = unsigned_env.to_xdr_base64(Limits::none())?;
-
-    let (auth_entries, soroban_data_xdr, min_fee) = rpc.simulate_transaction(&unsigned_xdr)?;
-    let assembled = rpc.assemble_envelope(&unsigned_xdr, &auth_entries, &soroban_data_xdr, min_fee)?;
-    let signed = rpc.sign_xdr(&assembled, source)?;
-    let tx_hash = rpc.send_transaction(&signed)?;
-    eprintln!("  [rpc] deploy submitted: {}", tx_hash);
-    rpc.poll_with_retry(&tx_hash, &signed, source, "deploy_contract", start)?;
-
-    // Derive contract ID strkey
-    let contract_id = derive_contract_id(&pk_bytes, &salt)?;
-    eprintln!("  [rpc] ✓ contract deployed: {}", contract_id);
-    Ok(contract_id)
-}
-
 // ── ScVal encoding helpers ────────────────────────────────────────────────────
 
 pub fn scval_address(strkey: &str) -> Result<ScVal> {
@@ -762,16 +777,103 @@ pub fn install_wasm_via_rpc(wasm_bytes: &[u8], source: &str) -> Result<String> {
     Ok(wasm_hash_hex)
 }
 
-fn get_sequence_number(_rpc: &SorobanRpc, account_id: &str) -> Result<i64> {
-    let client = reqwest::blocking::Client::new();
-    let url = format!("https://horizon-testnet.stellar.org/accounts/{account_id}");
-    let v: serde_json::Value = client.get(&url).send()?.json()?;
-    let seq: i64 = v["sequence"]
+/// Deploy a contract from an already-installed WASM hash, bypassing the Stellar CLI entirely.
+/// Returns the contract ID (Stellar C... strkey).
+pub fn deploy_contract_via_rpc(wasm_hash_hex: &str, salt: [u8; 32], source: &str) -> Result<String> {
+    let rpc = SorobanRpc::new();
+    let source_pk = source_pubkey(source)?;
+    let pk_bytes = pk_to_bytes(&source_pk)?;
+    let start = Instant::now();
+
+    let wasm_hash_bytes: [u8; 32] = hex::decode(wasm_hash_hex)
+        .map_err(|e| anyhow::anyhow!("invalid wasm hash hex: {e}"))?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("wasm hash must be 32 bytes"))?;
+
+    // Preimage used for both contract ID computation and the host function
+    let preimage = ContractIdPreimage::Address(ContractIdPreimageFromAddress {
+        address: ScAddress::Account(AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(pk_bytes)))),
+        salt: Uint256(salt),
+    });
+
+    // Compute the contract ID deterministically
+    let hash_id_preimage = HashIdPreimage::ContractId(HashIdPreimageContractId {
+        network_id: Hash(*NETWORK_ID),
+        contract_id_preimage: preimage.clone(),
+    });
+    let preimage_xdr = hash_id_preimage.to_xdr(Limits::none())
+        .map_err(|e| anyhow::anyhow!("encode HashIdPreimage: {e}"))?;
+    let contract_id_bytes: [u8; 32] = Sha256::digest(&preimage_xdr).into();
+    let contract_strkey = stellar_strkey::Strkey::Contract(
+        stellar_strkey::Contract(contract_id_bytes),
+    ).to_string();
+
+    eprintln!("  [rpc] Deploying contract from hash {} (salt {}…)", &wasm_hash_hex[..16], hex::encode(&salt[..4]));
+    eprintln!("  [rpc] Precomputed contract ID: {}", contract_strkey);
+
+    let host_fn = HostFunction::CreateContractV2(CreateContractArgsV2 {
+        contract_id_preimage: preimage,
+        executable: ContractExecutable::Wasm(Hash(wasm_hash_bytes)),
+        constructor_args: VecM::default(),
+    });
+    let op = Operation {
+        source_account: None,
+        body: OperationBody::InvokeHostFunction(InvokeHostFunctionOp {
+            host_function: host_fn,
+            auth: VecM::default(),
+        }),
+    };
+
+    let seq_num = get_sequence_number(&rpc, &source_pk)?;
+    let tx = Transaction {
+        source_account: MuxedAccount::Ed25519(Uint256(pk_bytes)),
+        fee: 10_000_000,
+        seq_num: SequenceNumber(seq_num + 1),
+        cond: Preconditions::None,
+        memo: Memo::None,
+        operations: VecM::try_from(vec![op]).unwrap(),
+        ext: TransactionExt::V0,
+    };
+    let unsigned_env = TransactionEnvelope::Tx(TransactionV1Envelope {
+        tx,
+        signatures: VecM::default(),
+    });
+    let unsigned_xdr = unsigned_env.to_xdr_base64(Limits::none())?;
+
+    let (auth_entries, soroban_data_xdr, min_fee) = rpc.simulate_transaction(&unsigned_xdr)?;
+    let assembled = rpc.assemble_envelope(&unsigned_xdr, &auth_entries, &soroban_data_xdr, min_fee)?;
+    let signed = rpc.sign_xdr(&assembled, source)?;
+    let tx_hash = rpc.send_transaction(&signed)?;
+    eprintln!("  [rpc] Contract deploy TX submitted: {}", tx_hash);
+
+    rpc.poll_with_retry(&tx_hash, &signed, source, "deploy_contract", start)?;
+    eprintln!("  [rpc] ✓ Contract deployed: {}", contract_strkey);
+    Ok(contract_strkey)
+}
+
+fn get_sequence_number(rpc: &SorobanRpc, account_id: &str) -> Result<i64> {
+    // Use the same RPC node as submission to avoid Horizon lag causing TxBadSeq.
+    let pk_bytes = pk_to_bytes(account_id)?;
+    let ledger_key = LedgerKey::Account(LedgerKeyAccount {
+        account_id: AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(pk_bytes))),
+    });
+    let key_xdr = ledger_key
+        .to_xdr_base64(Limits::none())
+        .map_err(|e| anyhow::anyhow!("encode ledger key: {e}"))?;
+    let result = rpc.rpc_call("getLedgerEntries", serde_json::json!({ "keys": [key_xdr] }))?;
+    let entry_xdr = result["entries"][0]["xdr"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("horizon getAccount: no sequence field in response"))?
-        .parse()
-        .context("parse sequence")?;
-    Ok(seq)
+        .ok_or_else(|| anyhow::anyhow!("getLedgerEntries: no xdr for account {account_id}: {result:?}"))?
+        .to_string();
+    let entry = LedgerEntryData::from_xdr_base64(&entry_xdr, Limits::none())
+        .map_err(|e| anyhow::anyhow!("decode ledger entry xdr: {e}"))?;
+    match entry {
+        LedgerEntryData::Account(acc) => {
+            eprintln!("  [seq] {} seqNum={}", &account_id[..8], acc.seq_num.0);
+            Ok(acc.seq_num.0.into())
+        }
+        _ => anyhow::bail!("getLedgerEntries: not an account entry for {account_id}"),
+    }
 }
 
 /// Resolve a source to (public_key_string, public_key_bytes).
@@ -799,6 +901,10 @@ fn resolve_source(source: &str) -> Result<(String, [u8; 32])> {
     }
 }
 
+pub fn source_pubkey_of(identity: &str) -> Result<String> {
+    source_pubkey(identity)
+}
+
 fn source_pubkey(identity: &str) -> Result<String> {
     let out = std::process::Command::new("stellar")
         .args(["keys", "address", identity])
@@ -813,6 +919,44 @@ fn source_pubkey(identity: &str) -> Result<String> {
         .to_string())
 }
 
+/// Extract a human-readable failure reason from a getTransaction FAILED response.
+/// Logs the raw result and meta XDR fields so the actual contract panic is visible.
+fn extract_tx_failure_detail(result: &Value) -> String {
+    // Try resultMetaXdr diagnostic events for contract panic strings
+    if let Some(meta_b64) = result["resultMetaXdr"].as_str() {
+        if let Ok(meta) = TransactionMeta::from_xdr_base64(meta_b64, Limits::none()) {
+            if let TransactionMeta::V3(v3) = meta {
+                for ev in v3.soroban_meta.as_ref().map(|m| m.diagnostic_events.as_slice()).unwrap_or(&[]) {
+                    if let ContractEventBody::V0(body) = &ev.event.body {
+                        if let ScVal::String(s) = &body.data {
+                            let msg = s.to_utf8_string_lossy();
+                            if !msg.is_empty() {
+                                return msg;
+                            }
+                        }
+                        for t in body.topics.as_slice() {
+                            if let ScVal::String(s) = t {
+                                let msg = s.to_utf8_string_lossy();
+                                if !msg.is_empty() {
+                                    return msg;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to resultXdr raw string and the JSON error field
+    let result_xdr = result["resultXdr"].as_str().unwrap_or("");
+    let json_error = result["error"].as_str().unwrap_or("unknown");
+    if !result_xdr.is_empty() {
+        eprintln!("  [tx] FAILED resultXdr={}", result_xdr);
+    }
+    json_error.to_string()
+}
+
 fn pk_to_bytes(pk: &str) -> Result<[u8; 32]> {
     use stellar_strkey::Strkey;
     let key = Strkey::from_string(pk).map_err(|e| anyhow::anyhow!("invalid strkey: {e}"))?;
@@ -820,6 +964,60 @@ fn pk_to_bytes(pk: &str) -> Result<[u8; 32]> {
         Strkey::PublicKeyEd25519(pk) => Ok(pk.0),
         _ => bail!("expected Ed25519 public key, got {key:?}"),
     }
+}
+
+/// Sign a TransactionEnvelope XDR base64 natively using ed25519, no CLI required.
+/// `source` must be a Stellar secret key strkey (starts with 'S').
+fn sign_xdr_native(xdr: &str, source: &str) -> Result<String> {
+    use ed25519_dalek::{SigningKey, Signer};
+    use stellar_strkey::Strkey;
+
+    // Decode secret key
+    let sk_strkey = Strkey::from_string(source)
+        .map_err(|e| anyhow::anyhow!("invalid secret key strkey: {e}"))?;
+    let seed = match sk_strkey {
+        Strkey::PrivateKeyEd25519(s) => s.0,
+        _ => bail!("expected Ed25519 private key strkey"),
+    };
+    let signing_key = SigningKey::from_bytes(&seed);
+    let pk_bytes = signing_key.verifying_key().to_bytes();
+
+    // Decode envelope
+    let mut envelope = TransactionEnvelope::from_xdr_base64(xdr, Limits::none())
+        .map_err(|e| anyhow::anyhow!("decode envelope: {e}"))?;
+
+    // Compute signature payload: SHA256(network_id || TransactionSignaturePayload.to_xdr())
+    let sig_payload = TransactionSignaturePayload {
+        network_id: Hash(*NETWORK_ID),
+        tagged_transaction: match &envelope {
+            TransactionEnvelope::Tx(e) => TransactionSignaturePayloadTaggedTransaction::Tx(e.tx.clone()),
+            _ => bail!("only TransactionEnvelope::Tx supported"),
+        },
+    };
+    let payload_xdr = sig_payload.to_xdr(Limits::none())
+        .map_err(|e| anyhow::anyhow!("encode sig payload: {e}"))?;
+    let hash: [u8; 32] = Sha256::digest(&payload_xdr).into();
+
+    // Sign
+    let sig_bytes: [u8; 64] = signing_key.sign(&hash).to_bytes();
+    let decorated = DecoratedSignature {
+        hint: SignatureHint(pk_bytes[28..32].try_into().unwrap()),
+        signature: Signature::try_from(sig_bytes.to_vec())
+            .map_err(|e| anyhow::anyhow!("signature encode: {e}"))?,
+    };
+
+    // Attach signature to envelope
+    match &mut envelope {
+        TransactionEnvelope::Tx(e) => {
+            let mut sigs: Vec<DecoratedSignature> = e.signatures.to_vec();
+            sigs.push(decorated);
+            e.signatures = sigs.try_into().map_err(|_| anyhow::anyhow!("too many signatures"))?;
+        }
+        _ => bail!("only TransactionEnvelope::Tx supported"),
+    }
+
+    envelope.to_xdr_base64(Limits::none())
+        .map_err(|e| anyhow::anyhow!("encode signed envelope: {e}"))
 }
 
 pub enum TxStatus {

@@ -19,7 +19,6 @@ use anyhow::Result;
 use e2e::client::ServerClient;
 use rand::Rng;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -46,9 +45,6 @@ pub struct MarketConfig {
 pub struct MmConfig {
     pub tee_addr: String,
     pub markets: Vec<MarketConfig>,
-    /// Shared Pyth price map: pyth_id → scaled price (7 decimals).
-    /// Keyed by the market symbol for easy lookup.
-    pub prices: Arc<RwLock<HashMap<String, u64>>>,
 }
 
 // ── Internal state ─────────────────────────────────────────────────
@@ -141,7 +137,7 @@ pub fn run(config: MmConfig, interval_secs: u64) {
     let client = ServerClient::new(&config.tee_addr);
 
     let mut markets: Vec<Market> = config.markets.iter().map(|cfg| {
-        let mid = read_price(&config.prices, cfg.symbol, cfg.base_price);
+        let mid = cfg.base_price;
         let mut nonce = 0u64;
         eprintln!("  [mm] {} generating pool at mid=${:.2}", cfg.symbol, mid as f64 / 1e7);
         let t = Instant::now();
@@ -177,7 +173,7 @@ pub fn run(config: MmConfig, interval_secs: u64) {
         let client = ServerClient::new(&config.tee_addr);
 
         for mkt in &mut markets {
-            let mid = read_price(&config.prices, mkt.cfg.symbol, mkt.cfg.base_price);
+            let mid = mkt.cfg.base_price;
             refresh_market(mkt, &client, mid, interval_secs);
         }
 
@@ -188,13 +184,6 @@ pub fn run(config: MmConfig, interval_secs: u64) {
 
         thread::sleep(interval);
     }
-}
-
-fn read_price(prices: &Arc<RwLock<HashMap<String, u64>>>, symbol: &str, fallback: u64) -> u64 {
-    prices.read()
-        .ok()
-        .and_then(|m| m.get(symbol).copied())
-        .unwrap_or(fallback)
 }
 
 fn initial_place(mkt: &mut Market, client: &ServerClient) {

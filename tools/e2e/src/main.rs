@@ -8,6 +8,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use rust_circuits;
 
 /// Extract a u64 from a Soroban ScVal debug string like `U64(3900000000)`.
 fn parse_u64_from_scval(s: &str) -> u64 {
@@ -169,6 +170,26 @@ enum Command {
         #[arg(long, default_value = "161803398")]
         settle_secret: u64,
     },
+    /// Full private round-trip: pool.deposit → open_position_from_pool → cancel → withdraw_to_pool → pool.withdraw
+    /// No deposit→position address link on-chain.
+    FullPrivate {
+        /// Pool denomination in token stroops (amount locked per slot)
+        #[arg(long, default_value = "1000000000")]
+        denomination: u128,
+        /// Secret scalar for the deposit pool note (pool_leaf = Poseidon2(secret, nullifier, 30))
+        #[arg(long, default_value = "271828182")]
+        pool_secret: u64,
+        /// Nullifier scalar for the deposit pool note
+        #[arg(long, default_value = "314159265")]
+        pool_nullifier: u64,
+        /// Secret for the position commitment (OrderCommitment circuit)
+        #[arg(long, default_value = "161803398")]
+        pos_secret: u64,
+        /// Secret for the cancel/refund note (NoteSpend circuit)
+        #[arg(long, default_value = "141421356")]
+        cancel_secret: u64,
+    },
+
     /// Full end-to-end via tee-match server (generate proofs via server)
     Server {
         #[arg(long, default_value = "127.0.0.1:9720")]
@@ -217,6 +238,21 @@ enum Command {
     },
     /// Deploy contracts + register 6 markets (GOLD/SPY/TSLA/BTC/ETH/SOL) on testnet
     Deploy,
+
+    /// Deploy ShieldedPool + PerpEngine for the privacy flow and configure the TEE account.
+    /// Use this instead of `deploy` when running the tee-match server in production.
+    DeployPrivate {
+        /// Public key (G...) or identity name of the TEE signing account.
+        /// The tee-match server's STELLAR_RELAYER_SECRET pubkey goes here.
+        #[arg(long)]
+        tee_pubkey: String,
+        /// Pool denomination in token stroops (default 1 USDC = 10_000_000)
+        #[arg(long, default_value = "10000000")]
+        denomination: u128,
+    },
+
+    /// Deploy a fresh orderbook contract and print its contract ID.
+    DeployOrderbook,
 
     /// Install new perp-engine WASM and upgrade the live contract in-place.
     /// Preserves all storage (positions, commitments). Requires protocol admin key.
@@ -330,6 +366,16 @@ fn main() -> Result<()> {
             eprintln!("━━━ ShieldedPool E2E ━━━");
             eprintln!("  pool.deposit → pool.withdraw → perp.deposit_note → open_position");
             stellar::shielded_pool_e2e(&wasm_dir, &keys_dir, denomination, pool_secret, pool_nullifier)?;
+            eprintln!("\n━━━ COMPLETE ({:.2}s) ━━━", global_start.elapsed().as_secs_f64());
+        }
+        Command::FullPrivate { denomination, pool_secret, pool_nullifier, pos_secret, cancel_secret } => {
+            eprintln!("━━━ FullPrivate E2E ━━━");
+            eprintln!("  pool.deposit → open_position_from_pool → cancel → withdraw_to_pool → pool.withdraw");
+            eprintln!("  No on-chain link between depositor address and position commitment.");
+            stellar::full_private_e2e(
+                &wasm_dir, &keys_dir,
+                denomination, pool_secret, pool_nullifier, pos_secret, cancel_secret,
+            )?;
             eprintln!("\n━━━ COMPLETE ({:.2}s) ━━━", global_start.elapsed().as_secs_f64());
         }
         Command::PrivateDeposit { amount, secret } => {
@@ -500,6 +546,95 @@ fn main() -> Result<()> {
             eprintln!("\n━━━ DEPLOY COMPLETE ━━━");
             eprintln!("  Orderbook: {}", orderbook_id);
             eprintln!("  PerpEngine: {}", perp_id);
+        }
+
+        Command::DeployPrivate { tee_pubkey, denomination } => {
+            use e2e::soroban_rpc::{scval_address, SorobanRpc};
+            eprintln!("━━━ Deploy Privacy Contracts ━━━");
+            eprintln!("  TEE account: {}", tee_pubkey);
+            eprintln!("  Denomination: {} stroops", denomination);
+
+            let usdc_sac = stellar::deploy_usdc_sac()?;
+            eprintln!("  ✓ USDC SAC: {}", usdc_sac);
+
+            let pool_wasm = wasm_dir.join("shielded_pool.wasm");
+            let pool_salt: [u8; 32] = rand::random();
+            let pool_wasm_bytes = std::fs::read(&pool_wasm)?;
+            let pool_wasm_hash = e2e::soroban_rpc::install_wasm_via_rpc(&pool_wasm_bytes, stellar::SOURCE)?;
+            let pool_id = e2e::soroban_rpc::deploy_contract_via_rpc(&pool_wasm_hash, pool_salt, stellar::SOURCE)?;
+            eprintln!("  ✓ shielded-pool: {}", pool_id);
+
+            // Initialize pool with USDC token + denomination + empty merkle root
+            let rpc = SorobanRpc::new();
+            let empty_root_hex = {
+                use rust_circuits::{compute_empty_root, fr_to_biguint};
+                format!("{:0>64x}", fr_to_biguint(&compute_empty_root()))
+            };
+            rpc.invoke_xdr(&pool_id, stellar::SOURCE, "initialize", vec![
+                scval_address(&usdc_sac)?,
+                stellar_xdr::ScVal::U128(stellar_xdr::UInt128Parts {
+                    hi: (denomination >> 64) as u64,
+                    lo: denomination as u64,
+                }),
+                e2e::soroban_rpc::scval_bytes32(&empty_root_hex)?,
+            ])?;
+            eprintln!("  ✓ shielded-pool initialized (denom={})", denomination);
+
+            let perp_wasm = wasm_dir.join("perp_engine.wasm");
+            let perp_salt: [u8; 32] = rand::random();
+            let perp_wasm_bytes = std::fs::read(&perp_wasm)?;
+            let perp_wasm_hash = e2e::soroban_rpc::install_wasm_via_rpc(&perp_wasm_bytes, stellar::SOURCE)?;
+            let perp_id = e2e::soroban_rpc::deploy_contract_via_rpc(&perp_wasm_hash, perp_salt, stellar::SOURCE)?;
+            eprintln!("  ✓ perp-engine: {}", perp_id);
+
+            stellar::init_perp_engine(&perp_id, stellar::SOURCE, &usdc_sac)?;
+            eprintln!("  ✓ perp-engine initialized + default asset registered");
+
+            stellar::multi_market_setup(&perp_id)?;
+            eprintln!("  ✓ 6 markets registered");
+
+            // Resolve TEE pubkey (allow identity name or G... address)
+            let tee_pk = if tee_pubkey.starts_with('G') {
+                tee_pubkey.clone()
+            } else {
+                std::process::Command::new("stellar")
+                    .args(["keys", "address", &tee_pubkey])
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("cannot resolve identity '{tee_pubkey}'"))?
+            };
+
+            let admin_pk = stellar::source_pubkey()?;
+            rpc.invoke_xdr(&perp_id, stellar::SOURCE, "set_tee_account", vec![
+                scval_address(&admin_pk)?,
+                scval_address(&tee_pk)?,
+            ])?;
+            eprintln!("  ✓ TEE account set to {}", tee_pk);
+
+            eprintln!("\n━━━ DEPLOY COMPLETE ━━━");
+            eprintln!("  ShieldedPool: {}", pool_id);
+            eprintln!("  PerpEngine:   {}", perp_id);
+            eprintln!("  USDC SAC:     {}", usdc_sac);
+            eprintln!("  TEE account:  {}", tee_pk);
+            eprintln!("\n  keeper flags:");
+            eprintln!("    --perp-id {} --tee-addr <tee-match-2-ip>:9720", perp_id);
+        }
+
+        Command::DeployOrderbook => {
+            eprintln!("━━━ Deploy Orderbook ━━━");
+            let ob_wasm = wasm_dir.join("orderbook.wasm");
+            eprintln!("  WASM: {:?} ({} bytes)", &ob_wasm,
+                std::fs::metadata(&ob_wasm).map(|m| m.len()).unwrap_or(0));
+            let wasm_bytes = std::fs::read(&ob_wasm)?;
+            let wasm_hash = e2e::soroban_rpc::install_wasm_via_rpc(&wasm_bytes, stellar::SOURCE)?;
+            let salt: [u8; 32] = rand::random();
+            let contract_id = e2e::soroban_rpc::deploy_contract_via_rpc(&wasm_hash, salt, stellar::SOURCE)?;
+            eprintln!("  ✓ Orderbook deployed: {}", contract_id);
+            eprintln!("\n  Update .env:");
+            eprintln!("    VITE_ORDERBOOK_ID={}", contract_id);
         }
 
         Command::Upgrade { perp_id } => {
