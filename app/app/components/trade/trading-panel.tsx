@@ -529,8 +529,7 @@ export default function TradingPanel() {
       await tee.relayDepositNote(signedDepositXdr)
       const depositHash = 'queued'
 
-      toast.update(progressId, { description: 'Queuing position relay…', progress: 75 })
-      const relayResult = await tee.relayOpenPosition({
+      const relayParams = {
         perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
         orderbook: import.meta.env.VITE_ORDERBOOK_ID ?? '',
         note_cmt: noteResult.note_cmt,
@@ -542,23 +541,36 @@ export default function TradingPanel() {
         portfolio_key: portfolioKey,
         note_proof: noteResult.proof,
         commit_proof: commitProofResult.proof,
-      })
+      }
+
+      if (orderType === 'market') {
+        toast.update(progressId, { description: 'Queuing position relay…', progress: 75 })
+        await tee.relayOpenPosition(relayParams)
+      } else {
+        toast.update(progressId, { description: 'Placing limit order…', progress: 75 })
+        await tee.relayLimitOrder(relayParams)
+      }
+
       positionsStore.add({ commitment, wallet: publicKey, symbol, side: sideNum, leverage, openedAt: Date.now(), entryPrice: mark, collateral: margin, size: notional, orderType, limitPrice: orderType !== 'market' ? Number(limitPrice) : undefined })
       levels.setEntry(mark)
       refreshBalance()
 
+      const isLimit = orderType !== 'market'
       toast.update(progressId, {
         type: 'success',
-        title: `${actionLabel} ${symbol} opened`,
-        description: `${leverage}x · ${formatUsd(notional)} notional`,
+        title: isLimit ? `${actionLabel} ${symbol} limit placed` : `${actionLabel} ${symbol} opened`,
+        description: isLimit
+          ? `${leverage}x · ${formatUsd(notional)} notional · limit @ ${formatUsd(Number(limitPrice))}`
+          : `${leverage}x · ${formatUsd(notional)} notional`,
         progress: undefined,
-        duration: 45000,
-        loadingAction: true,
+        duration: isLimit ? 8000 : 45000,
+        loadingAction: !isLimit,
       })
       setAmount('')
       setPctSelected(null)
 
-      // Poll for tx hash in background — relay is batched so hash arrives within ~10s
+      // Only poll for tx hash on market orders (limit orders open when matched)
+      if (isLimit) return
       tee.pollPositionTx(commitment).then(txHash => {
         if (!txHash) {
           toast.update(progressId, { loadingAction: false })

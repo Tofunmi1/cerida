@@ -182,6 +182,31 @@ export const tee = {
     return { tx_hash: data.tx_hash! }
   },
 
+  async relayLimitOrder(params: {
+    perp: string
+    orderbook: string
+    note_cmt: string
+    note_null: string
+    position_cmt: string
+    sealed_params?: string
+    collateral_amount: number
+    collateral_blinding: string
+    settlement_commitment: string
+    portfolio_key?: string
+    asset_id?: string
+    note_proof: string
+    commit_proof: string
+  }): Promise<{ queued: boolean; filled: boolean }> {
+    const resp = await fetch(`${TEE_URL}/relay/place-limit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    })
+    const data = await resp.json() as TeeResponse & { queued?: boolean; filled?: boolean }
+    if (!data.ok) throw new Error(data.error ?? 'place-limit failed')
+    return { queued: !!data.queued, filled: !!data.filled }
+  },
+
   async relayOpenPosition(params: {
     perp: string
     orderbook: string

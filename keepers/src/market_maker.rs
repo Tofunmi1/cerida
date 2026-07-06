@@ -221,7 +221,11 @@ fn initial_place(mkt: &mut Market, client: &ServerClient) {
                     placed_at: Instant::now(),
                 });
             }
-            Err(e) => eprintln!("  [mm] {} place side={} lvl={}: {e}", mkt.cfg.symbol, slot.side, slot.level),
+            Err(e) => {
+                eprintln!("  [mm] {} place side={} lvl={}: {e}", mkt.cfg.symbol, slot.side, slot.level);
+                // Return to pool for retry on next tick
+                mkt.pool.push(slot);
+            }
         }
     }
 
@@ -308,6 +312,30 @@ fn refresh_market(mkt: &mut Market, client: &ServerClient, mid: u64, interval_se
         }
     }
     mkt.pool = remaining;
+
+    // Generate fresh commitments for levels still uncovered (pool had no slots for them)
+    let mut rng = rand::thread_rng();
+    for side in [0u64, 1u64] {
+        let covered = if side == 0 { &bid_covered } else { &ask_covered };
+        for level in 1..=LEVELS {
+            if covered[level] { continue; }
+            let price = level_price(mid, mkt.cfg.category, side, level);
+            let size = level_size(mkt.cfg.base_size, level);
+            let secret: u64 = rng.gen();
+            match client.fast_init(side, price, size, mkt.cfg.leverage, mkt.cfg.asset_id, mkt.next_nonce, secret) {
+                Ok(cmt) => {
+                    mkt.next_nonce += 1;
+                    match client.place_order(&cmt, "limit", price, size) {
+                        Ok(_) => {
+                            mkt.active.insert(cmt, ActiveQuote { side, level, price, placed_at: Instant::now() });
+                        }
+                        Err(e) => eprintln!("  [mm] {} fresh place side={side} lvl={level}: {e}", mkt.cfg.symbol),
+                    }
+                }
+                Err(e) => eprintln!("  [mm] {} fast-init side={side} lvl={level}: {e}", mkt.cfg.symbol),
+            }
+        }
+    }
 
     // Replenish pool if low
     let want_pool = POOL_BUFFER * 2;

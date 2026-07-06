@@ -1688,6 +1688,8 @@ pub mod http {
     }
     type DepositQueue = StdArc<std::sync::Mutex<Vec<PendingDeposit>>>;
 
+    type LimitRelayStore = StdArc<std::sync::Mutex<HashMap<String, PendingRelay>>>;
+
     #[derive(Clone)]
     pub struct HttpState {
         pub store: StdArc<db::SecretStore>,
@@ -1698,6 +1700,7 @@ pub mod http {
         relay_queue: RelayQueue,
         deposit_queue: DepositQueue,
         store_for_relay: StdArc<db::SecretStore>,
+        limit_relay_store: LimitRelayStore,
     }
 
     /// How long the TEE waits before flushing and shuffling the relay queue.
@@ -1714,6 +1717,7 @@ pub mod http {
     ) -> Result<()> {
         let relay_queue: RelayQueue = StdArc::new(std::sync::Mutex::new(Vec::new()));
         let deposit_queue: DepositQueue = StdArc::new(std::sync::Mutex::new(Vec::new()));
+        let limit_relay_store: LimitRelayStore = StdArc::new(std::sync::Mutex::new(HashMap::new()));
 
         // Deposit batch task: every RELAY_BATCH_SECS, drain deposit queue, shuffle,
         // and submit each pre-signed XDR. The user signed the TX (Stellar requires it),
@@ -1849,6 +1853,7 @@ pub mod http {
             relay_queue,
             deposit_queue,
             store_for_relay: store.clone(),
+            limit_relay_store,
         };
 
         let app = Router::new()
@@ -1867,6 +1872,10 @@ pub mod http {
             .route(
                 "/relay/open-position",
                 post(handle_http_relay_open_position),
+            )
+            .route(
+                "/relay/place-limit",
+                post(handle_http_relay_place_limit),
             )
             .route(
                 "/relay/open-position-pool",
@@ -2087,6 +2096,120 @@ pub mod http {
         state.relay_queue.lock().unwrap().push(pending);
         log::info!("Note relay queued (batch window)", "cmt", &cmt_preview);
         Json(serde_json::json!({ "ok": true, "queued": true }))
+    }
+
+    /// Place a limit order into the CLOB without immediately opening on-chain.
+    /// The PendingRelay is stored in limit_relay_store keyed by position_cmt.
+    /// When a counter-order crosses, both sides are pushed to relay_queue together.
+    async fn handle_http_relay_place_limit(
+        State(state): State<HttpState>,
+        Json(req): Json<RelayOpenPositionReq>,
+    ) -> Json<serde_json::Value> {
+        let zeros = "0".repeat(64);
+        let portfolio_key = req.portfolio_key.as_deref().unwrap_or(&zeros).to_string();
+        let asset_id = req.asset_id.as_deref().unwrap_or(&zeros).to_string();
+        let cmt = req.position_cmt.clone();
+        let cmt_preview = cmt[..cmt.len().min(16)].to_string();
+
+        // Seal params from stored secrets
+        let sealed_bytes = match state.store.get(&cmt) {
+            Ok(Some(secrets)) => match stellar::seal_from_secrets(&secrets) {
+                Ok(b) => b,
+                Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("seal: {e}") })),
+            },
+            Ok(None) => return Json(serde_json::json!({ "ok": false, "error": "secrets not found" })),
+            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("db: {e}") })),
+        };
+
+        let pending = PendingRelay {
+            perp: req.perp,
+            orderbook: req.orderbook,
+            position_cmt: cmt.clone(),
+            sealed_params: sealed_bytes,
+            collateral_amount: req.collateral_amount,
+            collateral_blinding: req.collateral_blinding,
+            settlement_commitment: req.settlement_commitment,
+            portfolio_key,
+            asset_id,
+            commit_proof: req.commit_proof,
+            note_cmt: req.note_cmt,
+            note_null: req.note_null,
+            note_proof: req.note_proof,
+            pool_id: String::new(),
+            pool_root: String::new(),
+            pool_nullifier_hash: String::new(),
+            pool_spend_proof: String::new(),
+            liq_recipient_note: String::new(),
+        };
+
+        // Store relay params for when this limit order is matched
+        state.limit_relay_store.lock().unwrap().insert(cmt.clone(), pending);
+
+        // Add to CLOB as a limit order
+        let secrets = match state.store.get(&cmt) {
+            Ok(Some(s)) => s,
+            Ok(None) => return Json(serde_json::json!({ "ok": false, "error": "secrets not found" })),
+            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("db: {e}") })),
+        };
+        let order = secrets_to_order(&cmt, &secrets, engine::OrderType::Limit);
+        let asset = order.asset;
+
+        let book_fills = {
+            let mut books = state.books.write().unwrap();
+            let book = books.entry(asset).or_insert_with(engine::OrderBook::new);
+            match book.place(order) {
+                Ok(fills) => fills,
+                Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("clob: {e}") })),
+            }
+        };
+
+        // For each fill: relay whichever sides have PendingRelay.
+        // MM orders have no PendingRelay (no on-chain deposit) — user still gets filled.
+        let filled = !book_fills.is_empty();
+        for fill in &book_fills {
+            let maker_pending = state.limit_relay_store.lock().unwrap().remove(&fill.maker_id);
+            let taker_pending = state.limit_relay_store.lock().unwrap().remove(&cmt);
+            let mut q = state.relay_queue.lock().unwrap();
+            match (maker_pending, taker_pending) {
+                (Some(maker), Some(taker)) => {
+                    // User vs user — open both positions on-chain
+                    q.push(maker);
+                    q.push(taker);
+                    log::info!("limit fill: user vs user, queued both",
+                        "maker", &fill.maker_id[..fill.maker_id.len().min(16)],
+                        "taker", &cmt_preview, "price", fill.price);
+                }
+                (None, Some(taker)) => {
+                    // MM maker — only open the user's (taker) position
+                    q.push(taker);
+                    log::info!("limit fill: mm maker, queued taker only",
+                        "maker", &fill.maker_id[..fill.maker_id.len().min(16)],
+                        "taker", &cmt_preview, "price", fill.price);
+                }
+                (Some(maker), None) => {
+                    // MM taker (shouldn't happen in this path, taker is always the incoming order)
+                    q.push(maker);
+                }
+                (None, None) => {
+                    log::error!("limit fill: neither side has relay params",
+                        "maker", &fill.maker_id[..fill.maker_id.len().min(16)],
+                        "taker", &cmt_preview);
+                }
+            }
+        }
+
+        // Persist book state
+        {
+            let books = state.books.read().unwrap();
+            if let Some(book) = books.get(&asset) {
+                if let Err(e) = state.book_store.save_book(asset, book) {
+                    log::error!("limit place: failed to persist book", "err", e.to_string());
+                }
+            }
+        }
+
+        log::info!("limit order placed", "cmt", &cmt_preview, "filled", filled);
+        Json(serde_json::json!({ "ok": true, "queued": true, "filled": filled }))
     }
 
     #[derive(serde::Deserialize)]
