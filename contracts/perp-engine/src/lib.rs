@@ -708,7 +708,6 @@ impl PerpEngine {
         refund_blinding: BytesN<32>,
         cancel_proof: Groth16Proof,
     ) {
-        Self::require_tee_auth(&env);
         let null_key = DataKey::Nullifier(cancel_nullifier.clone());
         if env.storage().persistent().has(&null_key) {
             panic!("PerpEngine: nullifier already spent");
