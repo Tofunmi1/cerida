@@ -244,4 +244,20 @@ export const tee = {
     }
     return null
   },
+
+  /** Claim funds from a settled/liquidated position. */
+  async relayWithdrawSettlement(params: {
+    perp: string
+    position_cmt: string
+    recipient: string
+  }): Promise<{ tx_hash: string }> {
+    const resp = await fetch(`${TEE_URL}/relay/withdraw-settlement`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    })
+    const data = await resp.json() as TeeResponse
+    if (!data.ok) throw new Error(data.error ?? 'withdraw settlement failed')
+    return { tx_hash: data.tx_hash! }
+  },
 }

@@ -450,6 +450,7 @@ pub fn relay_deposit_note(
     let note_amount = crate::db::NoteAmount {
         amount,
         blinding: blinding_bytes,
+        note_secret: 0,
     };
     store.insert_note_amount(note_commitment, &note_amount)?;
 
@@ -482,4 +483,19 @@ pub fn relay_withdraw_note(
 
     log::info!("Withdraw note relayed", "tx_hash", &tx_hash[..16], "took", log::duration_secs(&start.elapsed()));
     Ok(tx_hash)
+}
+
+pub struct SettlementNote {
+    pub note_cmt: String,
+    pub note_null: String,
+    pub blinding_hex: String,
+    pub note_secret: u64,
+}
+
+pub fn create_settlement_note(amount: i128) -> SettlementNote {
+    let note_secret: u64 = rand::random();
+    let (note_cmt, note_null) = crate::proof::compute_note_cmt_hex(amount as u64, note_secret);
+    let blinding: [u8; 32] = rand::random();
+    let blinding_hex = hex::encode(blinding);
+    SettlementNote { note_cmt, note_null, blinding_hex, note_secret }
 }

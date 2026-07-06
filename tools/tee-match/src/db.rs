@@ -36,6 +36,8 @@ pub struct PositionState {
 pub struct NoteAmount {
     pub amount: i128,
     pub blinding: [u8; 32],
+    #[serde(default)]
+    pub note_secret: u64,
 }
 
 fn book_key(asset: u64) -> [u8; 13] {
@@ -172,6 +174,21 @@ impl SecretStore {
 
     pub fn get_position_tx(&self, cmt_hex: &str) -> anyhow::Result<Option<String>> {
         let key = format!("tx_{}", cmt_hex);
+        match self.tree.get(key.as_bytes())? {
+            Some(value) => Ok(Some(String::from_utf8(value.to_vec())?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn insert_settlement_note(&self, position_cmt: &str, note_cmt: &str) -> anyhow::Result<()> {
+        let key = format!("set_{}", position_cmt);
+        self.tree.insert(key.as_bytes(), note_cmt.as_bytes())?;
+        self.tree.flush()?;
+        Ok(())
+    }
+
+    pub fn get_settlement_note(&self, position_cmt: &str) -> anyhow::Result<Option<String>> {
+        let key = format!("set_{}", position_cmt);
         match self.tree.get(key.as_bytes())? {
             Some(value) => Ok(Some(String::from_utf8(value.to_vec())?)),
             None => Ok(None),

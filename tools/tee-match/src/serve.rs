@@ -715,23 +715,24 @@ fn handle_settle(
 
     let source = req.source.as_deref().unwrap_or("e2e");
     let zero = "0".repeat(64);
-    let settlement_note = hex::encode(rand::random::<[u8; 32]>());
-    let blinding = hex::encode(rand::random::<[u8; 32]>());
 
     let settlement_amount = req.amount.unwrap_or(0) as i128;
     let reward = 0i128;
     let ins_delta = 0i128;
     let bad_debt = 0i128;
+    let sn = stellar::create_settlement_note(settlement_amount);
 
     match stellar::relay_settle_position(
-        perp, cmt, status, &settlement_note, settlement_amount, &blinding,
+        perp, cmt, status, &sn.note_cmt, settlement_amount, &sn.blinding_hex,
         reward, ins_delta, bad_debt,
     ) {
         Ok(tx_hash) => {
-            let _ = store.insert_note_amount(&settlement_note, &db::NoteAmount {
+            let _ = store.insert_note_amount(&sn.note_cmt, &db::NoteAmount {
                 amount: settlement_amount,
-                blinding: hex_to_arr32(&blinding),
+                blinding: hex_to_arr32(&sn.blinding_hex),
+                note_secret: sn.note_secret,
             });
+            let _ = store.insert_settlement_note(cmt, &sn.note_cmt);
             log::info!("Settle position done", "cmt", &cmt[..16], "tx", &tx_hash[..16], "took", log::duration_secs(&start.elapsed()));
             Response {
                 ok: true,
@@ -1300,29 +1301,31 @@ fn do_match_and_settle(
     let settlement_b = state_b.collateral + pnl_b;
 
     // Submit settle_position for both
-    let note_a = hex::encode(rand::random::<[u8; 32]>());
-    let note_b = hex::encode(rand::random::<[u8; 32]>());
-    let blinding_a = hex::encode(rand::random::<[u8; 32]>());
-    let blinding_b = hex::encode(rand::random::<[u8; 32]>());
+    let sn_a = stellar::create_settlement_note(settlement_a.max(0));
+    let sn_b = stellar::create_settlement_note(settlement_b.max(0));
 
-    stellar::relay_settle_position(perp, cmt_a, 2, &note_a, settlement_a.max(0), &blinding_a, 0, 0, 0).ok()?;
-    stellar::relay_settle_position(perp, cmt_b, 2, &note_b, settlement_b.max(0), &blinding_b, 0, 0, 0).ok()?;
+    stellar::relay_settle_position(perp, cmt_a, 2, &sn_a.note_cmt, settlement_a.max(0), &sn_a.blinding_hex, 0, 0, 0).ok()?;
+    stellar::relay_settle_position(perp, cmt_b, 2, &sn_b.note_cmt, settlement_b.max(0), &sn_b.blinding_hex, 0, 0, 0).ok()?;
 
     // Store note amounts
-    store.insert_note_amount(&note_a, &db::NoteAmount {
+    store.insert_note_amount(&sn_a.note_cmt, &db::NoteAmount {
         amount: settlement_a.max(0),
-        blinding: hex_to_arr32(&blinding_a),
+        blinding: hex_to_arr32(&sn_a.blinding_hex),
+        note_secret: sn_a.note_secret,
     }).ok()?;
-    store.insert_note_amount(&note_b, &db::NoteAmount {
+    store.insert_note_amount(&sn_b.note_cmt, &db::NoteAmount {
         amount: settlement_b.max(0),
-        blinding: hex_to_arr32(&blinding_b),
+        blinding: hex_to_arr32(&sn_b.blinding_hex),
+        note_secret: sn_b.note_secret,
     }).ok()?;
+    store.insert_settlement_note(cmt_a, &sn_a.note_cmt).ok()?;
+    store.insert_settlement_note(cmt_b, &sn_b.note_cmt).ok()?;
 
     Some(MatchResultData {
         match_price: format!("{:0>64x}", params.match_price),
         match_size: format!("{:0>64x}", params.match_size),
-        nullifier_a: note_a,
-        nullifier_b: note_b,
+        nullifier_a: sn_a.note_cmt,
+        nullifier_b: sn_b.note_cmt,
     })
 }
 
@@ -1895,6 +1898,10 @@ pub mod http {
             )
             .route("/note-amount", get(handle_http_note_amount))
             .route("/relay/position-tx", get(handle_http_position_tx))
+            .route(
+                "/relay/withdraw-settlement",
+                post(handle_http_relay_withdraw_settlement),
+            )
             .layer(
                 CorsLayer::new()
                     .allow_origin(Any)
@@ -2397,6 +2404,89 @@ pub mod http {
             })),
             Ok(None) => Json(serde_json::json!({ "ok": false, "error": "note not found" })),
             Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct WithdrawSettlementReq {
+        perp: String,
+        position_cmt: String,
+        recipient: String,
+    }
+
+    async fn handle_http_relay_withdraw_settlement(
+        State(state): State<HttpState>,
+        Json(req): Json<WithdrawSettlementReq>,
+    ) -> Json<serde_json::Value> {
+        let cmt_preview = req.position_cmt[..req.position_cmt.len().min(16)].to_string();
+        let keys_dir = state.keys_dir.clone();
+
+        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            // 1. Look up settlement note commitment for this position
+            let note_cmt = state
+                .store
+                .get_settlement_note(&req.position_cmt)?
+                .ok_or_else(|| anyhow::anyhow!("no settlement note found for position"))?;
+
+            // 2. Look up NoteAmount
+            let note = state
+                .store
+                .get_note_amount(&note_cmt)?
+                .ok_or_else(|| anyhow::anyhow!("note amount not found"))?;
+
+            // 3. Regenerate note nullifier from amount + note_secret
+            let (_, note_null_hex) =
+                crate::proof::compute_note_cmt_hex(note.amount as u64, note.note_secret);
+            let blinding_hex = hex::encode(note.blinding);
+
+            // 4. Generate ZK note-spend proof
+            let note_proof_out =
+                crate::proof::gen_note_proof(&keys_dir, note.amount as u64, note.note_secret)?;
+            let proof_json = serde_json::json!({
+                "a": note_proof_out.proof.proof.a,
+                "b": note_proof_out.proof.proof.b,
+                "c": note_proof_out.proof.proof.c,
+            })
+            .to_string();
+
+            // 5. Submit withdraw_note to transfer tokens to recipient
+            stellar::relay_withdraw_note(
+                &req.perp,
+                &note_cmt,
+                &note_null_hex,
+                &req.recipient,
+                note.amount,
+                &blinding_hex,
+                &proof_json,
+            )
+        })
+        .await;
+
+        match result {
+            Ok(Ok(tx_hash)) => {
+                log::info!(
+                    "relay: withdraw-settlement complete",
+                    "cmt",
+                    &cmt_preview,
+                    "tx",
+                    &tx_hash[..16]
+                );
+                Json(serde_json::json!({ "ok": true, "tx_hash": tx_hash }))
+            }
+            Ok(Err(e)) => {
+                log::error!(
+                    "relay: withdraw-settlement failed",
+                    "cmt",
+                    &cmt_preview,
+                    "err",
+                    e.to_string()
+                );
+                Json(serde_json::json!({ "ok": false, "error": e.to_string() }))
+            }
+            Err(e) => Json(serde_json::json!({
+                "ok": false,
+                "error": format!("task panic: {e}")
+            })),
         }
     }
 

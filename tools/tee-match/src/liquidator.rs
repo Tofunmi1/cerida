@@ -106,13 +106,12 @@ pub fn check_and_liquidate(
         let reward = half_collateral * 100 / 10_000; // 1% of freed half-collateral
         let to_note = (half_settlement - reward).max(0);
 
-        let reward_note = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
-        let reward_blinding = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
+        let reward_note = stellar::create_settlement_note(reward);
         let new_settlement_commitment = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
 
         let tx_hash = stellar::relay_settle_partial(
             perp_id, commitment, &new_settlement_commitment,
-            &reward_note, reward, &reward_blinding,
+            &reward_note.note_cmt, reward, &reward_note.blinding_hex,
         )?;
 
         // Update stored state — reduce effective collateral, mark partial done
@@ -121,12 +120,13 @@ pub fn check_and_liquidate(
         new_state.partial_liq_done = true;
         store.insert_position_state(commitment, &new_state)?;
 
-        let blinding_bytes = hex::decode(&reward_blinding)?;
         let mut arr = [0u8; 32];
-        arr.copy_from_slice(&blinding_bytes);
-        store.insert_note_amount(&reward_note, &crate::db::NoteAmount {
+        let decoded = hex::decode(&reward_note.blinding_hex).unwrap_or(vec![0u8; 32]);
+        arr.copy_from_slice(&decoded[..32]);
+        store.insert_note_amount(&reward_note.note_cmt, &crate::db::NoteAmount {
             amount: reward,
             blinding: arr,
+            note_secret: reward_note.note_secret,
         })?;
 
         log::info!("Partial liquidation executed", "cmt", &commitment[..16], "reward", reward, "tx", &tx_hash[..16]);
@@ -148,12 +148,11 @@ pub fn check_and_liquidate(
             (settlement, 0i128, 0i128)
         };
 
-        let settlement_note = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
-        let blinding = hex::encode(rand::thread_rng().gen::<[u8; 32]>());
+        let settlement = stellar::create_settlement_note(to_note);
 
         let tx_hash = stellar::relay_settle_position(
             perp_id, commitment, 4, // Liquidated
-            &settlement_note, to_note, &blinding,
+            &settlement.note_cmt, to_note, &settlement.blinding_hex,
             actual_reward, ins_delta, 0,
         )?;
 
@@ -163,13 +162,15 @@ pub fn check_and_liquidate(
             ..state
         })?;
 
-        let blinding_bytes = hex::decode(&blinding)?;
         let mut arr = [0u8; 32];
-        arr.copy_from_slice(&blinding_bytes);
-        store.insert_note_amount(&settlement_note, &crate::db::NoteAmount {
+        let decoded = hex::decode(&settlement.blinding_hex).unwrap_or(vec![0u8; 32]);
+        arr.copy_from_slice(&decoded[..32]);
+        store.insert_note_amount(&settlement.note_cmt, &crate::db::NoteAmount {
             amount: to_note,
             blinding: arr,
+            note_secret: settlement.note_secret,
         })?;
+        store.insert_settlement_note(commitment, &settlement.note_cmt)?;
 
         log::info!("Full liquidation executed", "cmt", &commitment[..16], "reward", actual_reward);
         Ok(Some(tx_hash))

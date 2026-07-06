@@ -51,6 +51,7 @@ export default function PositionsPanel() {
   const [positions, setPositions] = useState<LivePosition[]>([])
   const [loading, setLoading] = useState(false)
   const [closing, setClosing] = useState<string | null>(null)
+  const [claiming, setClaiming] = useState<string | null>(null)
 
   const handleClose = async (cmt: string, symbol: string) => {
     if (!publicKey) return
@@ -97,6 +98,46 @@ export default function PositionsPanel() {
     }
   }
 
+  const handleClaim = async (cmt: string, symbol: string) => {
+    if (!publicKey) return
+    setClaiming(cmt)
+    const progressId = toast.progress(`Claim ${symbol}`, 10, 'Generating note-spend proof…')
+    try {
+      const { tx_hash } = await tee.relayWithdrawSettlement({
+        perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
+        position_cmt: cmt,
+        recipient: publicKey,
+      })
+
+      positionsStore.remove(cmt)
+      setPositions((prev) => prev.filter((p) => p.stored.commitment !== cmt))
+
+      toast.update(progressId, {
+        type: 'success',
+        title: `${symbol} claimed`,
+        description: 'Settlement funds returned to your wallet',
+        progress: undefined,
+        duration: 8000,
+        action: {
+          label: 'View TX',
+          onClick: () => window.open(`https://stellar.expert/explorer/testnet/tx/${tx_hash}`, '_blank', 'noopener'),
+        },
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('claim settlement error:', { cmt, err, msg })
+      toast.update(progressId, {
+        type: 'error',
+        title: 'Claim failed',
+        description: msg.slice(0, 200),
+        progress: undefined,
+        duration: 8000,
+      })
+    } finally {
+      setClaiming(null)
+    }
+  }
+
   useEffect(() => {
     if (!connected || !publicKey) {
       setPositions([])
@@ -128,6 +169,7 @@ export default function PositionsPanel() {
 
   const pendingOrders = positions.filter((p) => p.stored.orderType === 'limit' && (p.meta === null || p.meta === POSITION_NOT_FOUND))
   const active = positions.filter((p) => p.meta !== POSITION_NOT_FOUND && p.meta !== null && Number(p.meta.status) < 2)
+  const settled = positions.filter((p) => p.meta !== POSITION_NOT_FOUND && p.meta !== null && Number(p.meta.status) >= 2)
 
   return (
     <div className="flex h-full flex-col bg-surface-primary">
@@ -178,7 +220,7 @@ export default function PositionsPanel() {
               <div className="flex h-full items-center justify-center text-[12px] text-text-quaternary">
                 Connect wallet to see positions
               </div>
-            ) : active.length === 0 && !loading ? (
+            ) : active.length === 0 && settled.length === 0 && !loading ? (
               <div className="flex h-full flex-col items-center justify-center gap-1.5">
                 <span className="text-[12px] text-text-quaternary">No open positions</span>
                 <span className="text-[11px] text-text-quaternary opacity-60">
@@ -235,6 +277,55 @@ export default function PositionsPanel() {
                   </div>
                 )
               })
+            )}
+
+            {settled.length > 0 && (
+              <>
+                <div className="flex shrink-0 items-center border-y border-border-subtle/50 px-3 py-1 text-[10px] uppercase tracking-widest text-text-quaternary">
+                  Settled — claim to withdraw
+                </div>
+                {settled.map(({ stored, meta }) => {
+                  const isLong = stored.side === 0
+                  const resolvedMeta = meta !== POSITION_NOT_FOUND ? meta : null
+                  const status = resolvedMeta ? statusLabel(resolvedMeta.status) : null
+                  const cmt = stored.commitment
+                  const cmtShort = `${cmt.slice(0, 6)}…${cmt.slice(-4)}`
+
+                  return (
+                    <div key={cmt} className="border-b border-border-subtle/50 last:border-0">
+                      <div className="grid grid-cols-[1fr_80px_80px_80px_80px_80px_70px_60px_64px] px-3 py-2 text-[11px] tabular-nums hover:bg-surface-hover/30">
+                        <span className="flex items-center gap-1.5">
+                          <span className="font-semibold text-text-secondary">{stored.symbol}</span>
+                          <span className={`rounded-[3px] px-1 py-0.5 text-[9px] font-bold uppercase leading-none ${isLong ? 'bg-bullish-green/15 text-bullish-green' : 'bg-bearish-red/15 text-bearish-red'}`}>
+                            {isLong ? 'Long' : 'Short'} {stored.leverage}×
+                          </span>
+                        </span>
+                        <span className="text-right text-text-quaternary">—</span>
+                        <span className="text-right text-text-quaternary">—</span>
+                        <span className="text-right text-text-quaternary">—</span>
+                        <span className="text-right text-text-quaternary">—</span>
+                        <span className="text-right text-text-quaternary">—</span>
+                        <span className="text-right text-text-quaternary">—</span>
+                        <span className={`text-right text-[10px] font-medium ${resolvedMeta ? status?.color : 'text-text-quaternary'}`}>
+                          {resolvedMeta ? status?.text : '…'}
+                        </span>
+                        <span className="flex items-center justify-end">
+                          <button
+                            onClick={() => handleClaim(cmt, stored.symbol)}
+                            disabled={claiming === cmt}
+                            className="rounded-[5px] px-2 py-0.5 text-[10px] font-medium text-brand-violet hover:bg-brand-violet/10 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {claiming === cmt ? '…' : 'Claim'}
+                          </button>
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 px-3 pb-1.5 text-[10px] text-text-quaternary">
+                        <span className="font-mono opacity-60">{cmtShort}</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </>
             )}
           </div>
         </>

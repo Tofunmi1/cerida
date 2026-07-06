@@ -96,13 +96,17 @@ function Pill({ children, color }: { children: string; color?: string }) {
 
 const TOC = [
   { id: 'what',      label: 'What is Cerida?' },
+  { id: 'privacy',   label: 'Privacy Model' },
   { id: 'how',       label: 'How it works' },
+  { id: 'lifecycle', label: 'Position Lifecycle' },
   { id: 'trading',   label: 'Trading Features' },
   { id: 'circuits',  label: 'ZK Circuits' },
   { id: 'tee',       label: 'TEE Architecture' },
+  { id: 'api',       label: 'API Reference' },
   { id: 'markets',   label: 'Live Markets' },
   { id: 'keepers',   label: 'Keepers' },
-  { id: 'milestones', label: 'Milestones' },
+  { id: 'contract',  label: 'Contract Reference' },
+  { id: 'faq',       label: 'Troubleshooting' },
   { id: 'stack',     label: 'Stack' },
 ]
 
@@ -174,22 +178,68 @@ export default function DocsPage() {
           {/* What is Cerida */}
           <section id="what">
             <H2 id="what">What is Cerida?</H2>
+             <P>
+               Cerida is a privacy-preserving perpetuals DEX built on{' '}
+               <a href="https://stellar.org/soroban" target="_blank" rel="noopener noreferrer" className="text-brand-violet underline-offset-2 hover:underline">
+                 Stellar Soroban
+               </a>
+               . The contract never stores plaintext amounts — every collateral figure, position value, and note balance is stored as a commitment hash. Only the TEE (Trusted Execution Environment) can decrypt and compute the actual values. An observer sees only hashes, nullifiers, and proof verifications.
+             </P>
+
+             <Table
+               head={['Layer', 'Technology', 'What it does']}
+               rows={[
+                 ['ZK Proofs', 'Groth16 (arkworks BN254)', 'Proves order validity, note ownership, and cancellation — without revealing private inputs'],
+                 ['TEE', 'GCP Confidential Space (AMD SEV-SNP)', 'Runs matching engine inside an encrypted enclave. Holds all plaintext values; computes PnL, liquidations, and settlements. Host operator sees nothing'],
+                 ['Settlement', 'Stellar Soroban', 'Stores only commitment hashes and nullifiers. TEE account is the sole authority for settling positions and processing withdrawals. No oracle or funding on-chain'],
+               ]}
+             />
+          </section>
+
+          {/* Privacy Model */}
+          <section id="privacy">
+            <H2 id="privacy">Privacy Model</H2>
             <P>
-              Cerida is a privacy-preserving perpetuals DEX built on{' '}
-              <a href="https://stellar.org/soroban" target="_blank" rel="noopener noreferrer" className="text-brand-violet underline-offset-2 hover:underline">
-                Stellar Soroban
-              </a>
-              . It combines three layers of technology to give traders institutional-grade privacy: no position is ever stored in plaintext, no collateral amount is ever visible, and the chain only sees commitment hashes, nullifiers, and proof verification results.
+              All financially meaningful values on-chain are <strong>commitment hashes</strong> — SHA-256 or Poseidon2 outputs that reveal nothing about the underlying data. The contract never sees plaintext collateral, position values, or note balances.
             </P>
 
             <Table
-              head={['Layer', 'Technology', 'What it does']}
+              head={['On-chain', 'Store as', 'Plaintext lives in']}
               rows={[
-                ['ZK Proofs', 'Groth16 (arkworks BN254)', 'Proves order validity, matching, and collateral spend on-chain — without revealing private inputs'],
-                ['TEE', 'GCP Confidential Space (AMD SEV-SNP)', 'Runs the matching engine inside an encrypted enclave. Inputs are encrypted to the TEE; the host operator sees nothing'],
-                ['Settlement', 'Stellar Soroban (Protocol 26)', 'Verifies Groth16 proofs via BN254 host functions. Stores commitments, nullifiers, and positions'],
+                ['Note balance', '<Code>SHA256(amount || blinding)</Code>', 'TEE DB (sled), keyed by note commitment'],
+                ['Position financials', '<Code>settlement_commitment</Code> (SHA256)', 'TEE DB as PositionState struct'],
+                ['Order parameters (side, price, leverage, size)', '<Code>sealed_params</Code> (AEAD-encrypted blob)', 'TEE memory, AES-256-GCM decrypted'],
+                ['Portfolio membership', '<Code>portfolio_key</Code> (Poseidon2 hash)', 'Derived from secret — TEE can recompute'],
               ]}
             />
+
+            <H3>Sealed position parameters</H3>
+            <P>
+              When a position is opened, the TEE encrypts order details (side, entry price, leverage, size, TP/SL, TIF, expiry) into a <Code>BytesN&lt;92&gt;</Code> blob stored on-chain. In dev builds this is plain big-endian u64 packing. In the secure build, it's AES-256-GCM encrypted under <Code>CER_DEK</Code> — only the same TEE instance can decrypt it. If the DEK changes, existing positions become unreadable.
+            </P>
+
+            <H3>Batch relay privacy</H3>
+            <P>
+              The TEE queues on-chain transactions into an in-memory buffer and flushes every <strong>10 seconds</strong>. Before submission, entries are shuffled (Fisher-Yates). This breaks timing correlation between user HTTP requests and on-chain transactions — deposit and position-open TXs appear in random order, masking which user opened which position.
+            </P>
+
+            <H3>What leaks</H3>
+            <P>
+              Some data is inherently visible on a public blockchain:
+            </P>
+            <ul className="mb-6 space-y-1.5 pl-5 text-[14px] text-text-secondary">
+              {[
+                'Token transfer amounts in deposit/withdraw TXs (blockchain limitation)',
+                'Position status (Open, Matched, Closed, Liquidated)',
+                'Margin mode (Isolated / Cross) and asset ID',
+                'Commitment hashes and nullifiers (but not what they commit to)',
+              ].map((item, i) => (
+                <li key={i} className="flex items-start gap-2">
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500/60" />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
           </section>
 
           {/* How it works */}
@@ -240,15 +290,50 @@ commitment = Poseidon2(h6, secret, domain=7)`}</Pre>
               Public outputs: <Code>(cmt_a, cmt_b, match_price, match_size, nullifier_a, nullifier_b)</Code> — no private order details exposed.
             </P>
 
-            <H3>4. Open Position — relay + note spend</H3>
-            <P>
-              The user signs a single transaction: <Code>deposit_note</Code> (shields collateral) bundled with <Code>place_order</Code> (registers the order commitment). The TEE then acts as a relayer — it holds a separate <Code>STELLAR_RELAYER_SECRET</Code> key and submits <Code>open_position_from_note</Code> on the user's behalf. This requires two Groth16 proofs: a <strong>NoteSpend</strong> proof (proving knowledge of the shielded note secret and collateral amount) and an <strong>OrderCommitment</strong> proof binding the position to the matched order. The note nullifier is published, collateral locked, and the position commitment stored on-chain — with the user's address never appearing in the position-opening transaction.
-            </P>
+             <H3>4. Open Position — relay + note spend</H3>
+             <P>
+               The user signs <Code>deposit_note</Code> (shields collateral). The TEE then acts as a relayer — it holds a separate signing key and submits <Code>place_order</Code> + <Code>open_position_from_note</Code> on the user's behalf. This bundles two Groth16 proofs: a <strong>NoteSpend</strong> proof (proving knowledge of the shielded note) and an <strong>OrderCommitment</strong> proof (binding the position to the order). The note nullifier is published, collateral locked, and the position commitment stored on-chain — with the user's address never appearing in the position-opening transaction.
+             </P>
 
-            <H3>5. Close / Withdraw</H3>
-            <P>
-              Closing a position or withdrawing from the shielded pool requires a NoteSpend proof. The nullifier is checked for uniqueness (replay protection), collateral returned, and the nullifier marked spent permanently.
-            </P>
+             <H3>5. Match &amp; Settle</H3>
+             <P>
+               When two orders cross in the TEE's CLOB, the enclave computes PnL locally using the match price as the oracle. It calls <Code>settle_position</Code> for both sides — a single generic contract function that records the outcome (Closed or Liquidated) and stores settlement notes. The contract only verifies TEE authorization (<Code>require_tee_auth</Code>) and updates status/commitments — it performs no financial computation.
+             </P>
+
+             <H3>6. Claim Settlement</H3>
+             <P>
+               Settled positions generate a settlement note — a commitment to the payout amount. To claim, the user sends a request to the TEE. The TEE generates a NoteSpend ZK proof and submits <Code>withdraw_note</Code> on-chain, sending the payout to the user's wallet.
+             </P>
+           </section>
+
+          {/* Position Lifecycle */}
+          <section id="lifecycle">
+            <H2 id="lifecycle">Position Lifecycle</H2>
+            <Pre>{`1. USER → TEE:     tee.init()         → Groth16 OrderCommitment proof
+2. USER → TEE:     tee.noteProof()    → Groth16 NoteSpend proof
+3. USER signs:     deposit_note TX    → shields collateral on-chain
+4. TEE relay:      place_order        → registers on orderbook
+5. TEE relay:      open_position_from_note  → position stored (committed)
+6. TEE CLOB:       match engine       → finds crossing orders
+7. TEE relay:      settle_position ×2 → closes both positions on-chain
+8. TEE store:      NoteAmount         → payout commitment in DB
+9. FRONTEND:       "Claim" button     → user requests withdrawal
+10. TEE relay:     gen_note_proof     → ZK NoteSpend proof (~9s)
+11. TEE relay:     withdraw_note      → payout sent to user wallet`}</Pre>
+
+            <H3>Liquidation flow</H3>
+            <Pre>{`Liquidator thread (TEE, every N seconds):
+  1. scan all pos_* entries in TEE DB
+  2. fetch oracle price from Pyth Hermes
+  3. compute PnL = notional × (oracle − entry) / entry
+  4. if solvent (settlement ≥ 5% margin) → skip
+  
+  Partial (Tier 1): liquidate half, keep position alive
+    → settle_partial  (marks partial_liq_done = true)
+  
+  Full (Tier 2): liquidate entire position
+    → settle_position(status=4)  (marks Liquidated)
+    → stores settlement NoteAmount in TEE DB`}</Pre>
           </section>
 
           {/* Trading Features */}
@@ -326,21 +411,24 @@ liq_price (short) = entry × (1 + 0.92 / leverage)`}</Pre>
             </P>
 
             <H3>Liquidation</H3>
-            <P>Any address can call <Code>liquidate(position_commitment)</Code>. The contract:</P>
-            <ul className="mb-6 space-y-1.5 pl-5 text-[14px] text-text-secondary">
-              {[
-                <>Reads the position's <Code>collateral</Code>, <Code>leverage</Code>, <Code>entry_price</Code>, and current <Code>mark_price</Code> from oracle</>,
-                <>Computes unrealised PnL: <Code>pnl = (mark − entry) / entry × collateral × leverage × direction</Code></>,
-                <>If <Code>collateral + pnl {'<'} maintenance_margin</Code>, the position is under-collateralised</>,
-                'Liquidator receives a fee; remaining collateral (if any) is returned to the pool',
-                'Position commitment marked Liquidated — nullifier cannot be spent again',
-              ].map((item, i) => (
-                <li key={i} className="flex items-start gap-2">
-                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-violet" />
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
+             <P>
+               A background thread in the TEE scans all tracked positions every N seconds:
+             </P>
+             <ul className="mb-6 space-y-1.5 pl-5 text-[14px] text-text-secondary">
+               {[
+                 <>Fetches live oracle prices from Pyth Hermes for each position's asset</>,
+                 <>Computes unrealised PnL locally: <Code>pnl = notional × (oracle − entry) / entry</Code></>,
+                 <>If <Code>settlement {'<'} maintenance_margin</Code> (5% of collateral), the position is under-collateralised</>,
+                 <><strong>Tier 1 — Partial:</strong> liquidates half the collateral via <Code>settle_partial</Code>. Position stays open with reduced margin</>,
+                 <><strong>Tier 2 — Full:</strong> liquidates the entire position via <Code>settle_position(status=4)</Code>. Settlement note stored in TEE DB for the user to claim</>,
+                 'Liquidator reward: 1% (partial) or 1.5% (full) of collateral. Insurance fund fee: 0.5%',
+               ].map((item, i) => (
+                 <li key={i} className="flex items-start gap-2">
+                   <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-violet" />
+                   <span>{item}</span>
+                 </li>
+               ))}
+             </ul>
           </section>
 
           {/* ZK Circuits */}
@@ -402,31 +490,72 @@ liq_price (short) = entry × (1 + 0.92 / leverage)`}</Pre>
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │               tee-match (Rust binary)                │   │
 │  │                                                      │   │
-│  │   TCP :9720  — encrypted JSON-lines (orders/proofs)  │   │
-│  │   HTTP :9721 — public REST (depth, mark price)       │   │
+│  │   TCP :9720  — keepers (fast-init, place, cancel)    │   │
+│  │   HTTP :9721 — frontend API (proofs, relay, depth)   │   │
 │  │                                                      │   │
-│  │   • CLOB engine (price-time priority, RwLock + WAL)  │   │
-│  │   • Groth16 prover (arkworks, in-process)            │   │
-│  │   • Poseidon2 commitment hash                        │   │
-│  │   • Stellar tx construction + submission             │   │
-│  │   • KMS-backed signing key                           │   │
+│  │   • CLOB engine (price-time priority)                │   │
+│  │   • Groth16 prover (arkworks, ~9s per proof)         │   │
+│  │   • Poseidon2 / SHA256 hashing                       │   │
+│  │   • Liquidator thread (Pyth → PnL → settle_position) │   │
+│  │   • Batch relay (10s shuffle, Fisher-Yates)          │   │
+│  │   • sled DB (secrets, positions, notes, CLOB state)  │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                             │
 │  The host sees: encrypted memory, nothing else.             │
 └─────────────────────────────────────────────────────────────┘`}</Pre>
 
-            <H3>Public HTTP endpoints (port 9721)</H3>
+             <H3>TEE DB structure</H3>
+             <Table
+               head={['Key prefix', 'Value type', 'Stored when']}
+               rows={[
+                 ['<Code>sec_&lt;cmt&gt;</Code>', 'Order secrets (side, price, size, leverage…)', 'User calls /init or /fast-init'],
+                 ['<Code>pos_&lt;cmt&gt;</Code>', 'PositionState (collateral, entry, leverage, side…)', 'Position opened via relay'],
+                 ['<Code>note_&lt;cmt&gt;</Code>', 'NoteAmount (amount, blinding, secret)', 'Settlement, cancel, or deposit'],
+                 ['<Code>set_&lt;cmt&gt;</Code>', 'Settlement note commitment', 'Position settled or liquidated'],
+                 ['<Code>tx_&lt;cmt&gt;</Code>', 'On-chain TX hash', 'Relay TX confirmed'],
+                 ['<Code>book_&lt;asset&gt;</Code>', 'Serialized OrderBook', 'Every CLOB write'],
+                 ['<Code>fill_&lt;id&gt;</Code>', 'Fill entry (taker, maker, price, size)', 'Every match'],
+               ]}
+             />
+          </section>
+
+          {/* API */}
+          <section id="api">
+            <H2 id="api">HTTP API Reference</H2>
+            <P>All endpoints via <Code>/tee/</Code> (Vercel edge rewrite proxy to TEE port 9721).</P>
+
+            <H3>Proof &amp; Commitment</H3>
             <Table
-              head={['Endpoint', 'Returns']}
+              head={['Endpoint', 'Method', 'Purpose', 'Time']}
               rows={[
-                ['GET /get-market?asset=N', '32-level bid/ask depth (prices in 7-decimal scale)'],
-                ['GET /mark-price?asset=N', 'Current oracle mark price'],
-                ['POST /init', 'Stores order secrets in TEE, returns Groth16 commitment proof (~9s)'],
-                ['POST /fast-init', 'Poseidon2 commitment hash only, no proof (<1ms)'],
-                ['POST /commit-proof', 'Generates OrderCommitment Groth16 proof for a stored commitment'],
-                ['POST /note-proof', 'Returns NoteSpend Groth16 proof for a shielded deposit (~9s)'],
-                ['POST /note-cmt', 'Fast Poseidon2 note commitment, no proof'],
-                ['POST /relay/open-position', 'TEE submits open_position_from_note on-chain using its own relayer key — user address never appears in this TX'],
+                ['/init', 'POST', 'Generate commitment + Groth16 proof', '~9s'],
+                ['/fast-init', 'POST', 'Commitment hash only, no proof', '<1ms'],
+                ['/commit-proof', 'POST', 'Groth16 commit proof for existing cmt', '~9s'],
+                ['/cancel-proof', 'POST', 'Groth16 cancel proof + nullifier', '~9s'],
+                ['/note-proof', 'POST', 'NoteSpend Groth16 proof', '~9s'],
+                ['/note-cmt', 'POST', 'Poseidon2 note commitment (no proof)', '<1ms'],
+              ]}
+            />
+
+            <H3>Relay</H3>
+            <Table
+              head={['Endpoint', 'Method', 'Purpose']}
+              rows={[
+                ['/relay/open-position', 'POST', 'Queue market order for batch relay → open_position_from_note'],
+                ['/relay/place-limit', 'POST', 'Store limit order params → CLOB insert; relay on fill'],
+                ['/relay/cancel-position', 'POST', 'cancel_position_to_note + ZK proof + withdraw_note'],
+                ['/relay/deposit-note', 'POST', 'Queue pre-signed deposit XDR for batch submission'],
+                ['/relay/withdraw-settlement', 'POST', 'Claim settled/liquidated funds → withdraw_note'],
+                ['/relay/position-tx', 'GET', 'Poll for on-chain TX hash after relay'],
+              ]}
+            />
+
+            <H3>Data</H3>
+            <Table
+              head={['Endpoint', 'Method', 'Purpose']}
+              rows={[
+                ['/get-market?asset=N', 'GET', '32-level bid/ask depth snapshot'],
+                ['/note-amount?cmt=&lt;hex&gt;', 'GET', 'Look up note amount in TEE DB'],
               ]}
             />
           </section>
@@ -458,67 +587,106 @@ liq_price (short) = entry × (1 + 0.92 / leverage)`}</Pre>
           {/* Keepers */}
           <section id="keepers">
             <H2 id="keepers">Keeper Infrastructure</H2>
-            <P>A keeper binary runs alongside the TEE and handles three jobs:</P>
-
-            <H3>Oracle keeper</H3>
-            <P>
-              Fetches Pyth prices every 30 seconds, submits <Code>set_asset_price</Code> on-chain for each market via <Code>stellar</Code> CLI + Soroban RPC.
-            </P>
+            <P>A separate Rust binary running on its own GCP VM:</P>
 
             <H3>Market maker</H3>
             <P>
-              32 bid levels + 32 ask levels per market. Size grows geometrically: <Code>base_size × 1.08^level</Code>. Spread formula per category:
+              Maintains 32 bid + 32 ask levels across all 7 markets — 448 active quotes. Commits are pre-generated via <Code>/fast-init</Code> to avoid proof latency. Spread and size formulas per category:
             </P>
-            <Pre>{`Crypto markets:  (5 + 3×level) bps
-RWA markets:    (10 + 5×level) bps`}</Pre>
+            <Pre>{`Crypto markets:  (5 + 3×level) bps,  size = base × 1.08^level
+RWA markets:    (10 + 5×level) bps,  size = base × 1.08^level`}</Pre>
             <P>
-              Re-quotes when mid moves {'>'} 0.5% or quotes are stale ({'>'} 5 min TTL). Commitment proofs are pre-generated in a pool to avoid proof latency during re-balancing.
+              Re-quotes when mid moves {'>'} 0.5% or quotes are stale ({'>'} 5 min TTL). Pyth prices fetched every tick (60s default).
+            </P>
+
+            <H3>Oracle keeper</H3>
+            <P>
+              Not yet implemented — Pyth prices are currently fetched directly by the TEE liquidator and the market maker. An on-chain oracle keeper (pushing prices to the contract via <Code>push_oracle_price</Code>) is planned for the pre-Phase 2 contract.
             </P>
 
             <H3>Liquidator</H3>
             <P>
-              Scans a watchlist of matched positions and calls <Code>liquidate()</Code> on any commitment that falls below the maintenance margin threshold.
+              Now runs inside the TEE process itself — not in the keepers binary. A background thread scans all tracked positions, fetches Pyth prices, and calls <Code>settle_position</Code> or <Code>settle_partial</Code> when maintenance margin is breached.
             </P>
           </section>
 
-          {/* Milestones */}
-          <section id="milestones">
-            <H2 id="milestones">Hackathon Milestones</H2>
-            <P>These shipped, they weren't planned.</P>
+          {/* Contract Reference */}
+          <section id="contract">
+            <H2 id="contract">Contract Reference</H2>
+            <P>
+              Main perp-engine contract on Stellar testnet. Deployed contract and TEE account share the same key.
+            </P>
 
-            <div className="space-y-4">
-              {[
-                {
-                  label: 'ZK circuits from scratch',
-                  body: '6 Groth16 circuits in pure Rust (arkworks). No Circom, no frameworks — R1CS constraints hand-written over BN254. Implemented Poseidon2 width-3 sponge natively in ark-r1cs-std. Proved on testnet: verifier accepts valid witnesses, panics on invalid ones.',
-                },
-                {
-                  label: 'Soroban contracts + TEE wired end-to-end',
-                  body: 'Deployed perp-engine, orderbook, and collateral-token to Stellar testnet. Built tee-match — a Rust CLOB engine + Groth16 prover inside a GCP Confidential Space Docker image. Wired the full flow: shielded deposit → commitment proof → order placement → TEE match → on-chain settlement. Real proofs. Real transactions. Verified on-chain.',
-                },
-                {
-                  label: 'Keeper infrastructure',
-                  body: 'Integrated Pyth Network (Hermes REST + WebSocket) for all 7 markets. Built the 32-level algorithmic market maker with geometric size scaling and per-category spread. Oracle keeper submits live prices every 30 seconds. Liquidator watches matched positions automatically.',
-                },
-                {
-                  label: 'Frontend on testnet',
-                  body: 'Full trading UI: Freighter wallet, live 32-level orderbook (TEE depth polling with seeded fallback), Pyth-powered candlestick charts (historical + live 1-min WebSocket ticks), funding rate, shielded deposit/withdraw, real transaction history from Stellar Horizon. Single-TX trade flow: user signs deposit_note + place_order in one shot; the TEE relayer submits open_position_from_note with its own key so the user\'s address never appears in the position-opening TX. End-to-end trade live on testnet with real ZK proofs.',
-                },
-              ].map((m, i) => (
-                <div
-                  key={i}
-                  className="rounded-[10px] border border-border-subtle bg-surface-card p-5"
-                >
-                  <div className="mb-2 flex items-center gap-3">
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-violet text-[11px] font-bold text-white">
-                      {i + 1}
-                    </span>
-                    <span className="text-[14px] font-semibold text-text-primary">{m.label}</span>
-                  </div>
-                  <p className="pl-9 text-[13px] leading-6 text-text-secondary">{m.body}</p>
-                </div>
-              ))}
-            </div>
+            <H3>Authorization model</H3>
+            <Table
+              head={['Function', 'Auth required']}
+              rows={[
+                ['<Code>deposit_note</Code>', '<Code>from.require_auth()</Code> — user signs with wallet'],
+                ['<Code>withdraw_note</Code>', 'ZK NoteSpend proof — TEE relay only'],
+                ['<Code>open_position_from_note</Code>', 'ZK NoteSpend + OrderCommitment proofs'],
+                ['<Code>open_position_from_pool</Code>', 'ZK ShieldedWithdraw + OrderCommitment proofs'],
+                ['<Code>cancel_position_to_note</Code>', 'ZK OrderCancel proof'],
+                ['<Code>settle_position</Code>', '<Code>require_tee_auth</Code> — invoker must be stored TEE account'],
+                ['<Code>settle_partial</Code>', '<Code>require_tee_auth</Code>'],
+                ['<Code>add_margin_from_note</Code>', 'ZK NoteSpend proof + <Code>require_tee_auth</Code>'],
+                ['<Code>fund_insurance</Code>', 'Anyone'],
+                ['<Code>upgrade</Code>', 'Admin <Code>require_auth()</Code>'],
+                ['<Code>set_tee_account</Code>', 'Admin <Code>require_auth()</Code>'],
+              ]}
+            />
+            <P>
+              <Code>require_tee_auth</Code> works via invoker auth: the TX source IS the TEE account, so auth passes without an explicit entry. If <Code>STELLAR_SOURCE_SECRET</Code> changes, <Code>set_tee_account</Code> must be called immediately or all settlements break.
+            </P>
+
+            <H3>PositionMeta (on-chain storage)</H3>
+            <Table
+              head={['Field', 'Visibility']}
+              rows={[
+                ['<Code>status</Code> (Open, Matched, Closed, Cancelled, Liquidated)', 'Public'],
+                ['<Code>margin_mode</Code> (Isolated / Cross)', 'Public'],
+                ['<Code>asset_id</Code>', 'Public'],
+                ['<Code>portfolio_key</Code> (Poseidon2 hash)', 'Commitment — secret hidden'],
+                ['<Code>sealed_params</Code> (AEAD-encrypted order details)', 'Encrypted — TEE only'],
+                ['<Code>settlement_commitment</Code> (SHA256)', 'Commitment — values hidden'],
+                ['<Code>liquidation_recipient_note</Code>', 'Commitment'],
+                ['<Code>partial_liq_done</Code>', 'Public flag'],
+              ]}
+            />
+          </section>
+
+          {/* Troubleshooting */}
+          <section id="faq">
+            <H2 id="faq">Troubleshooting</H2>
+
+            <H3>settle_position auth failure</H3>
+            <P>
+              The contract's stored TEE account doesn't match the signing key. Run <Code>set-tee-account</Code> via the e2e tool to update it. This must be done after every contract upgrade.
+            </P>
+
+            <H3>Order book shows 0 quotes (market maker pool drained)</H3>
+            <P>
+              Keepers can't reach the TEE (port 9720) or fast-init is queued. Restart the keepers container after confirming TEE is up. The pool regenerates on the next tick.
+            </P>
+
+            <H3>Order book prices far from market</H3>
+            <P>
+              Pyth fetch is failing — market maker falls back to hardcoded <Code>base_price</Code>. Check Hermes API connectivity. Prices recover on next tick (60s).
+            </P>
+
+            <H3>Frontend shows positions but Orders tab empty</H3>
+            <P>
+              Limited orders are filtered by <Code>POSITION_NOT_FOUND</Code> (the string <Code>'not_found'</Code>) — distinct from <Code>null</Code>. Confirm the import is present. Pending limit orders are never on-chain until filled.
+            </P>
+
+            <H3>TEE container not starting</H3>
+            <P>
+              Check logs with <Code>sudo docker logs tee-match --tail=50</Code>. Common causes: ZK proving keys missing from <Code>/var/lib/tee-keys/</Code>, or sled DB locked from a prior unclean shutdown (<Code>fuser -k /var/lib/tee-keys/tee-db</Code>).
+            </P>
+
+            <H3>ZK proof generation is slow (~9s)</H3>
+            <P>
+              This is expected. Groth16 proving over BN254 with Poseidon2 takes ~9s per proof. Market orders require two proofs (commitment + note-spend), so ~18s from init to relay queued. The batch relay adds up to 10s more before on-chain confirmation.
+            </P>
           </section>
 
           {/* Architecture */}
@@ -526,29 +694,34 @@ RWA markets:    (10 + 5×level) bps`}</Pre>
             <H2 id="arch">Architecture at a Glance</H2>
             <Pre>{`Browser (Freighter Wallet)
       │
-      │  1. tee.init()      → Groth16 OrderCommitment proof
-      │  2. tee.noteProof() → Groth16 NoteSpend proof
-      │
-      │  User signs 1 TX:  deposit_note + place_order
+      │  1. tee.init()         → Groth16 OrderCommitment proof
+      │  2. tee.noteProof()    → Groth16 NoteSpend proof
+      │  3. deposit_note TX    → shields collateral on-chain (user-signed)
+      │  4. tee.relay()        → queues relay (10s batch, shuffled)
       │
       ▼
 TEE: tee-match  (GCP Confidential Space / AMD SEV-SNP)
       │
       │  CLOB engine matches orders
-      │  /relay/open-position → TEE submits with STELLAR_RELAYER_SECRET
-      │    • open_position_from_note (NoteSpend + OrderCommitment proofs)
-      │    • user's Stellar address never appears in this TX
+      │  Liquidator thread scans positions → settles under-collateralized
+      │  Batch relay: place_order + open_position_from_note
+      │  Match settlement: settle_position ×2
+      │  User address never appears in relay TXs
       │
       ▼
-Stellar Testnet  (Soroban Protocol 26)
+Stellar Testnet  (Soroban)
       │
       │  verify_groth16(proof, public_inputs, vk)
       │    → BN254 multi-scalar multiplication
       │    → BN254 pairing check
       │
-      ├── perp-engine       positions, collateral, oracle prices
+      ├── perp-engine       positions (committed), notes (committed), insurance fund
       ├── orderbook         order commitments, nullifiers
-      └── collateral-token  USDC (mint / burn / transfer)`}</Pre>
+      └── collateral-token  USDC (mint / burn / transfer)
+      
+Keepers VM
+      │  Market maker: 32 levels × 7 markets = 448 quotes
+      │  Pyth Hermes → live prices → quote grid refresh (60s tick)`}</Pre>
           </section>
 
           {/* Stack */}
