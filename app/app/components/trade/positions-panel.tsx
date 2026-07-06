@@ -127,7 +127,6 @@ export default function PositionsPanel() {
   }, [connected, publicKey])
 
   const active = positions.filter((p) => p.meta !== POSITION_NOT_FOUND && (!p.meta || Number(p.meta.status) < 2))
-  const stale = positions.filter((p) => p.meta === POSITION_NOT_FOUND)
 
   return (
     <div className="flex h-full flex-col bg-surface-primary">
@@ -230,22 +229,6 @@ export default function PositionsPanel() {
                   </div>
                 )
               })
-            )}
-            {stale.length > 0 && (
-              <div className="border-t border-border-subtle/50 px-3 py-2">
-                <div className="mb-1.5 text-[10px] text-text-quaternary uppercase tracking-wider">Stale — not on current contract</div>
-                {stale.map(({ stored }) => (
-                  <div key={stored.commitment} className="flex items-center justify-between py-1 text-[11px] text-text-quaternary">
-                    <span className="font-mono">{stored.symbol} {stored.commitment.slice(0, 8)}…</span>
-                    <button
-                      onClick={() => { positionsStore.remove(stored.commitment); setPositions(p => p.filter(x => x.stored.commitment !== stored.commitment)) }}
-                      className="rounded-[4px] px-2 py-0.5 text-[10px] text-text-quaternary hover:text-bearish-red hover:bg-bearish-red/10"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-              </div>
             )}
           </div>
         </>
