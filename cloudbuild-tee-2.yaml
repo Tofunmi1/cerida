@@ -50,18 +50,18 @@ steps:
           --zone us-central1-a --project cer-perp-tee-2 \
           --tunnel-through-iap --quiet \
           --command="
-            docker-credential-gcr configure-docker --registries us-central1-docker.pkg.dev 2>/dev/null || true
-            DOCKER_CONFIG=$$HOME/.docker sudo -E docker pull $$IMAGE
-            docker stop tee-match 2>/dev/null || true
-            docker rm tee-match 2>/dev/null || true
-            RELAYER=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_RELAYER_SECRET -H Metadata-Flavor:Google)
-            SOURCE=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_SOURCE_SECRET -H Metadata-Flavor:Google)
-            docker run -d --name tee-match --restart=always --network=host \
-              -e STELLAR_RELAYER_SECRET=$$RELAYER \
-              -e STELLAR_SOURCE_SECRET=$$SOURCE \
+            TOKEN=\$(curl -sf 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' -H 'Metadata-Flavor: Google' | python3 -c 'import sys,json; print(json.load(sys.stdin)[\"access_token\"])')
+            echo \$$TOKEN | sudo docker login -u oauth2accesstoken --password-stdin us-central1-docker.pkg.dev
+            sudo docker pull $$IMAGE
+            sudo docker stop tee-match 2>/dev/null || true
+            sudo docker rm tee-match 2>/dev/null || true
+            RELAYER=\$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_RELAYER_SECRET -H Metadata-Flavor:Google)
+            SOURCE=\$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/tee-env-STELLAR_SOURCE_SECRET -H Metadata-Flavor:Google)
+            sudo docker run -d --name tee-match --restart=always --network=host \
+              -e STELLAR_RELAYER_SECRET=\$$RELAYER \
+              -e STELLAR_SOURCE_SECRET=\$$SOURCE \
               -v /var/lib/tee-keys:/keys \
               $$IMAGE
-            docker run --rm -v /var/lib/tee-keys:/host-keys --entrypoint='' $$IMAGE sh -c 'cp -rn /keys/. /host-keys/'
             echo Container updated
           "
         echo "tee-match-2 hot-swapped to $$IMAGE"

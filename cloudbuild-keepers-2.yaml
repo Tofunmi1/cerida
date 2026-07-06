@@ -26,18 +26,18 @@ steps:
           --zone us-central1-b --project cer-perp-tee-2 \
           --tunnel-through-iap --quiet \
           --command="
-            which docker || (curl -fsSL https://get.docker.com | sh)
-            gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
-            docker pull $$IMAGE
-            docker stop keepers 2>/dev/null || true
-            docker rm keepers 2>/dev/null || true
-            ORACLE_SECRET=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/keeper-env-ORACLE_SECRET -H Metadata-Flavor:Google)
-            PERP_ID=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/keeper-env-PERP_ID -H Metadata-Flavor:Google)
-            TEE_ADDR=$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/keeper-env-TEE_ADDR -H Metadata-Flavor:Google)
-            docker run -d --name keepers --restart=always \
-              -e ORACLE_SECRET=$$ORACLE_SECRET \
+            TOKEN=\$(curl -sf 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' -H 'Metadata-Flavor: Google' | python3 -c 'import sys,json; print(json.load(sys.stdin)[\"access_token\"])')
+            echo \$$TOKEN | sudo docker login -u oauth2accesstoken --password-stdin us-central1-docker.pkg.dev
+            sudo docker pull $$IMAGE
+            sudo docker stop keepers 2>/dev/null || true
+            sudo docker rm keepers 2>/dev/null || true
+            ORACLE_SECRET=\$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/keeper-env-ORACLE_SECRET -H Metadata-Flavor:Google)
+            PERP_ID=\$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/keeper-env-PERP_ID -H Metadata-Flavor:Google)
+            TEE_ADDR=\$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/keeper-env-TEE_ADDR -H Metadata-Flavor:Google)
+            sudo docker run -d --name keepers --restart=always \
+              -e ORACLE_SECRET=\$$ORACLE_SECRET \
               -e SOROBAN_RPC_URL=https://stellar-testnet.g.alchemy.com/v2/FqjaGAy9IMENhdv2i_3UUVDPZnNClYNq \
-              $$IMAGE --perp-id $$PERP_ID --tee-addr $$TEE_ADDR
+              $$IMAGE --perp-id \$$PERP_ID --tee-addr \$$TEE_ADDR
             echo Keepers container updated
           "
 
