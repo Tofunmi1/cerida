@@ -69,3 +69,4 @@ build/
 out/
 pot_*.ptau
 test_snapshots/
+.vercel
