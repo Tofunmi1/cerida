@@ -262,6 +262,13 @@ enum Command {
         perp_id: String,
     },
 
+    /// Update the TEE account stored in the perp-engine contract to match STELLAR_SOURCE_SECRET.
+    /// Run this on the TEE VM so that settle_position/settle_partial auth passes.
+    SetTeeAccount {
+        #[arg(long)]
+        perp_id: String,
+    },
+
     /// Reset per-asset oracle config + TWAP samples so the deviation guard is bypassed.
     /// Use after fixing inflated base prices so the oracle keeper can push correct prices.
     ResetOracle {
@@ -654,6 +661,20 @@ fn main() -> Result<()> {
                 scval_bytes32(&wasm_hash)?,
             ])?;
             eprintln!("  ✓ contract upgraded to new WASM");
+        }
+
+        Command::SetTeeAccount { perp_id } => {
+            use e2e::soroban_rpc::{scval_address, SorobanRpc};
+            eprintln!("━━━ Set TEE Account ━━━");
+            let source_pk = stellar::source_pubkey()?;
+            eprintln!("  SOURCE pubkey: {}", source_pk);
+            let rpc = SorobanRpc::new();
+            rpc.invoke_xdr(&perp_id, stellar::SOURCE, "set_tee_account", vec![
+                scval_address(&source_pk)?,
+                scval_address(&source_pk)?,
+            ])?;
+            eprintln!("  ✓ TEE account updated to SOURCE key");
+            eprintln!("    settle_position / settle_partial will now pass require_tee_auth");
         }
 
         Command::ResetOracle { perp_id, asset_ids } => {
