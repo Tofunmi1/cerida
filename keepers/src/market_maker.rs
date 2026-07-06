@@ -36,6 +36,7 @@ pub enum Category {
 pub struct MarketConfig {
     pub symbol: &'static str,
     pub asset_id: u64,
+    pub pyth_id: &'static str,  // Pyth feed ID; empty = use base_price only
     pub category: Category,
     pub base_price: u64,   // fallback price in 7-decimal scale
     pub base_size: u64,    // smallest order size (level 1 bid/ask)
@@ -136,8 +137,16 @@ pub fn run(config: MmConfig, interval_secs: u64) {
 
     let client = ServerClient::new(&config.tee_addr);
 
+    // Fetch live prices upfront for initial pool generation
+    let init_ids: Vec<&str> = config.markets.iter().map(|m| m.pyth_id).filter(|id| !id.is_empty()).collect();
+    let init_prices = crate::oracle::fetch(&init_ids).unwrap_or_default();
+
     let mut markets: Vec<Market> = config.markets.iter().map(|cfg| {
-        let mid = cfg.base_price;
+        let mid = if !cfg.pyth_id.is_empty() {
+            init_prices.get(cfg.pyth_id).map(|p| p.scaled).unwrap_or(cfg.base_price)
+        } else {
+            cfg.base_price
+        };
         let mut nonce = 0u64;
         eprintln!("  [mm] {} generating pool at mid=${:.2}", cfg.symbol, mid as f64 / 1e7);
         let t = Instant::now();
@@ -148,6 +157,7 @@ pub fn run(config: MmConfig, interval_secs: u64) {
             cfg: MarketConfig {
                 symbol: cfg.symbol,
                 asset_id: cfg.asset_id,
+                pyth_id: cfg.pyth_id,
                 category: cfg.category,
                 base_price: cfg.base_price,
                 base_size: cfg.base_size,
@@ -172,8 +182,21 @@ pub fn run(config: MmConfig, interval_secs: u64) {
         let t = Instant::now();
         let client = ServerClient::new(&config.tee_addr);
 
+        // Fetch live prices for all markets that have a Pyth feed
+        let pyth_ids: Vec<&str> = markets.iter()
+            .map(|m| m.cfg.pyth_id)
+            .filter(|id| !id.is_empty())
+            .collect();
+        let prices = crate::oracle::fetch(&pyth_ids).unwrap_or_default();
+
         for mkt in &mut markets {
-            let mid = mkt.cfg.base_price;
+            let mid = if !mkt.cfg.pyth_id.is_empty() {
+                prices.get(mkt.cfg.pyth_id)
+                    .map(|p| p.scaled)
+                    .unwrap_or(mkt.cfg.base_price)
+            } else {
+                mkt.cfg.base_price
+            };
             refresh_market(mkt, &client, mid, interval_secs);
         }
 

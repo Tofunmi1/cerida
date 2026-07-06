@@ -4,6 +4,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 mod market_maker;
+pub mod oracle;
 
 use anyhow::Result;
 use clap::Parser;
@@ -116,6 +117,7 @@ fn main() -> Result<()> {
         let mm_markets = MARKETS.iter().map(|m| market_maker::MarketConfig {
             symbol:     m.symbol,
             asset_id:   m.asset_id,
+            pyth_id:    m.pyth_id,
             category:   m.category,
             base_price: m.base_price,
             base_size:  m.base_size,
