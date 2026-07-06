@@ -130,41 +130,30 @@ function aggregateByBucket(levels: OrderBookLevel[]): OrderBookLevel[] {
   return Array.from(map.values())
 }
 
-/// Find a single-row outlier that dwarfs the rest of its side (e.g. a wall).
-function findOutlierIndex(rows: RowData[]): number {
-  if (rows.length < 2) return -1
-  let max = 0
-  let second = 0
-  let idx = -1
-  for (let i = 0; i < rows.length; i++) {
-    const s = rows[i].size
-    if (s > max) {
-      second = max
-      max = s
-      idx = i
-    } else if (s > second) {
-      second = s
-    }
-  }
-  // Treat as outlier if the largest row is more than 5x the next biggest.
-  return max > second * 5 ? idx : -1
+/// Robust per-side scale cap.  A 95th-percentile keeps a giant wall from
+/// squashing every normal row, while still giving that wall a full-width bar.
+function percentile(sortedAsc: number[], p: number): number {
+  if (!sortedAsc.length) return 0
+  const idx = Math.min(sortedAsc.length - 1, Math.floor(p * (sortedAsc.length - 1)))
+  return sortedAsc[idx]!
 }
 
-/// Build cumulative depth for each displayed row, excluding a single outlier.
+/// Build cumulative depth for each displayed row, capping each contribution so
+/// whale walls don't dominate the stepped-area visualization.
 /// `reverse` means row 0 is the outermost level (asks), so we accumulate
 /// from the innermost row backwards.
-function buildScaleCums(rows: RowData[], outlierIdx: number, reverse: boolean): number[] {
+function buildCappedCums(rows: RowData[], reverse: boolean, cap: number): number[] {
   const n = rows.length
   const cums = new Array(n).fill(0)
   let cum = 0
   if (reverse) {
     for (let i = n - 1; i >= 0; i--) {
-      if (i !== outlierIdx) cum += rows[i].size
+      cum += Math.min(rows[i].size, cap)
       cums[i] = cum
     }
   } else {
     for (let i = 0; i < n; i++) {
-      if (i !== outlierIdx) cum += rows[i].size
+      cum += Math.min(rows[i].size, cap)
       cums[i] = cum
     }
   }
@@ -179,16 +168,12 @@ function levelsToRows(levels: OrderBookLevel[], reverse: boolean): RowData[] {
   const withCum = aggregated.map((l) => ({ ...l, cumulative: (cum += l.size) }))
   const display = reverse ? [...withCum].reverse() : withCum
   const sizes = aggregated.map((l) => l.size)
-  const maxSize = Math.max(...sizes)
-  const minSize = Math.min(...sizes)
-  const range = maxSize - minSize
-  // Range-normalize so gradient has contrast even with uniform market-maker sizes.
-  // Only flag as whale if a row is truly a standout outlier (top 10% of range).
-  const whaleCutoff = range > maxSize * 0.1 ? minSize + range * 0.90 : Infinity
+  const sortedSizes = [...sizes].sort((a, b) => a - b)
+  const scaleMax = percentile(sortedSizes, 0.95)
   let idx = 0
   return display.map((l) => {
-    const whale = l.size >= whaleCutoff
-    const heatRatio = range > 0 ? (l.size - minSize) / range : 0.5
+    const whale = scaleMax > 0 && l.size > scaleMax * 1.5
+    const heatRatio = scaleMax > 0 ? Math.min(l.size, scaleMax) / scaleMax : 0.5
     return {
       price: l.price / PRICE_SCALE,
       size: l.size,
@@ -254,7 +239,7 @@ export default function OrderBook() {
   const dataRef = useRef<{
     asks: RowData[]
     bids: RowData[]
-    maxSize: number
+    scaleMax: number
     maxCum: number
     spreadY: number
     colors: { primary: string; tertiary: string; quaternary: string; border: string }
@@ -299,17 +284,11 @@ export default function OrderBook() {
     const displayAsks = asks.slice(0, rowsPerSide)
     const displayBids = bids.slice(0, rowsPerSide)
 
-    const askOutlierIdx = findOutlierIndex(displayAsks)
-    const bidOutlierIdx = findOutlierIndex(displayBids)
+    const allSizes = [...displayAsks, ...displayBids].map((r) => r.size).sort((a, b) => a - b)
+    const scaleMax = percentile(allSizes, 0.95)
 
-    const sizesForScale = [
-      ...displayAsks.filter((_, i) => i !== askOutlierIdx).map((r) => r.size),
-      ...displayBids.filter((_, i) => i !== bidOutlierIdx).map((r) => r.size),
-    ]
-    const maxSize = sizesForScale.length ? Math.max(...sizesForScale) : 0
-
-    const askScaleCums = buildScaleCums(displayAsks, askOutlierIdx, true)
-    const bidScaleCums = buildScaleCums(displayBids, bidOutlierIdx, false)
+    const askScaleCums = buildCappedCums(displayAsks, true, scaleMax)
+    const bidScaleCums = buildCappedCums(displayBids, false, scaleMax)
     const maxCum = Math.max(
       askScaleCums.length ? Math.max(...askScaleCums) : 0,
       bidScaleCums.length ? Math.max(...bidScaleCums) : 0
@@ -326,14 +305,14 @@ export default function OrderBook() {
     }
 
     const spreadY = displayAsks.length * ROW_H
-    dataRef.current = { asks: displayAsks, bids: displayBids, maxSize, maxCum, spreadY, colors }
+    dataRef.current = { asks: displayAsks, bids: displayBids, scaleMax, maxCum, spreadY, colors }
 
     const m = animRef.current
     const seen = new Set<string>()
     const setTarget = (row: RowData, i: number, side: 'ask' | 'bid') => {
       seen.add(row.key)
       const scaleCum = side === 'ask' ? askScaleCums[i] : bidScaleCums[i]
-      const barTgt  = maxSize > 0 ? (row.size / maxSize) * barW : 0
+      const barTgt  = scaleMax > 0 ? (Math.min(row.size, scaleMax) / scaleMax) * barW : 0
       const stepTgt = maxCum > 0 ? (scaleCum / maxCum) * barW : 0
       const ex = m.get(row.key)
       if (ex) {
@@ -360,7 +339,7 @@ export default function OrderBook() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, w, h)
 
-    const { asks, bids, maxSize, maxCum, spreadY, colors } = d
+    const { asks, bids, scaleMax, maxCum, spreadY, colors } = d
     const m = animRef.current
     const barX = HEAT_W + PW + SW
     const barW = Math.max(0, w - HEAT_W - PW - SW)
@@ -423,7 +402,7 @@ export default function OrderBook() {
         ctx.fillRect(0, y, w, ROW_H)
       }
 
-      const heatRatio = maxSize > 0 ? Math.min(1, row.size / maxSize) : 0.5
+      const heatRatio = scaleMax > 0 ? Math.min(1, row.size / scaleMax) : 0.5
       ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, heatRatio)
       ctx.fillRect(0, y, HEAT_W, ROW_H)
 
