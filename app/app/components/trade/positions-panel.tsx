@@ -126,7 +126,7 @@ export default function PositionsPanel() {
     }
   }, [connected, publicKey])
 
-  const pendingOrders = positions.filter((p) => p.stored.orderType === 'limit' && p.meta === null)
+  const pendingOrders = positions.filter((p) => p.stored.orderType === 'limit' && (p.meta === null || p.meta === POSITION_NOT_FOUND))
   const active = positions.filter((p) => p.meta !== POSITION_NOT_FOUND && p.meta !== null && Number(p.meta.status) < 2)
 
   return (
