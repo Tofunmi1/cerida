@@ -103,6 +103,22 @@ fn parse_best(s: &str) -> Option<u64> {
     s.split('x').next()?.parse().ok()
 }
 
+/// Pick a fair midpoint that respects the live book.  If Pyth is inside the
+/// current spread we use it; otherwise we anchor to the book's own mid so a
+/// stale or missing Pyth feed does not push quotes through a wall.
+fn fair_mid(pyth_mid: u64, best_bid: Option<u64>, best_ask: Option<u64>) -> u64 {
+    match (best_bid, best_ask) {
+        (Some(bid), Some(ask)) if bid < ask => {
+            if pyth_mid > bid && pyth_mid < ask {
+                pyth_mid
+            } else {
+                (bid + ask) / 2
+            }
+        }
+        _ => pyth_mid,
+    }
+}
+
 /// Choose a quoting midpoint that does not cross existing book liquidity.
 /// - Asks must be priced strictly above the current best bid.
 /// - Bids must be priced strictly below the current best ask.
@@ -188,11 +204,12 @@ pub fn run(config: MmConfig, interval_secs: u64) {
             cfg.base_price
         };
         let (best_bid, best_ask) = fetch_book_bounds(&client, cfg.asset_id);
-        let bid_mid = quote_mid(mid, 0, best_bid, best_ask);
-        let ask_mid = quote_mid(mid, 1, best_bid, best_ask);
+        let fair = fair_mid(mid, best_bid, best_ask);
+        let bid_mid = quote_mid(fair, 0, best_bid, best_ask);
+        let ask_mid = quote_mid(fair, 1, best_bid, best_ask);
         let mut nonce = 0u64;
         eprintln!("  [mm] {} generating pool at bid_mid=${:.2} ask_mid=${:.2} (pyth ${:.2})",
-            cfg.symbol, bid_mid as f64 / 1e7, ask_mid as f64 / 1e7, mid as f64 / 1e7);
+            cfg.symbol, bid_mid as f64 / 1e7, ask_mid as f64 / 1e7, fair as f64 / 1e7);
         let t = Instant::now();
         let pool = gen_pool(&client, cfg, bid_mid, ask_mid, &mut nonce);
         eprintln!("  [mm] {} pool={} slots in {:.1}s", cfg.symbol, pool.len(), t.elapsed().as_secs_f64());
@@ -301,18 +318,18 @@ fn initial_place(mkt: &mut Market, client: &ServerClient) {
 
 fn refresh_market(mkt: &mut Market, client: &ServerClient, mid: u64, interval_secs: u64) {
     let ttl = Duration::from_secs(QUOTE_TTL_SECS.max(interval_secs * 3));
-    let price_drift = price_change_ratio(mid, mkt.mid_at_gen);
     let (best_bid, best_ask) = fetch_book_bounds(client, mkt.cfg.asset_id);
-    let bid_mid = quote_mid(mid, 0, best_bid, best_ask);
-    let ask_mid = quote_mid(mid, 1, best_bid, best_ask);
+    let fair = fair_mid(mid, best_bid, best_ask);
+    let bid_mid = quote_mid(fair, 0, best_bid, best_ask);
+    let ask_mid = quote_mid(fair, 1, best_bid, best_ask);
 
-    let needs_full_refresh = price_drift > REFRESH_THRESHOLD;
+    let needs_full_refresh = price_change_ratio(fair, mkt.mid_at_gen) > REFRESH_THRESHOLD;
 
     if needs_full_refresh {
-        eprintln!("  [mm] {} price moved {:.2}%, refreshing all quotes (pyth ${:.2}, bid_mid ${:.2}, ask_mid ${:.2})",
+        eprintln!("  [mm] {} price moved {:.2}%, refreshing all quotes (fair ${:.2}, bid_mid ${:.2}, ask_mid ${:.2})",
             mkt.cfg.symbol,
-            price_drift * 100.0,
-            mid as f64 / 1e7,
+            price_change_ratio(fair, mkt.mid_at_gen) * 100.0,
+            fair as f64 / 1e7,
             bid_mid as f64 / 1e7,
             ask_mid as f64 / 1e7,
         );
