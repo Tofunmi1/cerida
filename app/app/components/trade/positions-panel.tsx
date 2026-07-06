@@ -126,7 +126,8 @@ export default function PositionsPanel() {
     }
   }, [connected, publicKey])
 
-  const active = positions.filter((p) => p.meta !== POSITION_NOT_FOUND && (!p.meta || Number(p.meta.status) < 2))
+  const pendingOrders = positions.filter((p) => p.stored.orderType === 'limit' && p.meta === null)
+  const active = positions.filter((p) => p.meta !== POSITION_NOT_FOUND && p.meta !== null && Number(p.meta.status) < 2)
 
   return (
     <div className="flex h-full flex-col bg-surface-primary">
@@ -144,6 +145,11 @@ export default function PositionsPanel() {
             {t === 'Positions' && active.length > 0 && (
               <span className="ml-1.5 rounded-full bg-brand-violet px-1.5 py-0.5 text-[10px] font-bold text-white">
                 {active.length}
+              </span>
+            )}
+            {t === 'Orders' && pendingOrders.length > 0 && (
+              <span className="ml-1.5 rounded-full bg-brand-violet px-1.5 py-0.5 text-[10px] font-bold text-white">
+                {pendingOrders.length}
               </span>
             )}
           </button>
@@ -235,9 +241,61 @@ export default function PositionsPanel() {
       )}
 
       {tab === 'Orders' && (
-        <div className="flex h-full items-center justify-center text-[12px] text-text-quaternary">
-          Open orders appear here once matched on-chain
-        </div>
+        <>
+          <div className="grid grid-cols-[1fr_80px_80px_80px_80px_80px] shrink-0 border-b border-border-subtle px-3 py-1.5 text-[10px] uppercase tracking-widest text-text-quaternary">
+            <span>Market</span>
+            <span className="text-right">Limit</span>
+            <span className="text-right">Size</span>
+            <span className="text-right">Margin</span>
+            <span className="text-right">Status</span>
+            <span className="text-right">Action</span>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto">
+            {!connected ? (
+              <div className="flex h-full items-center justify-center text-[12px] text-text-quaternary">
+                Connect wallet to see orders
+              </div>
+            ) : pendingOrders.length === 0 ? (
+              <div className="flex h-full flex-col items-center justify-center gap-1.5">
+                <span className="text-[12px] text-text-quaternary">No open orders</span>
+                <span className="text-[11px] text-text-quaternary opacity-60">Place a limit order to see it here</span>
+              </div>
+            ) : (
+              pendingOrders.map(({ stored }) => {
+                const isLong = stored.side === 0
+                const cmt = stored.commitment
+                const cmtShort = `${cmt.slice(0, 6)}…${cmt.slice(-4)}`
+                return (
+                  <div key={cmt} className="border-b border-border-subtle/50 last:border-0">
+                    <div className="grid grid-cols-[1fr_80px_80px_80px_80px_80px] px-3 py-2 text-[11px] tabular-nums hover:bg-surface-hover/30">
+                      <span className="flex items-center gap-1.5">
+                        <span className="font-semibold text-text-secondary">{stored.symbol}</span>
+                        <span className={`rounded-[3px] px-1 py-0.5 text-[9px] font-bold uppercase leading-none ${isLong ? 'bg-bullish-green/15 text-bullish-green' : 'bg-bearish-red/15 text-bearish-red'}`}>
+                          {isLong ? 'Long' : 'Short'} {stored.leverage}×
+                        </span>
+                      </span>
+                      <span className="text-right text-text-tertiary">{stored.limitPrice ? formatUsd(stored.limitPrice) : '—'}</span>
+                      <span className="text-right text-text-tertiary">{stored.size > 0 ? formatUsd(stored.size, 0) : '—'}</span>
+                      <span className="text-right text-text-tertiary">{stored.collateral > 0 ? formatUsd(stored.collateral, 0) : '—'}</span>
+                      <span className="text-right text-[10px] font-medium text-text-quaternary animate-pulse">Pending</span>
+                      <span className="flex items-center justify-end">
+                        <button
+                          onClick={() => { positionsStore.remove(cmt); setPositions(p => p.filter(x => x.stored.commitment !== cmt)) }}
+                          className="rounded-[5px] px-2 py-0.5 text-[10px] font-medium text-text-quaternary hover:text-bearish-red hover:bg-bearish-red/10"
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 px-3 pb-1.5 text-[10px] text-text-quaternary">
+                      <span className="font-mono opacity-60">{cmtShort}</span>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </>
       )}
 
       {tab === 'Trades' && (

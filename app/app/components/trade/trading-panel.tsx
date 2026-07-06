@@ -543,7 +543,7 @@ export default function TradingPanel() {
         note_proof: noteResult.proof,
         commit_proof: commitProofResult.proof,
       })
-      positionsStore.add({ commitment, wallet: publicKey, symbol, side: sideNum, leverage, openedAt: Date.now(), entryPrice: mark, collateral: margin, size: notional })
+      positionsStore.add({ commitment, wallet: publicKey, symbol, side: sideNum, leverage, openedAt: Date.now(), entryPrice: mark, collateral: margin, size: notional, orderType, limitPrice: orderType !== 'market' ? Number(limitPrice) : undefined })
       levels.setEntry(mark)
       refreshBalance()
 
