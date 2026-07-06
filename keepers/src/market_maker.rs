@@ -25,6 +25,7 @@ pub const LEVELS: usize = 32;
 const REFRESH_THRESHOLD: f64 = 0.005; // re-quote if mid moves > 0.5%
 const QUOTE_TTL_SECS: u64 = 300;      // cancel quotes older than 5 minutes
 const POOL_BUFFER: usize = LEVELS * 2; // how many extras to pre-generate per side
+const ORDERS_PER_LEVEL: usize = 2;     // multiple orders per price level = deeper displayed buckets
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Category {
@@ -92,6 +93,14 @@ fn level_size(base: u64, level: usize) -> u64 {
     (s as u64).max(1)
 }
 
+fn level_size_jittered<R: Rng>(base: u64, level: usize, rng: &mut R) -> u64 {
+    let base_size = level_size(base, level);
+    // +/- 20% random jitter so the depth ladder looks organic rather than a
+    // perfect geometric curve.  Keeps the same average size over time.
+    let jitter = 0.8 + rng.gen::<f64>() * 0.4;
+    ((base_size as f64) * jitter).max(1.0) as u64
+}
+
 fn level_price(mid: u64, cat: Category, side: u64, level: usize) -> u64 {
     let bps = spread_bps(cat, level);
     let delta = mid.saturating_mul(bps) / 10_000;
@@ -112,9 +121,15 @@ fn fair_mid(pyth_mid: u64, best_bid: Option<u64>, best_ask: Option<u64>) -> u64 
             if pyth_mid > bid && pyth_mid < ask {
                 pyth_mid
             } else {
+                // When Pyth is stale, anchor to the live book's mid so the two
+                // grids stay symmetric around the actual trading range.
                 (bid + ask) / 2
             }
         }
+        // One-sided wall: quote around the wall itself so both grids touch it
+        // and the book looks balanced instead of pushing asks far above/below.
+        (Some(bid), None) => bid,
+        (None, Some(ask)) => ask,
         _ => pyth_mid,
     }
 }
@@ -136,6 +151,25 @@ fn quote_mid(mid: u64, side: u64, best_bid: Option<u64>, best_ask: Option<u64>) 
         }
         _ => mid,
     }
+}
+
+/// Count how many of the desired LEVELS per side are not currently active.
+fn missing_level_count(active: &HashMap<String, ActiveQuote>) -> usize {
+    let mut bid_covered = 0usize;
+    let mut ask_covered = 0usize;
+    for q in active.values() {
+        if q.level == 0 || q.level > LEVELS {
+            continue;
+        }
+        if q.side == 0 {
+            bid_covered += 1;
+        } else {
+            ask_covered += 1;
+        }
+    }
+    let bid_missing = LEVELS.saturating_sub(bid_covered.min(LEVELS));
+    let ask_missing = LEVELS.saturating_sub(ask_covered.min(LEVELS));
+    bid_missing + ask_missing
 }
 
 /// Fetch current best bid/ask from the TEE for a single asset.
@@ -163,21 +197,23 @@ fn gen_pool(
     nonce: &mut u64,
 ) -> Vec<Slot> {
     let mut rng = rand::thread_rng();
-    let mut pool = Vec::with_capacity((LEVELS + POOL_BUFFER) * 2);
+    let mut pool = Vec::with_capacity((LEVELS + POOL_BUFFER) * 2 * ORDERS_PER_LEVEL);
 
     for side in [0u64, 1u64] {
         let mid = if side == 0 { bid_mid } else { ask_mid };
-        // Generate LEVELS active slots + POOL_BUFFER extras
+        // Generate LEVELS active slots + POOL_BUFFER extras, ORDERS_PER_LEVEL per slot
         for level in 1..=(LEVELS + POOL_BUFFER) {
             let price = level_price(mid, cfg.category, side, level.min(LEVELS));
-            let size = level_size(cfg.base_size, level.min(LEVELS));
-            let secret: u64 = rng.gen();
+            for _ in 0..ORDERS_PER_LEVEL {
+                let size = level_size_jittered(cfg.base_size, level.min(LEVELS), &mut rng);
+                let secret: u64 = rng.gen();
 
-            match client.fast_init(side, price, size, cfg.leverage, cfg.asset_id, *nonce, secret) {
-                Ok(cmt) => pool.push(Slot { cmt, side, level, price, size }),
-                Err(e) => eprintln!("  [mm] {} fast-init side={side} lvl={level}: {e}", cfg.symbol),
+                match client.fast_init(side, price, size, cfg.leverage, cfg.asset_id, *nonce, secret) {
+                    Ok(cmt) => pool.push(Slot { cmt, side, level, price, size }),
+                    Err(e) => eprintln!("  [mm] {} fast-init side={side} lvl={level}: {e}", cfg.symbol),
+                }
+                *nonce += 1;
             }
-            *nonce += 1;
         }
     }
 
@@ -187,8 +223,6 @@ fn gen_pool(
 // ── Main loop ──────────────────────────────────────────────────────
 
 pub fn run(config: MmConfig, interval_secs: u64) {
-    let interval = Duration::from_secs(interval_secs);
-
     eprintln!("  [mm] initializing {} markets at {} levels/side", config.markets.len(), LEVELS);
 
     let client = ServerClient::new(&config.tee_addr);
@@ -263,15 +297,22 @@ pub fn run(config: MmConfig, interval_secs: u64) {
 
         let total_active: usize = markets.iter().map(|m| m.active.len()).sum();
         let total_pool: usize = markets.iter().map(|m| m.pool.len()).sum();
-        eprintln!("  [mm] tick #{tick}: active={total_active} pool={total_pool} ({:.1}s)",
+        let max_missing: usize = markets.iter().map(|m| missing_level_count(&m.active)).max().unwrap_or(0);
+        // React faster when an entire side (or equivalent) is missing, otherwise stick to the normal interval.
+        let sleep_secs = if max_missing >= LEVELS {
+            (interval_secs / 6).max(5)
+        } else {
+            interval_secs
+        };
+        eprintln!("  [mm] tick #{tick}: active={total_active} pool={total_pool} missing={max_missing} sleep={sleep_secs}s ({:.1}s)",
             t.elapsed().as_secs_f64());
 
-        thread::sleep(interval);
+        thread::sleep(Duration::from_secs(sleep_secs));
     }
 }
 
 fn initial_place(mkt: &mut Market, client: &ServerClient) {
-    // Place one bid + one ask per level (levels 1..=LEVELS)
+    // Place ORDERS_PER_LEVEL quotes per side per level (levels 1..=LEVELS)
     let mut bid_counts = vec![0usize; LEVELS + 1];
     let mut ask_counts = vec![0usize; LEVELS + 1];
     let mut to_place: Vec<Slot> = Vec::new();
@@ -286,7 +327,7 @@ fn initial_place(mkt: &mut Market, client: &ServerClient) {
             continue;
         }
         let counts = if slot.side == 0 { &mut bid_counts } else { &mut ask_counts };
-        if counts[slot.level] == 0 {
+        if counts[slot.level] < ORDERS_PER_LEVEL {
             counts[slot.level] += 1;
             to_place.push(slot);
         } else {
@@ -375,19 +416,17 @@ fn refresh_market(mkt: &mut Market, client: &ServerClient, mid: u64, interval_se
         mkt.active.remove(cmt);
     }
 
-    // Track which levels are covered
-    let mut bid_covered = vec![false; LEVELS + 1];
-    let mut ask_covered = vec![false; LEVELS + 1];
+    // Track how many quotes each level already has
+    let mut bid_covered = vec![0usize; LEVELS + 1];
+    let mut ask_covered = vec![0usize; LEVELS + 1];
     for q in mkt.active.values() {
         if q.level <= LEVELS {
-            if q.side == 0 { bid_covered[q.level] = true; }
-            else { ask_covered[q.level] = true; }
+            if q.side == 0 { bid_covered[q.level] += 1; }
+            else { ask_covered[q.level] += 1; }
         }
     }
 
-    // Place missing levels from pool.  Pool slots were generated at startup; if their
-    // price no longer matches the current grid they will simply fail to be selected
-    // (each level keeps only one active quote) and get regenerated below.
+    // Place missing quotes from pool (up to ORDERS_PER_LEVEL per level).
     let pool = std::mem::take(&mut mkt.pool);
     let mut remaining = Vec::new();
     for slot in pool {
@@ -396,10 +435,10 @@ fn refresh_market(mkt: &mut Market, client: &ServerClient, mid: u64, interval_se
             continue;
         }
         let covered = if slot.side == 0 { &mut bid_covered } else { &mut ask_covered };
-        if !covered[slot.level] {
+        if covered[slot.level] < ORDERS_PER_LEVEL {
             match client.place_order(&slot.cmt, "limit", slot.price, slot.size) {
                 Ok(_) => {
-                    covered[slot.level] = true;
+                    covered[slot.level] += 1;
                     mkt.active.insert(slot.cmt.clone(), ActiveQuote {
                         side: slot.side,
                         level: slot.level,
@@ -418,27 +457,35 @@ fn refresh_market(mkt: &mut Market, client: &ServerClient, mid: u64, interval_se
     }
     mkt.pool = remaining;
 
-    // Generate fresh commitments for levels still uncovered (pool had no slots for them)
+    // Generate fresh commitments for levels still short (pool had no slots for them)
     let mut rng = rand::thread_rng();
     for side in [0u64, 1u64] {
-        let covered = if side == 0 { &bid_covered } else { &ask_covered };
+        let covered = if side == 0 { &mut bid_covered } else { &mut ask_covered };
         let target_mid = if side == 0 { bid_mid } else { ask_mid };
         for level in 1..=LEVELS {
-            if covered[level] { continue; }
-            let price = level_price(target_mid, mkt.cfg.category, side, level);
-            let size = level_size(mkt.cfg.base_size, level);
-            let secret: u64 = rng.gen();
-            match client.fast_init(side, price, size, mkt.cfg.leverage, mkt.cfg.asset_id, mkt.next_nonce, secret) {
-                Ok(cmt) => {
-                    mkt.next_nonce += 1;
-                    match client.place_order(&cmt, "limit", price, size) {
-                        Ok(_) => {
-                            mkt.active.insert(cmt, ActiveQuote { side, level, price, placed_at: Instant::now() });
+            while covered[level] < ORDERS_PER_LEVEL {
+                let price = level_price(target_mid, mkt.cfg.category, side, level);
+                let size = level_size_jittered(mkt.cfg.base_size, level, &mut rng);
+                let secret: u64 = rng.gen();
+                match client.fast_init(side, price, size, mkt.cfg.leverage, mkt.cfg.asset_id, mkt.next_nonce, secret) {
+                    Ok(cmt) => {
+                        mkt.next_nonce += 1;
+                        match client.place_order(&cmt, "limit", price, size) {
+                            Ok(_) => {
+                                covered[level] += 1;
+                                mkt.active.insert(cmt, ActiveQuote { side, level, price, placed_at: Instant::now() });
+                            }
+                            Err(e) => {
+                                eprintln!("  [mm] {} fresh place side={side} lvl={level}: {e}", mkt.cfg.symbol);
+                                break;
+                            }
                         }
-                        Err(e) => eprintln!("  [mm] {} fresh place side={side} lvl={level}: {e}", mkt.cfg.symbol),
+                    }
+                    Err(e) => {
+                        eprintln!("  [mm] {} fast-init side={side} lvl={level}: {e}", mkt.cfg.symbol);
+                        break;
                     }
                 }
-                Err(e) => eprintln!("  [mm] {} fast-init side={side} lvl={level}: {e}", mkt.cfg.symbol),
             }
         }
     }
@@ -453,7 +500,7 @@ fn refresh_market(mkt: &mut Market, client: &ServerClient, mid: u64, interval_se
             let level: usize = rng.gen_range(1..=LEVELS);
             let target_mid = if side == 0 { bid_mid } else { ask_mid };
             let price = level_price(target_mid, mkt.cfg.category, side, level);
-            let size = level_size(mkt.cfg.base_size, level);
+            let size = level_size_jittered(mkt.cfg.base_size, level, &mut rng);
             let secret: u64 = rng.gen();
             if let Ok(cmt) = client.fast_init(
                 side, price, size, mkt.cfg.leverage,
