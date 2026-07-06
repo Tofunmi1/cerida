@@ -58,7 +58,7 @@ const CATALOG: Record<WidgetType, WidgetSpec> = {
   chart: {
     label: 'Chart',
     w: 14,
-    h: 8,
+    h: 9,
     minW: 8,
     minH: 5,
     render: () => (
@@ -70,7 +70,7 @@ const CATALOG: Record<WidgetType, WidgetSpec> = {
   trade: {
     label: 'Trade',
     w: 5,
-    h: 8,
+    h: 9,
     minW: 4,
     minH: 6,
     render: () => (
@@ -82,7 +82,7 @@ const CATALOG: Record<WidgetType, WidgetSpec> = {
   book: {
     label: 'Order Book',
     w: 5,
-    h: 8,
+    h: 9,
     minW: 4,
     minH: 5,
     render: () => (
@@ -94,7 +94,7 @@ const CATALOG: Record<WidgetType, WidgetSpec> = {
   positions: {
     label: 'Positions',
     w: 14,
-    h: 4,
+    h: 3,
     minW: 8,
     minH: 3,
     render: () => (
@@ -106,7 +106,7 @@ const CATALOG: Record<WidgetType, WidgetSpec> = {
   stats: {
     label: 'Market Stats',
     w: 5,
-    h: 4,
+    h: 3,
     minW: 4,
     minH: 3,
     render: () => (
@@ -118,7 +118,7 @@ const CATALOG: Record<WidgetType, WidgetSpec> = {
   tape: {
     label: 'Trades',
     w: 5,
-    h: 4,
+    h: 3,
     minW: 4,
     minH: 3,
     render: () => (
@@ -357,12 +357,12 @@ const INITIAL_ITEMS: Item[] = [
 ]
 
 const INITIAL_LAYOUT: Layout = [
-  { i: 'chart', x: 0, y: 0, w: 14, h: 8, minW: 8, minH: 5 },
-  { i: 'book', x: 14, y: 0, w: 5, h: 8, minW: 4, minH: 5 },
-  { i: 'trade', x: 19, y: 0, w: 5, h: 8, minW: 4, minH: 6 },
-  { i: 'positions', x: 0, y: 8, w: 14, h: 4, minW: 8, minH: 3 },
-  { i: 'stats', x: 14, y: 8, w: 5, h: 4, minW: 4, minH: 3 },
-  { i: 'tape', x: 19, y: 8, w: 5, h: 4, minW: 4, minH: 3 },
+  { i: 'chart', x: 0, y: 0, w: 14, h: 9, minW: 8, minH: 5 },
+  { i: 'book', x: 14, y: 0, w: 5, h: 9, minW: 4, minH: 5 },
+  { i: 'trade', x: 19, y: 0, w: 5, h: 9, minW: 4, minH: 6 },
+  { i: 'positions', x: 0, y: 9, w: 14, h: 3, minW: 8, minH: 3 },
+  { i: 'stats', x: 14, y: 9, w: 5, h: 3, minW: 4, minH: 3 },
+  { i: 'tape', x: 19, y: 9, w: 5, h: 3, minW: 4, minH: 3 },
 ]
 
 function useGridSize() {

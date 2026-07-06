@@ -4,7 +4,7 @@ import { usePriceSelect } from '../../context/price-select-context'
 import type { OrderBookLevel } from '../../lib/tee-client'
 
 // Pixel constants
-const ROW_H = 20
+const ROW_H = 16
 const HEAT_W = 10
 const PW = 70
 const SW = 50
@@ -93,13 +93,92 @@ function buildSeededRows(base: number, dir: 1 | -1, count: number): RowData[] {
   })
 }
 
+// ── Bucket TEE levels into readable price steps ──────────────────
+// The backend sends one row per actual price level.  For BTC those levels are
+// ~$19 apart, but the panel only fits ~10 rows, so the book looks shallow.
+// We bucket nearby levels (e.g. $10 for BTC, $1 for GOLD) so each visible row
+// shows more cumulative depth and fewer duplicate-looking prices.
+function bucketTick(displayPrice: number): number {
+  // Match the precision used by fmtPrice so we only aggregate rows that look
+  // identical to the user.  Avoids creating fake mega-levels from unrelated orders.
+  if (displayPrice > 10000) return 0.1
+  if (displayPrice > 1000) return 0.01
+  if (displayPrice > 100) return 0.001
+  if (displayPrice > 1) return 0.0001
+  return 0.00001
+}
+
+function aggregateByBucket(levels: OrderBookLevel[]): OrderBookLevel[] {
+  const map = new Map<string, OrderBookLevel>()
+  for (const l of levels) {
+    const display = l.price / PRICE_SCALE
+    const tick = bucketTick(display)
+    const bucketed = Math.round(display / tick) * tick
+    const key = fmtPrice(bucketed)
+    const existing = map.get(key)
+    if (existing) {
+      existing.size += l.size
+      existing.orders += l.orders
+    } else {
+      map.set(key, {
+        price: Math.round(bucketed * PRICE_SCALE),
+        size: l.size,
+        orders: l.orders,
+      })
+    }
+  }
+  return Array.from(map.values())
+}
+
+/// Find a single-row outlier that dwarfs the rest of its side (e.g. a wall).
+function findOutlierIndex(rows: RowData[]): number {
+  if (rows.length < 2) return -1
+  let max = 0
+  let second = 0
+  let idx = -1
+  for (let i = 0; i < rows.length; i++) {
+    const s = rows[i].size
+    if (s > max) {
+      second = max
+      max = s
+      idx = i
+    } else if (s > second) {
+      second = s
+    }
+  }
+  // Treat as outlier if the largest row is more than 5x the next biggest.
+  return max > second * 5 ? idx : -1
+}
+
+/// Build cumulative depth for each displayed row, excluding a single outlier.
+/// `reverse` means row 0 is the outermost level (asks), so we accumulate
+/// from the innermost row backwards.
+function buildScaleCums(rows: RowData[], outlierIdx: number, reverse: boolean): number[] {
+  const n = rows.length
+  const cums = new Array(n).fill(0)
+  let cum = 0
+  if (reverse) {
+    for (let i = n - 1; i >= 0; i--) {
+      if (i !== outlierIdx) cum += rows[i].size
+      cums[i] = cum
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      if (i !== outlierIdx) cum += rows[i].size
+      cums[i] = cum
+    }
+  }
+  return cums
+}
+
 // ── Convert TEE CLOB levels → RowData ─────────────────────────────
 function levelsToRows(levels: OrderBookLevel[], reverse: boolean): RowData[] {
-  if (!levels.length) return []
+  const aggregated = aggregateByBucket(levels)
+  if (!aggregated.length) return []
   let cum = 0
-  const withCum = levels.map((l) => ({ ...l, cumulative: (cum += l.size) }))
+  const withCum = aggregated.map((l) => ({ ...l, cumulative: (cum += l.size) }))
   const display = reverse ? [...withCum].reverse() : withCum
-  const sizes = levels.map((l) => l.size)
+  const sizes = aggregated.map((l) => l.size)
   const maxSize = Math.max(...sizes)
   const minSize = Math.min(...sizes)
   const range = maxSize - minSize
@@ -220,8 +299,22 @@ export default function OrderBook() {
     const displayAsks = asks.slice(0, rowsPerSide)
     const displayBids = bids.slice(0, rowsPerSide)
 
-    const maxSize = Math.max(...displayAsks.map((r) => r.size), ...displayBids.map((r) => r.size))
-    const maxCum  = Math.max(displayAsks[0]?.cumulative ?? 0, displayBids.at(-1)?.cumulative ?? 0)
+    const askOutlierIdx = findOutlierIndex(displayAsks)
+    const bidOutlierIdx = findOutlierIndex(displayBids)
+
+    const sizesForScale = [
+      ...displayAsks.filter((_, i) => i !== askOutlierIdx).map((r) => r.size),
+      ...displayBids.filter((_, i) => i !== bidOutlierIdx).map((r) => r.size),
+    ]
+    const maxSize = sizesForScale.length ? Math.max(...sizesForScale) : 0
+
+    const askScaleCums = buildScaleCums(displayAsks, askOutlierIdx, true)
+    const bidScaleCums = buildScaleCums(displayBids, bidOutlierIdx, false)
+    const maxCum = Math.max(
+      askScaleCums.length ? Math.max(...askScaleCums) : 0,
+      bidScaleCums.length ? Math.max(...bidScaleCums) : 0
+    )
+
     const barW = Math.max(0, w - HEAT_W - PW - SW)
 
     const cs = getComputedStyle(el)
@@ -237,10 +330,11 @@ export default function OrderBook() {
 
     const m = animRef.current
     const seen = new Set<string>()
-    const setTarget = (row: RowData) => {
+    const setTarget = (row: RowData, i: number, side: 'ask' | 'bid') => {
       seen.add(row.key)
-      const barTgt  = row.heatRatio * barW
-      const stepTgt = maxCum > 0  ? (row.cumulative / maxCum) * barW : 0
+      const scaleCum = side === 'ask' ? askScaleCums[i] : bidScaleCums[i]
+      const barTgt  = maxSize > 0 ? (row.size / maxSize) * barW : 0
+      const stepTgt = maxCum > 0 ? (scaleCum / maxCum) * barW : 0
       const ex = m.get(row.key)
       if (ex) {
         ex.barTgt  = barTgt
@@ -249,8 +343,8 @@ export default function OrderBook() {
         m.set(row.key, { barCur: 0, barTgt, stepCur: 0, stepTgt, noise: 0, noiseTgt: 0, flash: 0 })
       }
     }
-    displayAsks.forEach(setTarget)
-    displayBids.forEach(setTarget)
+    displayAsks.forEach((row, i) => setTarget(row, i, 'ask'))
+    displayBids.forEach((row, i) => setTarget(row, i, 'bid'))
     for (const k of Array.from(m.keys())) if (!seen.has(k)) m.delete(k)
 
     startLoop()
@@ -269,12 +363,16 @@ export default function OrderBook() {
     const { asks, bids, maxSize, maxCum, spreadY, colors } = d
     const m = animRef.current
     const barX = HEAT_W + PW + SW
+    const barW = Math.max(0, w - HEAT_W - PW - SW)
     const hover = hoverRef.current
 
-    const stepXFor = (row: RowData) => m.get(row.key)?.stepCur ?? 0
+    const stepXFor = (row: RowData) => {
+      const e = m.get(row.key)
+      return e ? Math.max(0, Math.min(barW, e.stepCur)) : 0
+    }
     const barWFor  = (row: RowData) => {
       const e = m.get(row.key)
-      return e ? Math.max(0, e.barCur * (1 + e.noise)) : 0
+      return e ? Math.max(0, Math.min(barW, e.barCur * (1 + e.noise))) : 0
     }
     const sizeFor  = (row: RowData) => {
       const e = m.get(row.key)
@@ -325,10 +423,11 @@ export default function OrderBook() {
         ctx.fillRect(0, y, w, ROW_H)
       }
 
-      ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, row.heatRatio)
+      const heatRatio = maxSize > 0 ? Math.min(1, row.size / maxSize) : 0.5
+      ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, heatRatio)
       ctx.fillRect(0, y, HEAT_W, ROW_H)
 
-      ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, row.heatRatio)
+      ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, heatRatio)
       ctx.fillRect(barX, y, barWidth, ROW_H)
 
       ctx.font = FONT

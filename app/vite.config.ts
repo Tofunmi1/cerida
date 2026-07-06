@@ -9,7 +9,9 @@ export default defineConfig({
   server: {
     proxy: {
       '/tee': {
-        target: 'http://136.114.124.56:9721',
+        // Default to a locally-running TEE. Override with CERP_TEE_DEV_URL when you
+        // want the local dev app to hit a remote/staging TEE.
+        target: process.env.CERP_TEE_DEV_URL || 'http://127.0.0.1:9721',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/tee/, ''),
       },
