@@ -55,6 +55,13 @@ export const tee = {
     nonce: number
     secret: number
     asset?: number
+    protocol?: boolean
+    asset_id_hex?: string
+    collateral_amount?: number
+    is_close?: boolean
+    close_position_cmt?: string
+    tp_price?: number
+    sl_price?: number
   }): Promise<{ commitment: string }> {
     const resp = await call('init', {
       cmd: 'init',
@@ -65,6 +72,13 @@ export const tee = {
       nonce: params.nonce,
       secret: params.secret,
       asset: params.asset ?? 0,
+      protocol: params.protocol ?? false,
+      asset_id_hex: params.asset_id_hex,
+      collateral_amount: params.collateral_amount ?? 0,
+      is_close: params.is_close ?? false,
+      close_position_cmt: params.close_position_cmt,
+      tp_price: params.tp_price ?? 0,
+      sl_price: params.sl_price ?? 0,
     })
     if (!resp.ok || !resp.commitment) throw new Error(resp.error ?? 'init failed')
     return { commitment: resp.commitment }
@@ -79,6 +93,13 @@ export const tee = {
     nonce: number
     secret: number
     asset?: number
+    protocol?: boolean
+    asset_id_hex?: string
+    collateral_amount?: number
+    is_close?: boolean
+    close_position_cmt?: string
+    tp_price?: number
+    sl_price?: number
   }): Promise<{ commitment: string }> {
     const resp = await call('fast-init', {
       cmd: 'fast-init',
@@ -89,6 +110,13 @@ export const tee = {
       nonce: params.nonce,
       secret: params.secret,
       asset: params.asset ?? 0,
+      protocol: params.protocol ?? false,
+      asset_id_hex: params.asset_id_hex,
+      collateral_amount: params.collateral_amount ?? 0,
+      is_close: params.is_close ?? false,
+      close_position_cmt: params.close_position_cmt,
+      tp_price: params.tp_price ?? 0,
+      sl_price: params.sl_price ?? 0,
     })
     if (!resp.ok || !resp.commitment) throw new Error(resp.error ?? 'fast-init failed')
     return { commitment: resp.commitment }
@@ -243,6 +271,24 @@ export const tee = {
       } catch { /* network hiccup, keep polling */ }
     }
     return null
+  },
+
+  /** Place a closing order against the CLOB and settle the original position. */
+  async relayClosePosition(params: {
+    perp: string
+    close_cmt: string
+    position_cmt: string
+    position_secret: number
+    settlement_commitment: string
+  }): Promise<{ filled: boolean }> {
+    const resp = await fetch(`${TEE_URL}/relay/close-position`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    })
+    const data = await resp.json() as TeeResponse & { filled?: boolean }
+    if (!data.ok) throw new Error(data.error ?? 'close-position relay failed')
+    return { filled: !!data.filled }
   },
 
   /** Claim funds from a settled/liquidated position. */

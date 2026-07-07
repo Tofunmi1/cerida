@@ -79,6 +79,11 @@ pub fn check_and_liquidate(
         return Ok(None);
     }
 
+    // Apply accrued funding before liquidation check.
+    let mut state = state;
+    let idx = store.get_funding_index(&state.asset_id).unwrap_or(0);
+    crate::position::apply_funding_to_state(&mut state, idx);
+
     // Compute PnL and settlement
     let notional = state.collateral * state.leverage as i128;
     let pnl = if state.side == 0 {
@@ -180,7 +185,7 @@ pub fn check_and_liquidate(
 /// Fetch the latest price from Pyth Hermes for the given price feed ID (hex string).
 /// Normalises to 8 decimal places (same precision as Pyth native expo=-8).
 /// Returns 0 if the feed ID is empty or the request fails gracefully.
-fn fetch_oracle_price(price_feed_id: &str) -> Result<u64> {
+pub fn fetch_oracle_price(price_feed_id: &str) -> Result<u64> {
     if price_feed_id.is_empty() {
         return Ok(0);
     }

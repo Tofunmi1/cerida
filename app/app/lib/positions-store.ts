@@ -10,6 +10,7 @@ export interface StoredPosition {
   entryPrice: number  // USD mark price at open (for PnL / liq estimate)
   collateral: number  // collateral in display units (e.g. USDC)
   size: number        // notional = collateral * leverage
+  secret?: number     // order secret — needed to authorize a close order
   orderType?: 'market' | 'limit' | 'stop'
   limitPrice?: number // declared limit price (USD), only set for limit orders
 }

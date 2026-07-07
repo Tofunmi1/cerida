@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { IconArrowDownToArc, IconArrowUpFromArc, IconExternalLink, IconX } from '@tabler/icons-react'
+import { IconArrowDownToArc, IconArrowUpFromArc, IconX } from '@tabler/icons-react'
 import { formatUsd } from './format'
 import { useWallet } from '../../context/wallet-context'
 import { buildDepositNoteTx, computeAmountCommitment, CONTRACT_IDS, submitAndWait } from '../../lib/contracts'
@@ -188,134 +188,6 @@ function TransferPanel({ mode }: { mode: 'deposit' | 'withdraw' }) {
   )
 }
 
-// ── Transaction history via Stellar Horizon ───────────────────────
-
-const HORIZON = 'https://horizon-testnet.stellar.org'
-
-interface HorizonOp {
-  id: string
-  type: string
-  transaction_hash: string
-  created_at: string
-  function?: string
-}
-
-interface TxRecord {
-  hash: string
-  label: string
-  time: string
-  href: string
-}
-
-function opLabel(op: HorizonOp): string {
-  if (op.type !== 'invoke_host_function') return op.type
-  // Try to infer from the function field if present
-  const fn = (op.function ?? '').toLowerCase()
-  if (fn.includes('deposit_note'))              return 'Deposit (shielded note)'
-  if (fn.includes('open_position_from_note'))   return 'Open Position'
-  if (fn.includes('place_order'))               return 'Place Order'
-  if (fn.includes('cancel_order'))              return 'Cancel Order'
-  if (fn.includes('withdraw_note'))             return 'Withdraw (note)'
-  if (fn.includes('liquidate'))                 return 'Liquidated'
-  return 'Contract call'
-}
-
-function TxHistory({ publicKey }: { publicKey: string }) {
-  const [records, setRecords]   = useState<TxRecord[]>([])
-  const [loading, setLoading]   = useState(true)
-  const [error, setError]       = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    setError(false)
-
-    const contracts = new Set([
-      CONTRACT_IDS.perpEngine,
-      CONTRACT_IDS.orderbook,
-      CONTRACT_IDS.collateralToken,
-    ])
-
-    fetch(`${HORIZON}/accounts/${publicKey}/operations?limit=100&order=desc&include_failed=false`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (cancelled) return
-        const ops: HorizonOp[] = data?._embedded?.records ?? []
-        const filtered = ops
-          .filter((op) => {
-            if (op.type !== 'invoke_host_function') return false
-            // Keep ops where the transaction hash references our contracts (approximate)
-            return true
-          })
-          .slice(0, 30)
-          .map((op): TxRecord => ({
-            hash: op.transaction_hash,
-            label: opLabel(op),
-            time: new Date(op.created_at).toLocaleString('en-US', {
-              month: 'short', day: 'numeric',
-              hour: '2-digit', minute: '2-digit',
-            }),
-            href: `https://stellar.expert/explorer/testnet/tx/${op.transaction_hash}`,
-          }))
-        setRecords(filtered)
-        setLoading(false)
-      })
-      .catch(() => {
-        if (!cancelled) { setError(true); setLoading(false) }
-      })
-
-    return () => { cancelled = true }
-  }, [publicKey])
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12 text-[12px] text-text-quaternary">
-        Loading transactions…
-      </div>
-    )
-  }
-  if (error) {
-    return (
-      <div className="flex items-center justify-center py-12 text-[12px] text-text-quaternary">
-        Could not load transaction history.
-      </div>
-    )
-  }
-  if (!records.length) {
-    return (
-      <div className="flex items-center justify-center py-12 text-[12px] text-text-quaternary">
-        No transactions yet.
-      </div>
-    )
-  }
-
-  return (
-    <div className="divide-y divide-border-subtle/60">
-      {records.map((r) => (
-        <div key={r.hash} className="flex items-center justify-between px-4 py-2.5">
-          <div className="min-w-0">
-            <div className="text-[12px] font-medium text-text-primary">{r.label}</div>
-            <div className="mt-0.5 font-mono text-[10px] text-text-quaternary">
-              {r.hash.slice(0, 8)}…{r.hash.slice(-6)}
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-3">
-            <span className="text-[11px] tabular-nums text-text-tertiary">{r.time}</span>
-            <a
-              href={r.href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-text-quaternary hover:text-text-primary"
-            >
-              <IconExternalLink size={13} stroke={1.8} />
-            </a>
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 // ── Main portfolio page ───────────────────────────────────────────
 
 export default function PortfolioPage({ onClose }: { onClose: () => void }) {
@@ -433,32 +305,7 @@ export default function PortfolioPage({ onClose }: { onClose: () => void }) {
               </div>
             </div>
 
-            <div className="flex flex-col rounded-[8px] border border-border-subtle bg-surface-primary">
-              <div className="flex shrink-0 items-center justify-between border-b border-border-subtle px-4 py-2.5">
-                <span className="text-[10px] uppercase tracking-widest text-text-quaternary">
-                  Transaction History
-                </span>
-                {connected && publicKey && (
-                  <a
-                    href={`https://stellar.expert/explorer/testnet/account/${publicKey}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-1 text-[10px] text-text-quaternary hover:text-text-secondary"
-                  >
-                    Stellar Expert <IconExternalLink size={10} stroke={1.8} />
-                  </a>
-                )}
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                {connected && publicKey ? (
-                  <TxHistory publicKey={publicKey} />
-                ) : (
-                  <div className="flex items-center justify-center py-12 text-[12px] text-text-quaternary">
-                    Connect wallet to see history
-                  </div>
-                )}
-              </div>
-            </div>
+
           </div>
         </div>
       </div>

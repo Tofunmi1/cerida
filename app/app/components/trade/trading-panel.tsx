@@ -6,7 +6,7 @@ import {
   useMotionValue,
 } from 'framer-motion'
 import { useLevels } from '../../context/levels-context'
-import { type Side, useMarket } from '../../context/market-context'
+import { MARKET_CATALOG, type Side, useMarket } from '../../context/market-context'
 import { usePriceSelect } from '../../context/price-select-context'
 import { useWallet } from '../../context/wallet-context'
 import { useNav } from '../../context/nav-context'
@@ -493,6 +493,9 @@ export default function TradingPanel() {
       // TEE encodes is_market via side>=2: 0=limit-bid, 1=limit-ask, 2=market-bid, 3=market-ask
       const rawSide = orderType === 'market' ? sideNum + 2 : sideNum
 
+      const market = MARKET_CATALOG.find((m) => m.symbol === symbol) ?? MARKET_CATALOG[0]!
+      const notionalUnits = Math.round(margin * leverage * PRICE_SCALE)
+
       // Generate collateral blinding — used to bind the deposit amount on-chain.
       // collateral_amount and collateral_blinding are stored by the TEE but never sent on-chain.
       const collateralBlindingBytes = crypto.getRandomValues(new Uint8Array(32))
@@ -507,7 +510,19 @@ export default function TradingPanel() {
       // init stores secrets so the TEE can later match this order
       console.log('step: calling tee.init + tee.noteProof…')
       const [initResult, noteResult] = await Promise.all([
-        tee.init({ side: rawSide, price: hintPrice, size: 1_000_000_000, leverage, nonce: orderNonce, secret: orderSecret }),
+        tee.init({
+          side: rawSide,
+          price: hintPrice,
+          size: notionalUnits,
+          leverage,
+          nonce: orderNonce,
+          secret: orderSecret,
+          asset: market.assetId,
+          asset_id_hex: market.pythId,
+          collateral_amount: Number(collateralUnits),
+          tp_price: tpUnits || undefined,
+          sl_price: slUnits || undefined,
+        }),
         tee.noteProof(noteAmount, noteSecret),
       ])
       console.log('step: tee proofs done, commitment=', initResult.commitment.slice(0,16))
@@ -551,7 +566,7 @@ export default function TradingPanel() {
         await tee.relayLimitOrder(relayParams)
       }
 
-      positionsStore.add({ commitment, wallet: publicKey, symbol, side: sideNum, leverage, openedAt: Date.now(), entryPrice: mark, collateral: margin, size: notional, orderType, limitPrice: orderType !== 'market' ? Number(limitPrice) : undefined })
+      positionsStore.add({ commitment, wallet: publicKey, symbol, side: sideNum, leverage, openedAt: Date.now(), entryPrice: mark, collateral: margin, size: notional, secret: orderSecret, orderType, limitPrice: orderType !== 'market' ? Number(limitPrice) : undefined })
       levels.setEntry(mark)
       refreshBalance()
 

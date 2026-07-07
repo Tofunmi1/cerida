@@ -16,6 +16,26 @@ pub struct OrderSecrets {
     pub secret: u64,
     #[serde(default)]
     pub is_market: bool,
+    /// True if this order is closing an existing position rather than opening a new one.
+    #[serde(default)]
+    pub is_close: bool,
+    /// For close orders: the commitment of the position being closed.
+    #[serde(default)]
+    pub close_position_cmt: Option<String>,
+    /// True for protocol/market-maker counterparty orders that should not create user positions.
+    #[serde(default)]
+    pub protocol: bool,
+    /// Pyth price feed ID hex for this asset (used by funding / liquidation).
+    #[serde(default)]
+    pub asset_id_hex: Option<String>,
+    #[serde(default)]
+    pub collateral_amount: i128,
+    /// Take-profit trigger price (0 = not set).
+    #[serde(default)]
+    pub tp_price: u64,
+    /// Stop-loss trigger price (0 = not set).
+    #[serde(default)]
+    pub sl_price: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +50,30 @@ pub struct PositionState {
     pub partial_liq_done: bool,
     #[serde(default)]
     pub asset_id: String, // Pyth price feed ID hex (used by liquidator for oracle price)
+    /// Notional size of the position in price-scaled units (collateral * leverage).
+    #[serde(default)]
+    pub size: u64,
+    /// Cumulative funding index at the last funding settlement for this position.
+    #[serde(default)]
+    pub last_funding_index: i128,
+    /// True for protocol/market-maker counterparty positions.
+    #[serde(default)]
+    pub protocol: bool,
+    /// Remaining notional size that is still open.
+    #[serde(default)]
+    pub remaining_size: u64,
+    /// Numeric asset ID used to look up the CLOB book.
+    #[serde(default)]
+    pub asset_num: u64,
+    /// Nanosecond timestamp when the position was first opened.
+    #[serde(default)]
+    pub open_time_ns: u128,
+    /// Take-profit trigger price (0 = not set).
+    #[serde(default)]
+    pub tp_price: u64,
+    /// Stop-loss trigger price (0 = not set).
+    #[serde(default)]
+    pub sl_price: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +125,32 @@ impl SecretStore {
             "Secret inserted into DB",
             "commitment",
             &cmt_hex[..16],
+            "value_bytes",
+            log::bytes_label(value_size),
+            "total_entries",
+            total_entries,
+            "took",
+            log::duration_secs(&start.elapsed())
+        );
+        Ok(())
+    }
+
+    pub fn insert_batch(&self, items: &[(String, OrderSecrets)]) -> anyhow::Result<()> {
+        let start = Instant::now();
+        let mut batch = sled::Batch::default();
+        let mut value_size = 0usize;
+        for (cmt_hex, secrets) in items {
+            let value = serde_json::to_vec(secrets)?;
+            value_size += value.len();
+            batch.insert(cmt_hex.as_bytes(), value);
+        }
+        self.tree.apply_batch(batch)?;
+        self.tree.flush()?;
+        let total_entries = self.tree.len();
+        log::info!(
+            "Batch secrets inserted into DB",
+            "count",
+            items.len(),
             "value_bytes",
             log::bytes_label(value_size),
             "total_entries",
@@ -149,6 +219,35 @@ impl SecretStore {
         }
     }
 
+    pub fn update_position_state<F>(&self, cmt_hex: &str, f: F) -> anyhow::Result<()>
+    where
+        F: FnOnce(&mut PositionState),
+    {
+        let mut state = self.get_position_state(cmt_hex)?.unwrap_or_else(|| {
+            panic!("update_position_state: position {} not found", cmt_hex)
+        });
+        f(&mut state);
+        self.insert_position_state(cmt_hex, &state)
+    }
+
+    /// Key used to track the protocol counterparty position for an asset.
+    pub fn protocol_position_key(asset_id_hex: &str) -> String {
+        format!("protocol_{}", asset_id_hex)
+    }
+
+    /// List all stored position commitment hex strings.
+    pub fn list_positions(&self) -> anyhow::Result<Vec<String>> {
+        let mut out = Vec::new();
+        for item in self.tree.iter() {
+            let (key, _) = item?;
+            let k = String::from_utf8(key.to_vec()).unwrap_or_default();
+            if k.starts_with("pos_") {
+                out.push(k.strip_prefix("pos_").unwrap().to_string());
+            }
+        }
+        Ok(out)
+    }
+
     pub fn insert_note_amount(&self, note_cmt_hex: &str, note: &NoteAmount) -> anyhow::Result<()> {
         let key = format!("note_{}", note_cmt_hex);
         let value = serde_json::to_vec(note)?;
@@ -192,6 +291,24 @@ impl SecretStore {
         match self.tree.get(key.as_bytes())? {
             Some(value) => Ok(Some(String::from_utf8(value.to_vec())?)),
             None => Ok(None),
+        }
+    }
+
+    pub fn set_funding_index(&self, asset_id_hex: &str, index: i128) -> anyhow::Result<()> {
+        let key = format!("funding_index_{}", asset_id_hex);
+        self.tree.insert(key.as_bytes(), &index.to_le_bytes())?;
+        self.tree.flush()?;
+        Ok(())
+    }
+
+    pub fn get_funding_index(&self, asset_id_hex: &str) -> anyhow::Result<i128> {
+        let key = format!("funding_index_{}", asset_id_hex);
+        match self.tree.get(key.as_bytes())? {
+            Some(value) => {
+                let bytes: [u8; 16] = value.as_ref().try_into()?;
+                Ok(i128::from_le_bytes(bytes))
+            }
+            None => Ok(0),
         }
     }
 }

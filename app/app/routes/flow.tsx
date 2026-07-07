@@ -1,7 +1,16 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
 
-export const meta = () => [{ title: 'System Flow — Cerida' }]
+export const meta = () => [
+  { title: 'System Flow — Cerida' },
+  { name: 'description', content: 'Visual walkthrough of Cerida’s trade flow: wallet, TEE, ZK proofs, and Stellar settlement.' },
+  { property: 'og:title', content: 'System Flow — Cerida' },
+  { property: 'og:description', content: 'Visual walkthrough of Cerida’s trade flow: wallet, TEE, ZK proofs, and Stellar settlement.' },
+  { property: 'og:image', content: 'https://ceridapp.xyz/prev_x.png' },
+  { property: 'og:type', content: 'website' },
+  { name: 'twitter:card', content: 'summary_large_image' },
+  { name: 'twitter:image', content: 'https://ceridapp.xyz/prev_x.png' },
+]
 
 // ── Palette ────────────────────────────────────────────────────────
 const C = {

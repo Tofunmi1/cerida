@@ -10,6 +10,35 @@ import type { ReactNode } from 'react';
 import type { Route } from './+types/root';
 import './app.css';
 
+export const meta: Route.MetaFunction = () => [
+  { title: 'Cerida — On-Chain Perpetuals' },
+  {
+    name: 'description',
+    content:
+      'Trade perpetual futures on crypto and real-world assets. Non-custodial, ZK-verified, TEE-matched, with optional shielded-pool privacy.',
+  },
+  { name: 'robots', content: 'index, follow' },
+  { name: 'theme-color', content: '#04040d' },
+  { property: 'og:site_name', content: 'Cerida' },
+  { property: 'og:title', content: 'Cerida — On-Chain Perpetuals' },
+  {
+    property: 'og:description',
+    content:
+      'Trade perpetual futures on crypto and real-world assets. Non-custodial, ZK-verified, TEE-matched, with optional shielded-pool privacy.',
+  },
+  { property: 'og:image', content: 'https://ceridapp.xyz/prev_x.png' },
+  { property: 'og:url', content: 'https://ceridapp.xyz' },
+  { property: 'og:type', content: 'website' },
+  { name: 'twitter:card', content: 'summary_large_image' },
+  { name: 'twitter:title', content: 'Cerida — On-Chain Perpetuals' },
+  {
+    name: 'twitter:description',
+    content:
+      'Trade perpetual futures on crypto and real-world assets. Non-custodial, ZK-verified, TEE-matched.',
+  },
+  { name: 'twitter:image', content: 'https://ceridapp.xyz/prev_x.png' },
+];
+
 export const Layout = ({ children }: { children: ReactNode }) => (
   <html lang="en" className="h-full antialiased">
     <head>

@@ -1,7 +1,10 @@
 mod db;
 mod engine;
+mod funding;
 mod liquidator;
+mod tpsl;
 mod log;
+mod position;
 mod proof;
 mod serve;
 mod stellar;
@@ -165,6 +168,13 @@ fn main() -> Result<()> {
                 nonce,
                 secret,
                 is_market,
+                is_close: false,
+                close_position_cmt: None,
+                protocol: false,
+                asset_id_hex: None,
+                collateral_amount: 0,
+                tp_price: 0,
+                sl_price: 0,
             };
 
             log::debug!(

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useMarket } from '../../context/market-context'
+import { MARKET_CATALOG, useMarket } from '../../context/market-context'
 import { useWallet } from '../../context/wallet-context'
 import { getPosition, POSITION_NOT_FOUND, type PositionMeta } from '../../lib/contracts'
 import { positionsStore, type StoredPosition } from '../../lib/positions-store'
@@ -51,22 +51,80 @@ export default function PositionsPanel() {
   const [positions, setPositions] = useState<LivePosition[]>([])
   const [loading, setLoading] = useState(false)
   const [closing, setClosing] = useState<string | null>(null)
-  const [claiming, setClaiming] = useState<string | null>(null)
 
-  const handleClose = async (cmt: string, symbol: string) => {
+  const PRICE_SCALE = 1e7
+
+  const handleClose = async (cmt: string, symbol: string, status?: number) => {
     if (!publicKey) return
     setClosing(cmt)
-    const progressId = toast.progress(`Close ${symbol}`, 10, 'Generating cancel proof…')
-    try {
-      const { proof, nullifier } = await tee.cancelProof(cmt)
 
-      toast.update(progressId, { description: 'TEE relaying cancel + refund…', progress: 50 })
-      const { tx_hash } = await tee.relayCancel({
+    const isSettled = typeof status === 'number' && status >= 2
+    const progressId = toast.progress(
+      isSettled ? `Claim ${symbol}` : `Close ${symbol}`,
+      10,
+      isSettled ? 'Generating note-spend proof…' : 'Building close order…'
+    )
+
+    try {
+      if (isSettled) {
+        const { tx_hash } = await tee.relayWithdrawSettlement({
+          perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
+          position_cmt: cmt,
+          recipient: publicKey,
+        })
+
+        positionsStore.remove(cmt)
+        setPositions((prev) => prev.filter((p) => p.stored.commitment !== cmt))
+
+        toast.update(progressId, {
+          type: 'success',
+          title: `${symbol} claimed`,
+          description: 'Settlement funds returned to your wallet',
+          progress: undefined,
+          duration: 8000,
+          action: {
+            label: 'View TX',
+            onClick: () => window.open(`https://stellar.expert/explorer/testnet/tx/${tx_hash}`, '_blank', 'noopener'),
+          },
+        })
+        return
+      }
+
+      const pos = positions.find((p) => p.stored.commitment === cmt)?.stored
+      if (!pos || !pos.secret) {
+        throw new Error('Position secret missing — cannot authorize close')
+      }
+
+      const market = MARKET_CATALOG.find((m) => m.symbol === symbol) ?? MARKET_CATALOG[0]!
+      const closeSide = pos.side === 0 ? 1 : 0
+      const rawCloseSide = 2 + closeSide // market close
+      const closeNonce = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
+      const closeSecret = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
+      const closeSize = Math.round(pos.size * PRICE_SCALE)
+      const closePrice = Math.round((symbolPrices.get(symbol) ?? pos.entryPrice) * PRICE_SCALE)
+
+      toast.update(progressId, { description: 'Committing close order…', progress: 40 })
+      const closeInit = await tee.fastInit({
+        side: rawCloseSide,
+        price: closePrice,
+        size: closeSize,
+        leverage: pos.leverage,
+        nonce: closeNonce,
+        secret: closeSecret,
+        asset: market.assetId,
+        asset_id_hex: market.pythId,
+        collateral_amount: Math.round(pos.collateral * PRICE_SCALE),
+        is_close: true,
+        close_position_cmt: cmt,
+      })
+
+      toast.update(progressId, { description: 'Matching close order…', progress: 70 })
+      await tee.relayClosePosition({
         perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
+        close_cmt: closeInit.commitment,
         position_cmt: cmt,
-        cancel_nullifier: nullifier,
-        cancel_proof: proof,
-        recipient: publicKey,
+        position_secret: pos.secret,
+        settlement_commitment: '0'.repeat(64),
       })
 
       positionsStore.remove(cmt)
@@ -75,66 +133,22 @@ export default function PositionsPanel() {
       toast.update(progressId, {
         type: 'success',
         title: `${symbol} closed`,
-        description: 'Collateral returned to your wallet',
+        description: 'Position settled — claim funds when the row appears under Settled',
         progress: undefined,
         duration: 8000,
-        action: {
-          label: 'View TX',
-          onClick: () => window.open(`https://stellar.expert/explorer/testnet/tx/${tx_hash}`, '_blank', 'noopener'),
-        },
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      console.error('close position error:', { cmt, err, msg })
+      console.error(isSettled ? 'claim settlement error:' : 'close position error:', { cmt, err, msg })
       toast.update(progressId, {
         type: 'error',
-        title: 'Close failed',
+        title: isSettled ? 'Claim failed' : 'Close failed',
         description: msg.slice(0, 200),
         progress: undefined,
         duration: 8000,
       })
     } finally {
       setClosing(null)
-    }
-  }
-
-  const handleClaim = async (cmt: string, symbol: string) => {
-    if (!publicKey) return
-    setClaiming(cmt)
-    const progressId = toast.progress(`Claim ${symbol}`, 10, 'Generating note-spend proof…')
-    try {
-      const { tx_hash } = await tee.relayWithdrawSettlement({
-        perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
-        position_cmt: cmt,
-        recipient: publicKey,
-      })
-
-      positionsStore.remove(cmt)
-      setPositions((prev) => prev.filter((p) => p.stored.commitment !== cmt))
-
-      toast.update(progressId, {
-        type: 'success',
-        title: `${symbol} claimed`,
-        description: 'Settlement funds returned to your wallet',
-        progress: undefined,
-        duration: 8000,
-        action: {
-          label: 'View TX',
-          onClick: () => window.open(`https://stellar.expert/explorer/testnet/tx/${tx_hash}`, '_blank', 'noopener'),
-        },
-      })
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.error('claim settlement error:', { cmt, err, msg })
-      toast.update(progressId, {
-        type: 'error',
-        title: 'Claim failed',
-        description: msg.slice(0, 200),
-        progress: undefined,
-        duration: 8000,
-      })
-    } finally {
-      setClaiming(null)
     }
   }
 
@@ -262,7 +276,7 @@ export default function PositionsPanel() {
                       </span>
                       <span className="flex items-center justify-end">
                         {canClose ? (
-                          <button onClick={() => handleClose(cmt, stored.symbol)} disabled={closing === cmt} className="rounded-[5px] px-2 py-0.5 text-[10px] font-medium text-bearish-red hover:bg-bearish-red/10 disabled:cursor-not-allowed disabled:opacity-50">
+                          <button onClick={() => handleClose(cmt, stored.symbol, resolvedMeta ? Number(resolvedMeta.status) : undefined)} disabled={closing === cmt} className="rounded-[5px] px-2 py-0.5 text-[10px] font-medium text-bearish-red hover:bg-bearish-red/10 disabled:cursor-not-allowed disabled:opacity-50">
                             {closing === cmt ? '…' : 'Close'}
                           </button>
                         ) : (
@@ -311,11 +325,11 @@ export default function PositionsPanel() {
                         </span>
                         <span className="flex items-center justify-end">
                           <button
-                            onClick={() => handleClaim(cmt, stored.symbol)}
-                            disabled={claiming === cmt}
-                            className="rounded-[5px] px-2 py-0.5 text-[10px] font-medium text-brand-violet hover:bg-brand-violet/10 disabled:cursor-not-allowed disabled:opacity-50"
+                            onClick={() => handleClose(cmt, stored.symbol, resolvedMeta ? Number(resolvedMeta.status) : undefined)}
+                            disabled={closing === cmt}
+                            className="rounded-[5px] px-2 py-0.5 text-[10px] font-medium text-bearish-red hover:bg-bearish-red/10 disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            {claiming === cmt ? '…' : 'Claim'}
+                            {closing === cmt ? '…' : 'Close'}
                           </button>
                         </span>
                       </div>

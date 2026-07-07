@@ -7,7 +7,6 @@ import {
   IconBriefcase,
   IconChevronDown,
   IconCopy,
-  IconExternalLink,
   IconLogout,
   IconSearch,
   IconSettings,
@@ -503,19 +502,6 @@ function WalletButton() {
             >
               <IconCopy size={14} stroke={1.8} />
               Copy address
-            </button>
-            <button
-              onClick={() =>
-                window.open(
-                  `https://stellar.expert/explorer/testnet/account/${publicKey}`,
-                  '_blank',
-                  'noopener,noreferrer',
-                )
-              }
-              className="flex w-full items-center gap-2.5 rounded-[7px] px-3 py-2 text-left text-[12px] font-medium text-text-secondary transition-colors hover:bg-surface-card hover:text-text-primary"
-            >
-              <IconExternalLink size={14} stroke={1.8} />
-              View on Stellar Expert
             </button>
             <div className="mx-1 my-1 h-px bg-border-subtle" />
             <button

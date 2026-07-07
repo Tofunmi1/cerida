@@ -12,6 +12,20 @@ use std::time::Instant;
 static NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Deserialize, Debug, Default)]
+struct BatchItem {
+    side: Option<u64>,
+    price: Option<u64>,
+    size: Option<u64>,
+    leverage: Option<u64>,
+    asset: Option<u64>,
+    nonce: Option<u64>,
+    secret: Option<u64>,
+    protocol: Option<bool>,
+    asset_id_hex: Option<String>,
+    collateral_amount: Option<i128>,
+}
+
+#[derive(Deserialize, Debug, Default)]
 struct Request {
     cmd: String,
     side: Option<u64>,
@@ -32,6 +46,14 @@ struct Request {
     order_type: Option<String>,
     stop_price: Option<u64>,
     amount: Option<u64>,
+    batch: Option<Vec<BatchItem>>,
+    protocol: Option<bool>,
+    asset_id_hex: Option<String>,
+    collateral_amount: Option<i128>,
+    is_close: Option<bool>,
+    close_position_cmt: Option<String>,
+    tp_price: Option<u64>,
+    sl_price: Option<u64>,
 }
 
 #[derive(Serialize, Default)]
@@ -39,6 +61,8 @@ struct Response {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     commitment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commitments: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note_cmt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -88,13 +112,6 @@ struct FillJson {
     nullifier_a: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     nullifier_b: Option<String>,
-}
-
-struct MatchResultData {
-    match_price: String,
-    match_size: String,
-    nullifier_a: String,
-    nullifier_b: String,
 }
 
 #[derive(Serialize)]
@@ -171,6 +188,14 @@ pub fn run(
             interval
         );
         crate::liquidator::spawn(liq_store, perp, interval);
+    }
+
+    // Spawn the funding-rate cron to periodically update the global funding index.
+    crate::funding::spawn(store.clone(), crate::funding::DEFAULT_INTERVAL_SECS);
+
+    // Spawn TP/SL monitor if perp_id is configured
+    if let Some(ref perp) = perp_id {
+        crate::tpsl::spawn(store.clone(), perp.clone(), keys.clone());
     }
 
     // Spawn HTTP server if http_port is set (for frontend access)
@@ -285,6 +310,8 @@ pub fn run(
             let resp = match req.cmd.as_str() {
                 "init" => handle_init(&store, &keys, &req),
                 "fast-init" => handle_fast_init(&store, &req),
+                "batch-fast-init" => handle_batch_fast_init(&store, &req),
+                "clear-book" => handle_clear_book(&book_store, &books, &req),
                 "commit-proof" => handle_commit_proof(&store, &keys, &req),
                 "cancel-proof" => handle_cancel_proof(&store, &keys, &req),
                 "note-proof" => handle_note_proof(&keys, &req),
@@ -362,6 +389,13 @@ fn handle_init(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respon
         nonce: req.nonce.unwrap_or(0),
         secret: req.secret.unwrap_or(0),
         is_market,
+        is_close: req.is_close.unwrap_or(false),
+        close_position_cmt: req.close_position_cmt.clone(),
+        protocol: req.protocol.unwrap_or(false),
+        asset_id_hex: req.asset_id_hex.clone(),
+        collateral_amount: req.collateral_amount.unwrap_or(0),
+        tp_price: req.tp_price.unwrap_or(0),
+        sl_price: req.sl_price.unwrap_or(0),
     };
 
     log::info!(
@@ -444,6 +478,83 @@ fn handle_init(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respon
     }
 }
 
+fn handle_clear_book(
+    book_store: &db::BookStore,
+    books: &RwLock<HashMap<u64, engine::OrderBook>>,
+    req: &Request,
+) -> Response {
+    let asset = req.asset.unwrap_or(0);
+    {
+        let mut books = books.write().unwrap();
+        books.insert(asset, engine::OrderBook::new());
+    }
+    if let Err(e) = book_store.save_book(asset, &engine::OrderBook::new()) {
+        return err(format!("failed to persist cleared book: {e}"));
+    }
+    log::info!("Cleared order book", "asset", asset);
+    Response {
+        ok: true,
+        ..Default::default()
+    }
+}
+
+fn handle_batch_fast_init(store: &db::SecretStore, req: &Request) -> Response {
+    let start = Instant::now();
+    let batch = match req.batch.as_ref() {
+        Some(b) if !b.is_empty() => b,
+        _ => return err("missing or empty batch"),
+    };
+
+    let mut items = Vec::with_capacity(batch.len());
+    let mut commitments = Vec::with_capacity(batch.len());
+    for item in batch {
+        let raw_side = item.side.unwrap_or(0);
+        let is_market = raw_side >= 2;
+        let side = match raw_side {
+            0 | 3 => 0,
+            _ => 1,
+        };
+        let secrets = db::OrderSecrets {
+            side,
+            price: item.price.unwrap_or(0),
+            size: item.size.unwrap_or(0),
+            leverage: item.leverage.unwrap_or(1),
+            asset: item.asset.unwrap_or(0),
+            nonce: item.nonce.unwrap_or(0),
+            secret: item.secret.unwrap_or(0),
+            is_market,
+            is_close: false,
+            close_position_cmt: None,
+            protocol: item.protocol.unwrap_or(false),
+            asset_id_hex: item.asset_id_hex.clone(),
+        collateral_amount: item.collateral_amount.unwrap_or(0),
+        tp_price: 0,
+        sl_price: 0,
+    };
+    let cmt_hex = proof::compute_commitment_hex(&secrets);
+    commitments.push(cmt_hex.clone());
+    items.push((cmt_hex, secrets));
+    }
+
+    if let Err(e) = store.insert_batch(&items) {
+        return err(e);
+    }
+
+    log::info!(
+        "Batch fast init: commitments computed and stored",
+        "count",
+        commitments.len(),
+        "took",
+        log::duration_secs(&start.elapsed())
+    );
+
+    Response {
+        ok: true,
+        commitments: Some(commitments),
+        ..Default::default()
+    }
+}
+
 fn handle_fast_init(store: &db::SecretStore, req: &Request) -> Response {
     let start = Instant::now();
     let raw_side = req.side.unwrap_or(0);
@@ -461,8 +572,14 @@ fn handle_fast_init(store: &db::SecretStore, req: &Request) -> Response {
         nonce: req.nonce.unwrap_or(0),
         secret: req.secret.unwrap_or(0),
         is_market,
+        is_close: req.is_close.unwrap_or(false),
+        close_position_cmt: req.close_position_cmt.clone(),
+        protocol: req.protocol.unwrap_or(false),
+        asset_id_hex: req.asset_id_hex.clone(),
+        collateral_amount: req.collateral_amount.unwrap_or(0),
+        tp_price: req.tp_price.unwrap_or(0),
+        sl_price: req.sl_price.unwrap_or(0),
     };
-
     let cmt_hex = proof::compute_commitment_hex(&secrets);
     log::info!(
         "Fast init: commitment computed (no proof)",
@@ -878,13 +995,12 @@ fn handle_place(
         },
     };
     let perp = perp.as_str();
-    let source = req.source.as_deref().unwrap_or("e2e");
 
     // Phase 2: Attempt on-chain matches + audit trail
     let fill_json: Vec<FillJson> = book_fills
         .into_iter()
         .map(|f| {
-            let mut fj = FillJson {
+            let fj = FillJson {
                 maker_id: engine::short_id(&f.maker_id).to_string(),
                 price: f.price,
                 size: f.size,
@@ -895,19 +1011,8 @@ fn handle_place(
             };
             let maker_side = f.taker_side.opposite();
             let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
-            match do_match_and_settle(
-                store,
-                keys,
-                cmt,
-                &f.maker_id,
-                perp,
-                source,
-            ) {
-                Some(result) => {
-                    fj.match_price = Some(result.match_price);
-                    fj.match_size = Some(result.match_size);
-                    fj.nullifier_a = Some(result.nullifier_a);
-                    fj.nullifier_b = Some(result.nullifier_b);
+            match crate::position::apply_fill(store, perp, &f, keys) {
+                Some(()) => {
                     let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
                 }
                 None => {
@@ -1125,13 +1230,12 @@ fn handle_market(
         },
     };
     let perp = perp.as_str();
-    let source = req.source.as_deref().unwrap_or("e2e");
 
     // Phase 2: Attempt on-chain matches + audit trail
     let fill_json: Vec<FillJson> = book_fills
         .into_iter()
         .map(|f| {
-            let mut fj = FillJson {
+            let fj = FillJson {
                 maker_id: engine::short_id(&f.maker_id).to_string(),
                 price: f.price,
                 size: f.size,
@@ -1142,19 +1246,8 @@ fn handle_market(
             };
             let maker_side = f.taker_side.opposite();
             let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
-            match do_match_and_settle(
-                store,
-                keys,
-                cmt,
-                &f.maker_id,
-                perp,
-                source,
-            ) {
-                Some(result) => {
-                    fj.match_price = Some(result.match_price);
-                    fj.match_size = Some(result.match_size);
-                    fj.nullifier_a = Some(result.nullifier_a);
-                    fj.nullifier_b = Some(result.nullifier_b);
+            match crate::position::apply_fill(store, perp, &f, keys) {
+                Some(()) => {
                     let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
                 }
                 None => {
@@ -1265,70 +1358,6 @@ fn handle_get_market(books: &RwLock<HashMap<u64, engine::OrderBook>>, req: &Requ
     }
 }
 
-fn do_match_and_settle(
-    store: &db::SecretStore,
-    keys: &PathBuf,
-    cmt_a: &str,
-    cmt_b: &str,
-    perp: &str,
-    source: &str,
-) -> Option<MatchResultData> {
-    let a = store.get(cmt_a).ok()??;
-    let b = store.get(cmt_b).ok()??;
-
-    let params = engine::find_match(&a, &b)?;
-
-    // Look up position state
-    let state_a = store.get_position_state(cmt_a).ok()??;
-    let state_b = store.get_position_state(cmt_b).ok()??;
-
-    // Compute settlement using match price
-    let oracle_price = params.match_price;
-    let notional_a = state_a.collateral * state_a.leverage as i128;
-    let pnl_a = if state_a.side == 0 {
-        (oracle_price as i128 - state_a.entry_price as i128) * notional_a / state_a.entry_price as i128
-    } else {
-        (state_a.entry_price as i128 - oracle_price as i128) * notional_a / state_a.entry_price as i128
-    };
-    let settlement_a = state_a.collateral + pnl_a;
-
-    let notional_b = state_b.collateral * state_b.leverage as i128;
-    let pnl_b = if state_b.side == 0 {
-        (oracle_price as i128 - state_b.entry_price as i128) * notional_b / state_b.entry_price as i128
-    } else {
-        (state_b.entry_price as i128 - oracle_price as i128) * notional_b / state_b.entry_price as i128
-    };
-    let settlement_b = state_b.collateral + pnl_b;
-
-    // Submit settle_position for both
-    let sn_a = stellar::create_settlement_note(settlement_a.max(0));
-    let sn_b = stellar::create_settlement_note(settlement_b.max(0));
-
-    stellar::relay_settle_position(perp, cmt_a, 2, &sn_a.note_cmt, settlement_a.max(0), &sn_a.blinding_hex, 0, 0, 0).ok()?;
-    stellar::relay_settle_position(perp, cmt_b, 2, &sn_b.note_cmt, settlement_b.max(0), &sn_b.blinding_hex, 0, 0, 0).ok()?;
-
-    // Store note amounts
-    store.insert_note_amount(&sn_a.note_cmt, &db::NoteAmount {
-        amount: settlement_a.max(0),
-        blinding: hex_to_arr32(&sn_a.blinding_hex),
-        note_secret: sn_a.note_secret,
-    }).ok()?;
-    store.insert_note_amount(&sn_b.note_cmt, &db::NoteAmount {
-        amount: settlement_b.max(0),
-        blinding: hex_to_arr32(&sn_b.blinding_hex),
-        note_secret: sn_b.note_secret,
-    }).ok()?;
-    store.insert_settlement_note(cmt_a, &sn_a.note_cmt).ok()?;
-    store.insert_settlement_note(cmt_b, &sn_b.note_cmt).ok()?;
-
-    Some(MatchResultData {
-        match_price: format!("{:0>64x}", params.match_price),
-        match_size: format!("{:0>64x}", params.match_size),
-        nullifier_a: sn_a.note_cmt,
-        nullifier_b: sn_b.note_cmt,
-    })
-}
-
 fn hex_to_arr32(s: &str) -> [u8; 32] {
     let bytes = hex::decode(s).unwrap_or_else(|_| vec![0u8; 32]);
     let mut arr = [0u8; 32];
@@ -1398,6 +1427,14 @@ pub mod secure {
                 interval
             );
             crate::liquidator::spawn(liq_store, perp, interval);
+        }
+
+        // Spawn the funding-rate cron to periodically update the global funding index.
+        crate::funding::spawn(store_arc.clone(), crate::funding::DEFAULT_INTERVAL_SECS);
+
+        // Spawn TP/SL monitor (only when perp_id is configured)
+        if let Some(ref perp_inner) = perp_id {
+            crate::tpsl::spawn(store_arc.clone(), perp_inner.clone(), StdArc::new(keys_dir.clone()));
         }
 
         let state = SecureState {
@@ -1881,6 +1918,10 @@ pub mod http {
                 post(handle_http_relay_place_limit),
             )
             .route(
+                "/relay/close-position",
+                post(handle_http_relay_close_position),
+            )
+            .route(
                 "/relay/open-position-pool",
                 post(handle_http_relay_open_position_pool),
             )
@@ -2064,16 +2105,52 @@ pub mod http {
         let asset_id = req.asset_id.as_deref().unwrap_or(&zeros).to_string();
 
         // Build sealed_params from DB-stored order secrets (TEE seals them, never sent by frontend)
-        let sealed_bytes = match state.store.get(&req.position_cmt) {
-            Ok(Some(secrets)) => {
-                match stellar::seal_from_secrets(&secrets) {
-                    Ok(b) => b,
-                    Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("seal: {e}") })),
-                }
+        let secrets = match state.store.get(&req.position_cmt) {
+            Ok(Some(mut secrets)) => {
+                secrets.asset_id_hex = Some(asset_id.clone());
+                secrets.collateral_amount = req.collateral_amount;
+                secrets.protocol = false;
+                secrets.is_close = false;
+                let _ = state.store.insert(&req.position_cmt, &secrets);
+                secrets
             }
             Ok(None) => return Json(serde_json::json!({ "ok": false, "error": "secrets not found for commitment" })),
             Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("db error: {e}") })),
         };
+        let sealed_bytes = match stellar::seal_from_secrets(&secrets) {
+            Ok(b) => b,
+            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("seal: {e}") })),
+        };
+
+        // Place the order into the CLOB immediately so market orders can match.
+        // For market orders this generates fills and updates position state; the
+        // on-chain open_position relay still runs in the batch queue afterwards.
+        let order_type = if secrets.is_market {
+            engine::OrderType::Market
+        } else {
+            engine::OrderType::Limit
+        };
+        let order = secrets_to_order(&req.position_cmt, &secrets, order_type);
+        let asset = order.asset;
+        let book_fills = {
+            let mut books = state.books.write().unwrap();
+            let book = books.entry(asset).or_insert_with(engine::OrderBook::new);
+            match book.place(order) {
+                Ok(fills) => fills,
+                Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("clob: {e}") })),
+            }
+        };
+        for fill in &book_fills {
+            crate::position::apply_fill(&state.store, &req.perp, fill, &state.keys_dir);
+        }
+        {
+            let books = state.books.read().unwrap();
+            if let Some(book) = books.get(&asset) {
+                if let Err(e) = state.book_store.save_book(asset, book) {
+                    log::error!("open relay: failed to persist book", "err", e.to_string());
+                }
+            }
+        }
 
         let cmt_preview = req.position_cmt[..req.position_cmt.len().min(16)].to_string();
 
@@ -2118,18 +2195,25 @@ pub mod http {
         let cmt = req.position_cmt.clone();
         let cmt_preview = cmt[..cmt.len().min(16)].to_string();
 
-        // Seal params from stored secrets
+        // Seal params from stored secrets and annotate with trade metadata.
         let sealed_bytes = match state.store.get(&cmt) {
-            Ok(Some(secrets)) => match stellar::seal_from_secrets(&secrets) {
-                Ok(b) => b,
-                Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("seal: {e}") })),
-            },
+            Ok(Some(mut secrets)) => {
+                secrets.asset_id_hex = Some(asset_id.clone());
+                secrets.collateral_amount = req.collateral_amount;
+                secrets.protocol = false;
+                secrets.is_close = false;
+                let _ = state.store.insert(&cmt, &secrets);
+                match stellar::seal_from_secrets(&secrets) {
+                    Ok(b) => b,
+                    Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("seal: {e}") })),
+                }
+            }
             Ok(None) => return Json(serde_json::json!({ "ok": false, "error": "secrets not found" })),
             Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("db: {e}") })),
         };
 
         let pending = PendingRelay {
-            perp: req.perp,
+            perp: req.perp.clone(),
             orderbook: req.orderbook,
             position_cmt: cmt.clone(),
             sealed_params: sealed_bytes,
@@ -2169,6 +2253,11 @@ pub mod http {
                 Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("clob: {e}") })),
             }
         };
+
+        // Update position state for each fill before queuing on-chain relays.
+        for fill in &book_fills {
+            crate::position::apply_fill(&state.store, &req.perp, fill, &state.keys_dir);
+        }
 
         // For each fill: relay whichever sides have PendingRelay.
         // MM orders have no PendingRelay (no on-chain deposit) — user still gets filled.
@@ -2217,6 +2306,87 @@ pub mod http {
 
         log::info!("limit order placed", "cmt", &cmt_preview, "filled", filled);
         Json(serde_json::json!({ "ok": true, "queued": true, "filled": filled }))
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RelayClosePositionReq {
+        perp: String,
+        close_cmt: String,
+        position_cmt: String,
+        position_secret: u64,
+        settlement_commitment: String,
+    }
+
+    async fn handle_http_relay_close_position(
+        State(state): State<HttpState>,
+        Json(req): Json<RelayClosePositionReq>,
+    ) -> Json<serde_json::Value> {
+        // Authorize: caller must know the original position secret.
+        let position_secrets = match state.store.get(&req.position_cmt) {
+            Ok(Some(s)) => s,
+            Ok(None) => return Json(serde_json::json!({ "ok": false, "error": "position secrets not found" })),
+            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("db: {e}") })),
+        };
+        if position_secrets.secret != req.position_secret {
+            return Json(serde_json::json!({ "ok": false, "error": "invalid position secret" }));
+        }
+
+        let mut close_secrets = match state.store.get(&req.close_cmt) {
+            Ok(Some(s)) => s,
+            Ok(None) => return Json(serde_json::json!({ "ok": false, "error": "close order secrets not found" })),
+            Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("db: {e}") })),
+        };
+        if !close_secrets.is_close {
+            return Json(serde_json::json!({ "ok": false, "error": "close_cmt is not a close order" }));
+        }
+        if close_secrets.close_position_cmt.as_deref() != Some(&req.position_cmt) {
+            return Json(serde_json::json!({ "ok": false, "error": "close order does not target this position" }));
+        }
+
+        // Inherit asset id from the position if the close order was created without one.
+        if close_secrets.asset_id_hex.is_none() {
+            close_secrets.asset_id_hex = position_secrets.asset_id_hex.clone();
+        }
+        // The close order carries the user's pre-committed settlement destination.
+        // We overwrite the stored close secrets settlement commitment so the TEE
+        // settlement note is created for the user's chosen destination.
+        let _ = state.store.insert(&req.close_cmt, &close_secrets);
+
+        let order_type = if close_secrets.is_market {
+            engine::OrderType::Market
+        } else {
+            engine::OrderType::Limit
+        };
+        let order = secrets_to_order(&req.close_cmt, &close_secrets, order_type);
+        let asset = order.asset;
+
+        let book_fills = {
+            let mut books = state.books.write().unwrap();
+            let book = books.entry(asset).or_insert_with(engine::OrderBook::new);
+            match book.place(order) {
+                Ok(fills) => fills,
+                Err(e) => return Json(serde_json::json!({ "ok": false, "error": format!("clob: {e}") })),
+            }
+        };
+
+        for fill in &book_fills {
+            crate::position::apply_fill(&state.store, &req.perp, fill, &state.keys_dir);
+        }
+
+        // Persist book state
+        {
+            let books = state.books.read().unwrap();
+            if let Some(book) = books.get(&asset) {
+                if let Err(e) = state.book_store.save_book(asset, book) {
+                    log::error!("close place: failed to persist book", "err", e.to_string());
+                }
+            }
+        }
+
+        Json(serde_json::json!({
+            "ok": true,
+            "filled": !book_fills.is_empty()
+        }))
     }
 
     #[derive(serde::Deserialize)]

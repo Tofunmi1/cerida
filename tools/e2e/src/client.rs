@@ -5,6 +5,30 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::time::Instant;
 
+#[derive(Serialize, Debug, Default, Clone)]
+pub struct BatchItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leverage: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_id_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collateral_amount: Option<i128>,
+}
+
 #[derive(Serialize, Default)]
 pub struct Request {
     cmd: String,
@@ -40,12 +64,25 @@ pub struct Request {
     pub orderbook: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch: Option<Vec<BatchItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_id_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collateral_amount: Option<i128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_close: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_position_cmt: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct Response {
     ok: bool,
     commitment: Option<String>,
+    commitments: Option<Vec<String>>,
     proof: Option<String>,
     match_price: Option<String>,
     match_size: Option<String>,
@@ -315,12 +352,35 @@ impl ServerClient {
         resp.commitment.ok_or_else(|| anyhow::anyhow!("no commitment in response"))
     }
 
+    /// Batch fast init — store many commitments in a single round-trip.
+    pub fn batch_fast_init(&self, items: &[BatchItem]) -> Result<Vec<String>> {
+        let req = Request {
+            cmd: "batch-fast-init".to_string(),
+            batch: Some(items.to_vec()),
+            ..Default::default()
+        };
+        let resp = self.send(&req)?;
+        resp.commitments.ok_or_else(|| anyhow::anyhow!("no commitments in response"))
+    }
+
     /// Cancel order from CLOB only (no on-chain submission).
     /// For market maker quote maintenance.
     pub fn cancel_order(&self, cmt: &str) -> Result<()> {
         let req = Request {
             cmd: "cancel".to_string(),
             cmt: Some(cmt.to_string()),
+            ..Default::default()
+        };
+        self.send(&req)?;
+        Ok(())
+    }
+
+    /// Clear the entire in-memory CLOB for an asset. Used by the market maker
+    /// on startup to drop stale quotes from a previous keeper run.
+    pub fn clear_book(&self, asset_id: u64) -> Result<()> {
+        let req = Request {
+            cmd: "clear-book".to_string(),
+            asset: Some(asset_id),
             ..Default::default()
         };
         self.send(&req)?;

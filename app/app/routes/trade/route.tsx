@@ -22,7 +22,16 @@ import OnboardingModal from '../../components/trade/onboarding-modal'
 import { formatUsd } from '../../components/trade/format'
 import { toast } from '../../components/toast/toast-context'
 
-export const meta = () => [{ title: 'Cerida Perp' }]
+export const meta = () => [
+  { title: 'Trade — Cerida' },
+  { name: 'description', content: 'Trade perpetual futures with ZK-verified, TEE-matched execution on Stellar testnet.' },
+  { property: 'og:title', content: 'Trade — Cerida' },
+  { property: 'og:description', content: 'Trade perpetual futures with ZK-verified, TEE-matched execution on Stellar testnet.' },
+  { property: 'og:image', content: 'https://ceridapp.xyz/prev_x.png' },
+  { property: 'og:type', content: 'website' },
+  { name: 'twitter:card', content: 'summary_large_image' },
+  { name: 'twitter:image', content: 'https://ceridapp.xyz/prev_x.png' },
+]
 
 const PriceChart = lazy(() => import('../../components/trade/price-chart'))
 const TradingPanel = lazy(() => import('../../components/trade/trading-panel'))

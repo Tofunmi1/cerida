@@ -3,6 +3,12 @@ import { Link } from 'react-router'
 export const meta = () => [
   { title: 'Docs — Cerida' },
   { name: 'description', content: 'How Cerida works: ZK circuits, TEE architecture, and live markets.' },
+  { property: 'og:title', content: 'Docs — Cerida' },
+  { property: 'og:description', content: 'How Cerida works: ZK circuits, TEE architecture, and live markets.' },
+  { property: 'og:image', content: 'https://ceridapp.xyz/prev_x.png' },
+  { property: 'og:type', content: 'website' },
+  { name: 'twitter:card', content: 'summary_large_image' },
+  { name: 'twitter:image', content: 'https://ceridapp.xyz/prev_x.png' },
 ]
 
 // ── Shared prose components ───────────────────────────────────────
@@ -46,15 +52,15 @@ function Pre({ children }: { children: string }) {
   )
 }
 
-function Table({ head, rows }: { head: string[]; rows: string[][] }) {
+function Table({ head, rows }: { head: React.ReactNode[]; rows: React.ReactNode[][] }) {
   return (
     <div className="mb-6 overflow-x-auto rounded-[10px] border border-border-subtle">
       <table className="w-full text-[13px]">
         <thead>
           <tr className="border-b border-border-subtle bg-surface-card">
-            {head.map((h) => (
+            {head.map((h, idx) => (
               <th
-                key={h}
+                key={idx}
                 className="px-4 py-2.5 text-left font-semibold uppercase tracking-widest text-text-quaternary"
               >
                 {h}
@@ -96,6 +102,7 @@ function Pill({ children, color }: { children: string; color?: string }) {
 
 const TOC = [
   { id: 'what',      label: 'What is Cerida?' },
+  { id: 'start',     label: 'Quick Start' },
   { id: 'privacy',   label: 'Privacy Model' },
   { id: 'how',       label: 'How it works' },
   { id: 'lifecycle', label: 'Position Lifecycle' },
@@ -175,6 +182,10 @@ export default function DocsPage() {
             </div>
           </div>
 
+          <div className="mb-8 rounded-[10px] border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-200">
+            <strong className="text-amber-100">Testnet only.</strong> Cerida is unaudited experimental software running on Stellar testnet. Do not deposit real funds.
+          </div>
+
           {/* What is Cerida */}
           <section id="what">
             <H2 id="what">What is Cerida?</H2>
@@ -194,6 +205,33 @@ export default function DocsPage() {
                  ['Settlement', 'Stellar Soroban', 'Stores only commitment hashes and nullifiers. TEE account is the sole authority for settling positions and processing withdrawals. No oracle or funding on-chain'],
                ]}
              />
+           </section>
+
+          {/* Quick Start */}
+          <section id="start">
+            <H2 id="start">Quick Start</H2>
+            <ol className="ml-5 list-decimal space-y-2 text-[14px] leading-relaxed text-text-secondary">
+              <li>
+                <strong className="text-text-primary">Install Freighter</strong> — add the Freighter wallet extension and switch to Stellar testnet.
+              </li>
+              <li>
+                <strong className="text-text-primary">Fund your wallet</strong> — claim testnet XLM from the{' '}
+                <a href="https://laboratory.stellar.org/#account-creator?network=test" target="_blank" rel="noopener noreferrer" className="text-brand-violet underline-offset-2 hover:underline">
+                  Stellar Laboratory friendbot
+                </a>
+                . Use the in-app faucet to mint test USDC if available.
+              </li>
+              <li>
+                <strong className="text-text-primary">Connect and deposit</strong> — connect Freighter, choose an amount, and sign the <Code>deposit_note</Code> transaction. Your USDC moves into a shielded note.
+              </li>
+              <li>
+                <strong className="text-text-primary">Open a position</strong> — pick a market, size, leverage, and direction. The browser builds a ZK OrderCommitment proof and queues the order for the TEE.
+              </li>
+              <li>
+                <strong className="text-text-primary">Close or cancel</strong> — close at market price, or cancel a pending limit order before it fills. Settled collateral returns to a fresh shielded note.
+              </li>
+            </ol>
+            <P>All ZK proving happens locally; expect ~9–18 s before the TEE queues your relay.</P>
           </section>
 
           {/* Privacy Model */}
@@ -206,10 +244,10 @@ export default function DocsPage() {
             <Table
               head={['On-chain', 'Store as', 'Plaintext lives in']}
               rows={[
-                ['Note balance', '<Code>SHA256(amount || blinding)</Code>', 'TEE DB (sled), keyed by note commitment'],
-                ['Position financials', '<Code>settlement_commitment</Code> (SHA256)', 'TEE DB as PositionState struct'],
-                ['Order parameters (side, price, leverage, size)', '<Code>sealed_params</Code> (AEAD-encrypted blob)', 'TEE memory, AES-256-GCM decrypted'],
-                ['Portfolio membership', '<Code>portfolio_key</Code> (Poseidon2 hash)', 'Derived from secret — TEE can recompute'],
+                ['Note balance', <><Code>SHA256(amount || blinding)</Code></>, 'TEE DB (sled), keyed by note commitment'],
+                ['Position financials', <><Code>settlement_commitment</Code> (SHA256)</>, 'TEE DB as PositionState struct'],
+                ['Order parameters (side, price, leverage, size)', <><Code>sealed_params</Code> (AEAD-encrypted blob)</>, 'TEE memory, AES-256-GCM decrypted'],
+                ['Portfolio membership', <><Code>portfolio_key</Code> (Poseidon2 hash)</>, 'Derived from secret — TEE can recompute'],
               ]}
             />
 
@@ -223,23 +261,6 @@ export default function DocsPage() {
               The TEE queues on-chain transactions into an in-memory buffer and flushes every <strong>10 seconds</strong>. Before submission, entries are shuffled (Fisher-Yates). This breaks timing correlation between user HTTP requests and on-chain transactions — deposit and position-open TXs appear in random order, masking which user opened which position.
             </P>
 
-            <H3>What leaks</H3>
-            <P>
-              Some data is inherently visible on a public blockchain:
-            </P>
-            <ul className="mb-6 space-y-1.5 pl-5 text-[14px] text-text-secondary">
-              {[
-                'Token transfer amounts in deposit/withdraw TXs (blockchain limitation)',
-                'Position status (Open, Matched, Closed, Liquidated)',
-                'Margin mode (Isolated / Cross) and asset ID',
-                'Commitment hashes and nullifiers (but not what they commit to)',
-              ].map((item, i) => (
-                <li key={i} className="flex items-start gap-2">
-                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500/60" />
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
           </section>
 
           {/* How it works */}
@@ -428,8 +449,23 @@ liq_price (short) = entry × (1 + 0.92 / leverage)`}</Pre>
                    <span>{item}</span>
                  </li>
                ))}
-             </ul>
-          </section>
+              </ul>
+
+            <H3>Fees</H3>
+            <P>
+              Trading fees are taken from collateral on open/close. There are no per-trade gas fees on Soroban testnet beyond the base network fee.
+            </P>
+            <Table
+              head={['Fee', 'Rate', 'Note']}
+              rows={[
+                ['Maker', '0.02%', 'Earned by limit orders that add liquidity to the CLOB'],
+                ['Taker', '0.05%', 'Charged to market orders and immediately filled limit orders'],
+                ['Liquidation (partial)', '1.0%', 'Deducted from collateral on tier-1 liquidation'],
+                ['Liquidation (full)', '1.5%', 'Deducted from collateral on tier-2 liquidation'],
+                ['Insurance fund', '0.5%', 'Charged on liquidations only'],
+              ]}
+            />
+           </section>
 
           {/* ZK Circuits */}
           <section id="circuits">
@@ -505,18 +541,18 @@ liq_price (short) = entry × (1 + 0.92 / leverage)`}</Pre>
 └─────────────────────────────────────────────────────────────┘`}</Pre>
 
              <H3>TEE DB structure</H3>
-             <Table
-               head={['Key prefix', 'Value type', 'Stored when']}
-               rows={[
-                 ['<Code>sec_&lt;cmt&gt;</Code>', 'Order secrets (side, price, size, leverage…)', 'User calls /init or /fast-init'],
-                 ['<Code>pos_&lt;cmt&gt;</Code>', 'PositionState (collateral, entry, leverage, side…)', 'Position opened via relay'],
-                 ['<Code>note_&lt;cmt&gt;</Code>', 'NoteAmount (amount, blinding, secret)', 'Settlement, cancel, or deposit'],
-                 ['<Code>set_&lt;cmt&gt;</Code>', 'Settlement note commitment', 'Position settled or liquidated'],
-                 ['<Code>tx_&lt;cmt&gt;</Code>', 'On-chain TX hash', 'Relay TX confirmed'],
-                 ['<Code>book_&lt;asset&gt;</Code>', 'Serialized OrderBook', 'Every CLOB write'],
-                 ['<Code>fill_&lt;id&gt;</Code>', 'Fill entry (taker, maker, price, size)', 'Every match'],
-               ]}
-             />
+              <Table
+                head={['Key prefix', 'Value type', 'Stored when']}
+                rows={[
+                  [<><Code>sec_{'<cmt>'}</Code></>, 'Order secrets (side, price, size, leverage…)', 'User calls /init or /fast-init'],
+                  [<><Code>pos_{'<cmt>'}</Code></>, 'PositionState (collateral, entry, leverage, side…)', 'Position opened via relay'],
+                  [<><Code>note_{'<cmt>'}</Code></>, 'NoteAmount (amount, blinding, secret)', 'Settlement, cancel, or deposit'],
+                  [<><Code>set_{'<cmt>'}</Code></>, 'Settlement note commitment', 'Position settled or liquidated'],
+                  [<><Code>tx_{'<cmt>'}</Code></>, 'On-chain TX hash', 'Relay TX confirmed'],
+                  [<><Code>book_{'<asset>'}</Code></>, 'Serialized OrderBook', 'Every CLOB write'],
+                  [<><Code>fill_{'<id>'}</Code></>, 'Fill entry (taker, maker, price, size)', 'Every match'],
+                ]}
+              />
           </section>
 
           {/* API */}
@@ -555,7 +591,7 @@ liq_price (short) = entry × (1 + 0.92 / leverage)`}</Pre>
               head={['Endpoint', 'Method', 'Purpose']}
               rows={[
                 ['/get-market?asset=N', 'GET', '32-level bid/ask depth snapshot'],
-                ['/note-amount?cmt=&lt;hex&gt;', 'GET', 'Look up note amount in TEE DB'],
+                [<>/note-amount?cmt={'<hex>'}</>, 'GET', 'Look up note amount in TEE DB'],
               ]}
             />
           </section>
@@ -591,12 +627,12 @@ liq_price (short) = entry × (1 + 0.92 / leverage)`}</Pre>
 
             <H3>Market maker</H3>
             <P>
-              Maintains 32 bid + 32 ask levels across all 7 markets — 448 active quotes. Commits are pre-generated via <Code>/fast-init</Code> to avoid proof latency. Spread and size formulas per category:
+              Maintains 32 bid + 32 ask levels across all 7 markets — 448 active quotes. Quotes are bootstrapped in one shot via <Code>/batch-fast-init</Code> so the book is live in seconds instead of minutes. There is no persistent pool; each tick regenerates missing levels from scratch and reconciles live depth against expected quotes to detect and replace filled orders.
             </P>
             <Pre>{`Crypto markets:  (5 + 3×level) bps,  size = base × 1.08^level
 RWA markets:    (10 + 5×level) bps,  size = base × 1.08^level`}</Pre>
             <P>
-              Re-quotes when mid moves {'>'} 0.5% or quotes are stale ({'>'} 5 min TTL). Pyth prices fetched every tick (60s default).
+              Re-quotes when mid moves {'>'} 0.5%, quotes exceed their TTL (300 s), or live-depth reconciliation detects a fill. On startup the keeper can optionally call <Code>/clear-book</Code> to wipe stale quotes from a previous run. Pyth prices are fetched every tick (60 s default).
             </P>
 
             <H3>Oracle keeper</H3>
@@ -617,21 +653,32 @@ RWA markets:    (10 + 5×level) bps,  size = base × 1.08^level`}</Pre>
               Main perp-engine contract on Stellar testnet. Deployed contract and TEE account share the same key.
             </P>
 
+            <H3>Contract addresses (testnet)</H3>
+            <Table
+              head={['Contract', 'ID']}
+              rows={[
+                ['Perp engine', 'CCT476K37KCWZFXWMXXPUKH2FWJESOJVLMSGS2DKCFZFYSZII42XY4VW'],
+                ['Shielded pool', 'CBXDBBHVA7EGFOWDWGLRM73EWIFKGIYJB7Z5R4NQEEJSKD5F5IHA6RND'],
+                ['Orderbook', 'CC72USWIXJBFTXVIXKMQK7BMLU2FW53FTSHH3GA5XCDHEHQPGD45KMVG'],
+                ['Collateral token (test USDC)', 'CA6SDT7HE7LMYFYUQZGTVG6QJNKKZC2CZWE6ZK7YBZFZA23UNIGLBKFA'],
+              ]}
+            />
+
             <H3>Authorization model</H3>
             <Table
               head={['Function', 'Auth required']}
               rows={[
-                ['<Code>deposit_note</Code>', '<Code>from.require_auth()</Code> — user signs with wallet'],
-                ['<Code>withdraw_note</Code>', 'ZK NoteSpend proof — TEE relay only'],
-                ['<Code>open_position_from_note</Code>', 'ZK NoteSpend + OrderCommitment proofs'],
-                ['<Code>open_position_from_pool</Code>', 'ZK ShieldedWithdraw + OrderCommitment proofs'],
-                ['<Code>cancel_position_to_note</Code>', 'ZK OrderCancel proof'],
-                ['<Code>settle_position</Code>', '<Code>require_tee_auth</Code> — invoker must be stored TEE account'],
-                ['<Code>settle_partial</Code>', '<Code>require_tee_auth</Code>'],
-                ['<Code>add_margin_from_note</Code>', 'ZK NoteSpend proof + <Code>require_tee_auth</Code>'],
-                ['<Code>fund_insurance</Code>', 'Anyone'],
-                ['<Code>upgrade</Code>', 'Admin <Code>require_auth()</Code>'],
-                ['<Code>set_tee_account</Code>', 'Admin <Code>require_auth()</Code>'],
+                [<><Code>deposit_note</Code></>, <><Code>from.require_auth()</Code> — user signs with wallet</>],
+                [<><Code>withdraw_note</Code></>, 'ZK NoteSpend proof — TEE relay only'],
+                [<><Code>open_position_from_note</Code></>, 'ZK NoteSpend + OrderCommitment proofs'],
+                [<><Code>open_position_from_pool</Code></>, 'ZK ShieldedWithdraw + OrderCommitment proofs'],
+                [<><Code>cancel_position_to_note</Code></>, 'ZK OrderCancel proof'],
+                [<><Code>settle_position</Code></>, <><Code>require_tee_auth</Code> — invoker must be stored TEE account</>],
+                [<><Code>settle_partial</Code></>, <><Code>require_tee_auth</Code></>],
+                [<><Code>add_margin_from_note</Code></>, <>ZK NoteSpend proof + <Code>require_tee_auth</Code></>],
+                [<><Code>fund_insurance</Code></>, 'Anyone'],
+                [<><Code>upgrade</Code></>, <>Admin <Code>require_auth()</Code></>],
+                [<><Code>set_tee_account</Code></>, <>Admin <Code>require_auth()</Code></>],
               ]}
             />
             <P>
@@ -642,14 +689,14 @@ RWA markets:    (10 + 5×level) bps,  size = base × 1.08^level`}</Pre>
             <Table
               head={['Field', 'Visibility']}
               rows={[
-                ['<Code>status</Code> (Open, Matched, Closed, Cancelled, Liquidated)', 'Public'],
-                ['<Code>margin_mode</Code> (Isolated / Cross)', 'Public'],
-                ['<Code>asset_id</Code>', 'Public'],
-                ['<Code>portfolio_key</Code> (Poseidon2 hash)', 'Commitment — secret hidden'],
-                ['<Code>sealed_params</Code> (AEAD-encrypted order details)', 'Encrypted — TEE only'],
-                ['<Code>settlement_commitment</Code> (SHA256)', 'Commitment — values hidden'],
-                ['<Code>liquidation_recipient_note</Code>', 'Commitment'],
-                ['<Code>partial_liq_done</Code>', 'Public flag'],
+                [<><Code>status</Code> (Open, Matched, Closed, Cancelled, Liquidated)</>, 'Public'],
+                [<><Code>margin_mode</Code> (Isolated / Cross)</>, 'Public'],
+                [<><Code>asset_id</Code></>, 'Public'],
+                [<><Code>portfolio_key</Code> (Poseidon2 hash)</>, 'Commitment — secret hidden'],
+                [<><Code>sealed_params</Code> (AEAD-encrypted order details)</>, 'Encrypted — TEE only'],
+                [<><Code>settlement_commitment</Code> (SHA256)</>, 'Commitment — values hidden'],
+                [<><Code>liquidation_recipient_note</Code></>, 'Commitment'],
+                [<><Code>partial_liq_done</Code></>, 'Public flag'],
               ]}
             />
           </section>
