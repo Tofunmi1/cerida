@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 pub const LEVELS: usize = 32;
 const REFRESH_THRESHOLD: f64 = 0.005; // re-quote if mid moves > 0.5%
-const QUOTE_TTL_SECS: u64 = 300;      // cancel quotes older than 5 minutes
+const QUOTE_TTL_SECS: u64 = 45;       // cancel stale quotes fast so filled levels refill quickly
 const POOL_BUFFER: usize = LEVELS * 2; // how many extras to pre-generate per side
 const ORDERS_PER_LEVEL: usize = 2;     // multiple orders per price level = deeper displayed buckets
 
@@ -62,6 +62,7 @@ struct ActiveQuote {
     side: u64,
     level: usize,
     price: u64,
+    size: u64,
     placed_at: Instant,
 }
 
@@ -126,10 +127,10 @@ fn fair_mid(pyth_mid: u64, best_bid: Option<u64>, best_ask: Option<u64>) -> u64 
                 (bid + ask) / 2
             }
         }
-        // One-sided wall: quote around the wall itself so both grids touch it
-        // and the book looks balanced instead of pushing asks far above/below.
-        (Some(bid), None) => bid,
-        (None, Some(ask)) => ask,
+        // One-sided wall: keep using Pyth when it is on the sane side of the wall.
+        // This stops the grid from snapping tightly around a user wall and looking lopsided.
+        (Some(bid), None) => if pyth_mid > bid { pyth_mid } else { bid },
+        (None, Some(ask)) => if pyth_mid < ask { pyth_mid } else { ask },
         _ => pyth_mid,
     }
 }
@@ -343,6 +344,7 @@ fn initial_place(mkt: &mut Market, client: &ServerClient) {
                     side: slot.side,
                     level: slot.level,
                     price: slot.price,
+                    size: slot.size,
                     placed_at: Instant::now(),
                 });
             }
@@ -357,7 +359,73 @@ fn initial_place(mkt: &mut Market, client: &ServerClient) {
     eprintln!("  [mm] {} placed {} active quotes", mkt.cfg.symbol, mkt.active.len());
 }
 
+/// Detect MM quotes that have been filled/partially filled by comparing the
+/// live book to our tracked `active` map.  Remove consumed commitments so the
+/// missing levels get replenished on the same tick.
+fn reconcile_filled(mkt: &mut Market, client: &ServerClient) {
+    let resp = match client.get_market_asset(Some(mkt.cfg.asset_id)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("  [mm] {} reconcile get_market failed: {e}", mkt.cfg.symbol);
+            return;
+        }
+    };
+
+    let mut actual_bids: HashMap<u64, (usize, u64)> = HashMap::new();
+    let mut actual_asks: HashMap<u64, (usize, u64)> = HashMap::new();
+    if let Some(bids) = resp.bids {
+        for l in bids {
+            actual_bids.insert(l.price, (l.orders, l.size));
+        }
+    }
+    if let Some(asks) = resp.asks {
+        for l in asks {
+            actual_asks.insert(l.price, (l.orders, l.size));
+        }
+    }
+
+    // Expected (orders, size) per (side, price) from our active map.
+    let mut expected: HashMap<(u64, u64), (usize, u64)> = HashMap::new();
+    for q in mkt.active.values() {
+        let entry = expected.entry((q.side, q.price)).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += q.size;
+    }
+
+    let mut to_cancel: Vec<String> = Vec::new();
+    for ((side, price), (exp_orders, exp_size)) in expected {
+        let actual = if side == 0 {
+            actual_bids.get(&price)
+        } else {
+            actual_asks.get(&price)
+        };
+        let need_cancel = match actual {
+            None => true,
+            Some(&(act_orders, act_size)) => {
+                act_orders < exp_orders || act_size < ((exp_size as f64) * 0.75) as u64
+            }
+        };
+        if need_cancel {
+            for (cmt, q) in &mkt.active {
+                if q.side == side && q.price == price {
+                    to_cancel.push(cmt.clone());
+                }
+            }
+        }
+    }
+
+    if !to_cancel.is_empty() {
+        eprintln!("  [mm] {} reconciling {} filled/partial quotes", mkt.cfg.symbol, to_cancel.len());
+        for cmt in &to_cancel {
+            let _ = client.cancel_order(cmt);
+            mkt.active.remove(cmt);
+        }
+    }
+}
+
 fn refresh_market(mkt: &mut Market, client: &ServerClient, mid: u64, interval_secs: u64) {
+    reconcile_filled(mkt, client);
+
     let ttl = Duration::from_secs(QUOTE_TTL_SECS.max(interval_secs * 3));
     let (best_bid, best_ask) = fetch_book_bounds(client, mkt.cfg.asset_id);
     let fair = fair_mid(mid, best_bid, best_ask);
@@ -443,6 +511,7 @@ fn refresh_market(mkt: &mut Market, client: &ServerClient, mid: u64, interval_se
                         side: slot.side,
                         level: slot.level,
                         price: slot.price,
+                        size: slot.size,
                         placed_at: Instant::now(),
                     });
                 }
@@ -473,7 +542,7 @@ fn refresh_market(mkt: &mut Market, client: &ServerClient, mid: u64, interval_se
                         match client.place_order(&cmt, "limit", price, size) {
                             Ok(_) => {
                                 covered[level] += 1;
-                                mkt.active.insert(cmt, ActiveQuote { side, level, price, placed_at: Instant::now() });
+                                mkt.active.insert(cmt, ActiveQuote { side, level, price, size, placed_at: Instant::now() });
                             }
                             Err(e) => {
                                 eprintln!("  [mm] {} fresh place side={side} lvl={level}: {e}", mkt.cfg.symbol);

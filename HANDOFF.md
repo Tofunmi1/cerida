@@ -484,7 +484,9 @@ Size formula: `base_size * 1.08^(level-1)` (geometric growth outward)
 
 Refresh trigger: price moves more than **0.5%** from `mid_at_gen` → cancel all, regenerate pool at new mid.
 
-TTL: quotes older than **300s** (5 min) are cancelled on next tick.
+Fill awareness: on every tick the MM reconciles its tracked quotes against the live CLOB depth. If a price level's size or order count has dropped below what the MM expects, it cancels the remaining quotes at that level and refills it.
+
+TTL: quotes older than **45s** are cancelled on next tick.
 
 Tick interval: **60s** (configurable via `--mm-interval-secs`).
 
