@@ -182,10 +182,6 @@ export default function DocsPage() {
             </div>
           </div>
 
-          <div className="mb-8 rounded-[10px] border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-200">
-            <strong className="text-amber-100">Testnet only.</strong> Cerida is unaudited experimental software running on Stellar testnet. Do not deposit real funds.
-          </div>
-
           {/* What is Cerida */}
           <section id="what">
             <H2 id="what">What is Cerida?</H2>
