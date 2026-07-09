@@ -127,6 +127,18 @@ The note is spent (nullifier published on-chain), collateral is locked in the pe
 
 Closing a position or withdrawing from the shielded pool requires a NoteSpend proof proving knowledge of the secret that committed the note. The nullifier is checked for uniqueness (replay protection), collateral is returned, and the nullifier is marked spent forever.
 
+### 6. What Stellar Enforces On-Chain
+
+The Stellar contract anchors every position and withdrawal through **ZK-proof verification, commitment anchoring, and nullifier integrity**:
+
+- **ZK proof verification**: Stellar runs BN254 MSM and pairing host functions (Protocol 26) to verify every Groth16 proof before accepting any state transition. No proof, no change.
+- **Commitment anchoring**: Position openings and note deposits are stored as Poseidon2 hashes — the contract enforces that the commitment chain is consistent and the deposited collateral matches the amount commitment.
+- **Nullifier uniqueness**: Every note spend and position close publishes a nullifier. The contract rejects replays — each nullifier is marked spent irrevocably.
+- **Authorized settlement**: The perp engine authorizes exactly one Stellar account (the TEE) to `settle_position` and `settle_partial`. The TEE is the only entity that knows the private inputs required to open a settlement commitment, making it the sole valid settlement proposer.
+- **Collateral integrity**: Tokens are locked in the contract on position open and only released on a valid `settle_position` call signed by the authorized TEE account. The contract enforces that released amounts never exceed committed collateral.
+
+No oracle prices or funding rates are verified on-chain — those computations run inside the TEE using live Pyth data, and the settled amounts are committed to the contract as opaque hashes.
+
 ---
 
 ## Trading Features

@@ -198,7 +198,7 @@ export default function DocsPage() {
                rows={[
                  ['ZK Proofs', 'Groth16 (arkworks BN254)', 'Proves order validity, note ownership, and cancellation — without revealing private inputs'],
                  ['TEE', 'GCP Confidential Space (AMD SEV-SNP)', 'Runs matching engine inside an encrypted enclave. Holds all plaintext values; computes PnL, liquidations, and settlements. Host operator sees nothing'],
-                 ['Settlement', 'Stellar Soroban', 'Stores only commitment hashes and nullifiers. TEE account is the sole authority for settling positions and processing withdrawals. No oracle or funding on-chain'],
+                  ['Settlement', 'Stellar Soroban', 'Verifies every Groth16 ZK proof via BN254 MSM + pairing host functions (Protocol 26) before accepting any state transition. Anchors all positions and notes as commitment hashes; enforces nullifier uniqueness to prevent replays. Authorizes only the TEE account to settle positions and process withdrawals. Oracles and funding run off-chain inside the TEE — no on-chain price feeds required'],
                ]}
              />
            </section>
