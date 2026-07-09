@@ -525,17 +525,17 @@ export default function OrderBook() {
         // Smooth bar/step toward real target
         v.barCur  += (v.barTgt  - v.barCur)  * ease
         v.stepCur += (v.stepTgt - v.stepCur) * ease
-        // Each level independently fires ~every 800ms
-        if (Math.random() < dt * 0.0012) {
-          v.noiseTgt = (Math.random() - 0.5) * 0.34  // ±17% size jump
-          v.flash = 300                                // ms highlight
+        // Each level independently fires ~every 2s
+        if (Math.random() < dt * 0.0005) {
+          v.noiseTgt = (Math.random() - 0.5) * 0.24  // ±12% size jump
+          v.flash = 260                                // ms highlight
         }
         // Smooth noise toward its target (fast settle)
         v.noise += (v.noiseTgt - v.noise) * (1 - Math.exp(-dt / 40))
         // Price flicker: tiny ±0.01% jitter
         v.priceNoise += (v.priceNoiseTgt - v.priceNoise) * (1 - Math.exp(-dt / 50))
-        if (Math.random() < dt * 0.002) {
-          v.priceNoiseTgt = (Math.random() - 0.5) * 0.0002
+        if (Math.random() < dt * 0.0006) {
+          v.priceNoiseTgt = (Math.random() - 0.5) * 0.00015
         }
         if (v.flash > 0) v.flash -= dt
       }
