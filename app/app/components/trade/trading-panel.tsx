@@ -522,6 +522,7 @@ export default function TradingPanel() {
           collateral_amount: Number(collateralUnits),
           tp_price: tpUnits || undefined,
           sl_price: slUnits || undefined,
+          recipient: publicKey ?? undefined,
         }),
         tee.noteProof(noteAmount, noteSecret),
       ])

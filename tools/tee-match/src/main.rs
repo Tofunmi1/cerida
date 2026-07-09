@@ -175,6 +175,7 @@ fn main() -> Result<()> {
                 collateral_amount: 0,
                 tp_price: 0,
                 sl_price: 0,
+                recipient: None,
             };
 
             log::debug!(

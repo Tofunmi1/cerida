@@ -63,6 +63,7 @@ export const tee = {
     close_position_cmt?: string
     tp_price?: number
     sl_price?: number
+    recipient?: string
   }): Promise<{ commitment: string }> {
     const resp = await call('init', {
       cmd: 'init',
@@ -80,6 +81,7 @@ export const tee = {
       close_position_cmt: params.close_position_cmt,
       tp_price: params.tp_price ?? 0,
       sl_price: params.sl_price ?? 0,
+      recipient: params.recipient,
     })
     if (!resp.ok || !resp.commitment) throw new Error(resp.error ?? 'init failed')
     return { commitment: resp.commitment }
@@ -101,6 +103,7 @@ export const tee = {
     close_position_cmt?: string
     tp_price?: number
     sl_price?: number
+    recipient?: string
   }): Promise<{ commitment: string }> {
     const resp = await call('fast-init', {
       cmd: 'fast-init',
@@ -118,6 +121,7 @@ export const tee = {
       close_position_cmt: params.close_position_cmt,
       tp_price: params.tp_price ?? 0,
       sl_price: params.sl_price ?? 0,
+      recipient: params.recipient,
     })
     if (!resp.ok || !resp.commitment) throw new Error(resp.error ?? 'fast-init failed')
     return { commitment: resp.commitment }

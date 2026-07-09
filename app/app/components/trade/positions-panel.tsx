@@ -116,6 +116,7 @@ export default function PositionsPanel() {
         collateral_amount: Math.round(pos.collateral * PRICE_SCALE),
         is_close: true,
         close_position_cmt: cmt,
+        recipient: publicKey ?? undefined,
       })
 
       toast.update(progressId, { description: 'Matching close order…', progress: 70 })
@@ -132,10 +133,10 @@ export default function PositionsPanel() {
 
       toast.update(progressId, {
         type: 'success',
-        title: `${symbol} closed`,
-        description: 'Position settled — claim funds when the row appears under Settled',
+        title: `${symbol} ${pos.side === 0 ? 'Long' : 'Short'} closed`,
+        description: undefined,
         progress: undefined,
-        duration: 8000,
+        duration: 5000,
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)

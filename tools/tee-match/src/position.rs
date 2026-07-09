@@ -1,5 +1,6 @@
-use crate::{db, engine, log, stellar};
+use crate::{db, engine, log, proof, stellar};
 use anyhow::{anyhow, Result};
+use serde_json;
 use std::path::Path;
 
 /// Funding-index scale: 1_000_000_000 = 1.0 (100%).
@@ -96,6 +97,7 @@ fn process_side(
             collateral,
             secrets.leverage,
             &asset_id_hex,
+            None, // protocol positions have no recipient
         );
     }
 
@@ -108,6 +110,7 @@ fn process_side(
         collateral,
         secrets.leverage,
         &asset_id_hex,
+        secrets.recipient.clone(),
     )
 }
 
@@ -120,6 +123,7 @@ fn increase_position(
     collateral: i128,
     leverage: u64,
     asset_id_hex: &str,
+    recipient: Option<String>,
 ) -> Result<()> {
     let idx = store.get_funding_index(asset_id_hex)?;
 
@@ -153,6 +157,7 @@ fn increase_position(
             open_time_ns: engine::now_nanos(),
             tp_price,
             sl_price,
+            recipient,
         },
     };
 
@@ -205,7 +210,7 @@ pub fn close_position(
     pos_cmt: &str,
     exit_price: u64,
     _close_size: u64,
-    _keys_dir: &Path,
+    keys_dir: &Path,
 ) -> Result<()> {
     let mut state = store
         .get_position_state(pos_cmt)?
@@ -232,6 +237,9 @@ pub fn close_position(
     state.size = 0;
     store.insert_position_state(pos_cmt, &state)?;
 
+    // Save recipient before state is consumed.
+    let recipient = state.recipient.clone();
+
     let note = stellar::create_settlement_note(settlement_amount);
     stellar::relay_settle_position(
         perp_id,
@@ -257,6 +265,32 @@ pub fn close_position(
         },
     )?;
     store.insert_settlement_note(pos_cmt, &note.note_cmt)?;
+
+    // Auto-claim: withdraw settlement note to the user's Stellar wallet.
+    if let Some(addr) = recipient {
+        if settlement_amount > 0 {
+            let (_, note_null_hex) = proof::compute_note_cmt_hex(settlement_amount as u64, note.note_secret);
+                    let proof_out = proof::gen_note_proof(keys_dir, settlement_amount as u64, note.note_secret);
+                    match proof_out {
+                        Ok(out) => {
+                            let proof_json = serde_json::json!({
+                                "a": out.proof.proof.a,
+                                "b": out.proof.proof.b,
+                                "c": out.proof.proof.c,
+                            }).to_string();
+                            if let Err(e) = stellar::relay_withdraw_note(
+                                perp_id, &note.note_cmt, &note_null_hex, &addr,
+                                settlement_amount, &note.blinding_hex, &proof_json,
+                            ) {
+                        log::error!("auto-claim withdraw failed", "cmt", engine::short_id(pos_cmt), "err", e.to_string());
+                    }
+                }
+                Err(e) => {
+                    log::error!("auto-claim proof generation failed", "cmt", engine::short_id(pos_cmt), "err", e.to_string());
+                }
+            }
+        }
+    }
 
     log::info!(
         "position closed",

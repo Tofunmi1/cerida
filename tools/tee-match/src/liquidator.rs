@@ -4,6 +4,7 @@ use crate::stellar;
 use anyhow::Result;
 use rand::Rng;
 use serde_json;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,7 @@ pub fn spawn(
     store: Arc<SecretStore>,
     perp_id: String,
     interval_secs: u64,
+    keys_dir: Arc<PathBuf>,
 ) -> std::thread::JoinHandle<()> {
     let interval = Duration::from_secs(interval_secs);
     std::thread::spawn(move || {
@@ -34,7 +36,7 @@ pub fn spawn(
                     }
                     let actual_cmt = &cmt[4..]; // strip "pos_" prefix
                     checked += 1;
-                    match check_and_liquidate(&perp_id, actual_cmt, &store) {
+                    match check_and_liquidate(&perp_id, actual_cmt, &store, &keys_dir) {
                         Ok(Some(tx_hash)) => {
                             liq += 1;
                             log::info!("Liquidated position", "cmt", &actual_cmt[..16], "tx", &tx_hash[..16]);
@@ -68,6 +70,7 @@ pub fn check_and_liquidate(
     perp_id: &str,
     commitment: &str,
     store: &SecretStore,
+    keys_dir: &PathBuf,
 ) -> Result<Option<String>> {
     let state = match store.get_position_state(commitment)? {
         Some(s) => s,
@@ -153,6 +156,9 @@ pub fn check_and_liquidate(
             (settlement, 0i128, 0i128)
         };
 
+        // Save recipient before state is consumed.
+        let recipient = state.recipient.clone();
+
         let settlement = stellar::create_settlement_note(to_note);
 
         let tx_hash = stellar::relay_settle_position(
@@ -176,6 +182,31 @@ pub fn check_and_liquidate(
             note_secret: settlement.note_secret,
         })?;
         store.insert_settlement_note(commitment, &settlement.note_cmt)?;
+
+        // Auto-claim: withdraw settlement note to the user's Stellar wallet.
+        if let Some(ref addr) = recipient {
+            if to_note > 0 {
+                let (_, note_null_hex) = crate::proof::compute_note_cmt_hex(to_note as u64, settlement.note_secret);
+                match crate::proof::gen_note_proof(keys_dir, to_note as u64, settlement.note_secret) {
+                    Ok(out) => {
+                        let proof_json = serde_json::json!({
+                            "a": out.proof.proof.a,
+                            "b": out.proof.proof.b,
+                            "c": out.proof.proof.c,
+                        }).to_string();
+                        if let Err(e) = stellar::relay_withdraw_note(
+                            perp_id, &settlement.note_cmt, &note_null_hex, addr,
+                            to_note, &settlement.blinding_hex, &proof_json,
+                        ) {
+                            log::error!("liquidation auto-claim withdraw failed", "cmt", &commitment[..16], "err", e.to_string());
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("liquidation auto-claim proof failed", "cmt", &commitment[..16], "err", e.to_string());
+                    }
+                }
+            }
+        }
 
         log::info!("Full liquidation executed", "cmt", &commitment[..16], "reward", actual_reward);
         Ok(Some(tx_hash))

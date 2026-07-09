@@ -201,6 +201,7 @@ pub fn relay_open_position(
             open_time_ns: crate::engine::now_nanos(),
             tp_price: 0,
             sl_price: 0,
+            recipient: None,
         };
         store.insert_position_state(position_cmt_hex, &position_state)?;
     }
@@ -378,6 +379,7 @@ pub fn relay_open_position_from_pool(
             open_time_ns: crate::engine::now_nanos(),
             tp_price: 0,
             sl_price: 0,
+            recipient: None,
         };
         store.insert_position_state(position_cmt_hex, &position_state)?;
     }

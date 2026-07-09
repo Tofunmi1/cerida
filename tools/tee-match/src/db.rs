@@ -36,6 +36,9 @@ pub struct OrderSecrets {
     /// Stop-loss trigger price (0 = not set).
     #[serde(default)]
     pub sl_price: u64,
+    /// Stellar wallet address to receive settlement funds.
+    #[serde(default)]
+    pub recipient: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +77,9 @@ pub struct PositionState {
     /// Stop-loss trigger price (0 = not set).
     #[serde(default)]
     pub sl_price: u64,
+    /// Stellar wallet address to receive settlement funds.
+    #[serde(default)]
+    pub recipient: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

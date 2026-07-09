@@ -23,6 +23,7 @@ struct BatchItem {
     protocol: Option<bool>,
     asset_id_hex: Option<String>,
     collateral_amount: Option<i128>,
+    recipient: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -54,6 +55,7 @@ struct Request {
     close_position_cmt: Option<String>,
     tp_price: Option<u64>,
     sl_price: Option<u64>,
+    recipient: Option<String>,
 }
 
 #[derive(Serialize, Default)]
@@ -189,7 +191,7 @@ pub fn run(
             "interval_secs",
             interval
         );
-        crate::liquidator::spawn(liq_store, perp, interval);
+        crate::liquidator::spawn(liq_store, perp, interval, keys.clone());
     }
 
     // Spawn the funding-rate cron to periodically update the global funding index.
@@ -398,6 +400,7 @@ fn handle_init(store: &db::SecretStore, keys: &PathBuf, req: &Request) -> Respon
         collateral_amount: req.collateral_amount.unwrap_or(0),
         tp_price: req.tp_price.unwrap_or(0),
         sl_price: req.sl_price.unwrap_or(0),
+        recipient: req.recipient.clone(),
     };
 
     log::info!(
@@ -529,10 +532,11 @@ fn handle_batch_fast_init(store: &db::SecretStore, req: &Request) -> Response {
             close_position_cmt: None,
             protocol: item.protocol.unwrap_or(false),
             asset_id_hex: item.asset_id_hex.clone(),
-        collateral_amount: item.collateral_amount.unwrap_or(0),
-        tp_price: 0,
-        sl_price: 0,
-    };
+            collateral_amount: item.collateral_amount.unwrap_or(0),
+            tp_price: 0,
+            sl_price: 0,
+            recipient: item.recipient.clone(),
+        };
     let cmt_hex = proof::compute_commitment_hex(&secrets);
     commitments.push(cmt_hex.clone());
     items.push((cmt_hex, secrets));
@@ -581,6 +585,7 @@ fn handle_fast_init(store: &db::SecretStore, req: &Request) -> Response {
         collateral_amount: req.collateral_amount.unwrap_or(0),
         tp_price: req.tp_price.unwrap_or(0),
         sl_price: req.sl_price.unwrap_or(0),
+        recipient: req.recipient.clone(),
     };
     let cmt_hex = proof::compute_commitment_hex(&secrets);
     log::info!(
@@ -1434,7 +1439,8 @@ pub mod secure {
                 "interval_secs",
                 interval
             );
-            crate::liquidator::spawn(liq_store, perp, interval);
+        let liq_keys = StdArc::new(keys_dir.clone());
+        crate::liquidator::spawn(liq_store, perp, interval, liq_keys);
         }
 
         // Spawn the funding-rate cron to periodically update the global funding index.
