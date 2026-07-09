@@ -41,6 +41,8 @@ type AnimEntry = {
   stepCur: number; stepTgt: number
   noise: number      // current display size multiplier offset
   noiseTgt: number   // target noise (jumps per level independently)
+  priceNoise: number      // tiny price flicker
+  priceNoiseTgt: number
   flash: number      // ms remaining for row highlight flash
 }
 
@@ -329,7 +331,7 @@ export default function OrderBook() {
         ex.barTgt  = barTgt
         ex.stepTgt = stepTgt
       } else {
-        m.set(row.key, { barCur: 0, barTgt, stepCur: 0, stepTgt, noise: 0, noiseTgt: 0, flash: 0 })
+        m.set(row.key, { barCur: 0, barTgt, stepCur: 0, stepTgt, noise: 0, noiseTgt: 0, priceNoise: 0, priceNoiseTgt: 0, flash: 0 })
       }
     }
     displayAsks.forEach((row, i) => setTarget(row, i, 'ask'))
@@ -398,6 +400,8 @@ export default function OrderBook() {
       const barWidth = barWFor(row)
       const stops = side === 'ask' ? ASK_STOPS : BID_STOPS
       const isHovered = hover?.side === side && rowIndex <= hover.rowIndex
+      const e = m.get(row.key)
+      const noisyPrice = e ? row.price * (1 + e.priceNoise) : row.price
 
       // Flash highlight when level updates
       const flashAlpha = flashFor(row)
@@ -428,7 +432,7 @@ export default function OrderBook() {
       ctx.fillStyle = isExact
         ? (side === 'ask' ? '#f59e44' : '#34d399')
         : isBold(row.price) ? colors.primary : colors.tertiary
-      ctx.fillText(fmtPrice(row.price), HEAT_W + 6, y + ROW_H / 2 + 1)
+      ctx.fillText(fmtPrice(noisyPrice), HEAT_W + 6, y + ROW_H / 2 + 1)
 
       ctx.textAlign = 'right'
       ctx.fillStyle = isExact ? colors.primary : colors.quaternary
@@ -481,6 +485,8 @@ export default function OrderBook() {
 
     const drawWallLabel = (row: RowData | undefined, y: number, color: string) => {
       if (!row) return
+      const we = m.get(row.key)
+      const wallPrice = we ? row.price * (1 + we.priceNoise) : row.price
       ctx.strokeStyle = color
       ctx.globalAlpha = 0.3
       ctx.setLineDash([2, 3])
@@ -495,7 +501,7 @@ export default function OrderBook() {
       ctx.textAlign = 'right'
       ctx.shadowColor = 'rgba(0,0,0,0.6)'
       ctx.shadowBlur = 3
-      ctx.fillText(fmtPrice(row.price), w - 6, y - 4)
+      ctx.fillText(fmtPrice(wallPrice), w - 6, y - 4)
       ctx.shadowBlur = 0
     }
     if (asks.length) {
@@ -514,18 +520,23 @@ export default function OrderBook() {
     const frame = (now: number) => {
       const dt = Math.min(48, now - lastFrameRef.current)
       lastFrameRef.current = now
-      const ease = 1 - Math.exp(-dt / 110)
+      const ease = 1 - Math.exp(-dt / 70)
       for (const v of animRef.current.values()) {
         // Smooth bar/step toward real target
         v.barCur  += (v.barTgt  - v.barCur)  * ease
         v.stepCur += (v.stepTgt - v.stepCur) * ease
-        // Each level independently fires ~once every 1.5s (Poisson)
-        if (Math.random() < dt * 0.00065) {
-          v.noiseTgt = (Math.random() - 0.5) * 0.22  // ±11% size jump
-          v.flash = 220                                // ms highlight
+        // Each level independently fires ~every 800ms
+        if (Math.random() < dt * 0.0012) {
+          v.noiseTgt = (Math.random() - 0.5) * 0.34  // ±17% size jump
+          v.flash = 300                                // ms highlight
         }
         // Smooth noise toward its target (fast settle)
-        v.noise += (v.noiseTgt - v.noise) * (1 - Math.exp(-dt / 60))
+        v.noise += (v.noiseTgt - v.noise) * (1 - Math.exp(-dt / 40))
+        // Price flicker: tiny ±0.01% jitter
+        v.priceNoise += (v.priceNoiseTgt - v.priceNoise) * (1 - Math.exp(-dt / 50))
+        if (Math.random() < dt * 0.002) {
+          v.priceNoiseTgt = (Math.random() - 0.5) * 0.0002
+        }
         if (v.flash > 0) v.flash -= dt
       }
       paint()
