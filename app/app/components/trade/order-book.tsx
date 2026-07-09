@@ -193,9 +193,11 @@ function isBold(price: number) {
 }
 
 function fmtSize(n: number) {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return n.toFixed(2)
+  const s = n / PRICE_SCALE
+  if (s >= 1000) return s.toFixed(1)
+  if (s >= 1) return s.toFixed(2)
+  if (s >= 0.001) return s.toFixed(4)
+  return s.toPrecision(3)
 }
 
 function lerpRGBA(a: [number, number, number, number], b: [number, number, number, number], t: number) {
