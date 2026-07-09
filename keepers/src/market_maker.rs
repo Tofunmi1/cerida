@@ -260,25 +260,34 @@ fn commit_specs(client: &ServerClient, specs: &[SlotSpec], pyth_id: &str) -> Vec
 }
 
 fn place_slots(mkt: &mut Market, client: &ServerClient, slots: Vec<Slot>) {
-    for slot in slots {
-        match client.place_order(&slot.cmt, "limit", slot.price, slot.size) {
-            Ok(_) => {
-                mkt.active.insert(
-                    slot.cmt,
-                    ActiveQuote {
-                        side: slot.side,
-                        level: slot.level,
-                        price: slot.price,
-                        size: slot.size,
-                        placed_at: Instant::now(),
-                    },
-                );
-            }
-            Err(e) => {
-                eprintln!(
-                    "  [mm] {} place side={} lvl={}: {e}",
-                    mkt.cfg.symbol, slot.side, slot.level
-                );
+    // Sort by level, alternating side so the book always has both bid and ask levels.
+    let mut slots_by_level: Vec<Vec<&Slot>> = (0..=LEVELS).map(|_| Vec::new()).collect();
+    for slot in &slots {
+        if slot.level <= LEVELS {
+            slots_by_level[slot.level as usize].push(slot);
+        }
+    }
+    for level in 1..=LEVELS {
+        for slot in &slots_by_level[level] {
+            match client.place_order(&slot.cmt, "limit", slot.price, slot.size) {
+                Ok(_) => {
+                    mkt.active.insert(
+                        slot.cmt.clone(),
+                        ActiveQuote {
+                            side: slot.side,
+                            level: slot.level,
+                            price: slot.price,
+                            size: slot.size,
+                            placed_at: Instant::now(),
+                        },
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  [mm] {} place side={} lvl={}: {e}",
+                        mkt.cfg.symbol, slot.side, slot.level
+                    );
+                }
             }
         }
     }
