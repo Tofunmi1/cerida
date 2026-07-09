@@ -333,17 +333,21 @@ export function MarketProvider({
     const last  = candles[candles.length - 1]?.close ?? first
 
     const index = livePrice ?? last   // Pyth oracle = index price
-    const mark  = index               // mark = oracle (no TWAP divergence yet)
+    const PRICE_SCALE = 1e7
+    // Mark = orderbook mid when available (updates every 3s), else index
+    const bestBid = bids.length ? Math.max(...bids.map(b => b.price)) : null
+    const bestAsk = asks.length ? Math.min(...asks.map(a => a.price)) : null
+    const mid = (bestBid && bestAsk) ? (bestBid + bestAsk) / 2 / PRICE_SCALE : null
+    const mark = mid ?? index
 
     // Open interest estimated from CLOB book depth: Σ(price × size) / PRICE_SCALE²
     // price is in 7-decimal scale (1e7), size is in contract units (also 1e7 based)
-    const PRICE_SCALE = 1e7
     const clobLevels = [...bids, ...asks]
     const openInterest = clobLevels.reduce((acc, l) => acc + (l.price / PRICE_SCALE) * (l.size / PRICE_SCALE), 0)
 
-    // 24h volume: prefer TEE fill data, fall back to Pyth candle volumes
+    // 24h volume: prefer TEE fill data when non-zero, fall back to Pyth candle volumes
     const pythVolume = candles.reduce((sum, c) => sum + c.volume, 0)
-    const volume24h = volumeFromTee ?? (pythVolume > 0 ? pythVolume : null)
+    const volume24h = (volumeFromTee != null && volumeFromTee > 0) ? volumeFromTee : (pythVolume > 0 ? pythVolume : null)
 
     return {
       symbol,

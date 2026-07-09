@@ -167,17 +167,18 @@ function levelsToRows(levels: OrderBookLevel[], reverse: boolean): RowData[] {
   let cum = 0
   const withCum = aggregated.map((l) => ({ ...l, cumulative: (cum += l.size) }))
   const display = reverse ? [...withCum].reverse() : withCum
-  const sizes = aggregated.map((l) => l.size)
-  const sortedSizes = [...sizes].sort((a, b) => a - b)
+  const displaySizes = display.map((l) => l.size / PRICE_SCALE)
+  const sortedSizes = [...displaySizes].sort((a, b) => a - b)
   const scaleMax = percentile(sortedSizes, 0.95)
   let idx = 0
   return display.map((l) => {
-    const whale = scaleMax > 0 && l.size > scaleMax * 1.5
-    const heatRatio = scaleMax > 0 ? Math.min(l.size, scaleMax) / scaleMax : 0.5
+    const ds = l.size / PRICE_SCALE
+    const whale = scaleMax > 0 && ds > scaleMax * 1.5
+    const heatRatio = scaleMax > 0 ? Math.min(ds, scaleMax) / scaleMax : 0.5
     return {
       price: l.price / PRICE_SCALE,
-      size: l.size,
-      cumulative: l.cumulative,
+      size: ds,
+      cumulative: l.cumulative / PRICE_SCALE,
       key: String(l.price),
       whale,
       ticks: [],
@@ -193,7 +194,9 @@ function isBold(price: number) {
 }
 
 function fmtSize(n: number) {
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  if (n >= 1) return n.toFixed(2)
+  return n.toPrecision(3)
 }
 
 function lerpRGBA(a: [number, number, number, number], b: [number, number, number, number], t: number) {
