@@ -27,7 +27,7 @@ export interface MarketState {
   index: number
   changePct: number
   funding: number
-  openInterest: number
+  openInterest: number | null
   volume24h: number | null
   candles: Candle[]
   candlesLoading: boolean
@@ -343,7 +343,8 @@ export function MarketProvider({
     // Open interest estimated from CLOB book depth: Σ(price × size) / PRICE_SCALE²
     // price is in 7-decimal scale (1e7), size is in contract units (also 1e7 based)
     const clobLevels = [...bids, ...asks]
-    const openInterest = clobLevels.reduce((acc, l) => acc + (l.price / PRICE_SCALE) * (l.size / PRICE_SCALE), 0)
+    const rawOI = clobLevels.reduce((acc, l) => acc + (l.price / PRICE_SCALE) * (l.size / PRICE_SCALE), 0)
+    const openInterest = clobLevels.length > 0 ? rawOI : null
 
     // 24h volume: prefer TEE fill data when non-zero, fall back to Pyth candle volumes
     const pythVolume = candles.reduce((sum, c) => sum + c.volume, 0)

@@ -31,7 +31,7 @@ export default function MarketStats() {
       <Tile label="Mark basis" value={`${basis >= 0 ? '+' : ''}${basis.toFixed(4)}%`} />
       <Tile label="Funding / 8h" value={`${funding >= 0 ? '+' : ''}${(funding * 100).toFixed(4)}%`} accent />
       <Tile label="Next funding" value={nextFunding} />
-      <Tile label="Open interest" value={openInterest > 0 ? formatCompactUsd(openInterest) : '—'} />
+      <Tile label="Open interest" value={openInterest != null && openInterest > 0 ? formatCompactUsd(openInterest) : '—'} />
       <Tile label="24h volume"    value={volume24h   != null ? formatCompactUsd(volume24h)   : '—'} />
     </div>
   )

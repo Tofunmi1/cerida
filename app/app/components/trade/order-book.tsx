@@ -167,18 +167,17 @@ function levelsToRows(levels: OrderBookLevel[], reverse: boolean): RowData[] {
   let cum = 0
   const withCum = aggregated.map((l) => ({ ...l, cumulative: (cum += l.size) }))
   const display = reverse ? [...withCum].reverse() : withCum
-  const displaySizes = display.map((l) => l.size / PRICE_SCALE)
-  const sortedSizes = [...displaySizes].sort((a, b) => a - b)
+  const sizes = aggregated.map((l) => l.size)
+  const sortedSizes = [...sizes].sort((a, b) => a - b)
   const scaleMax = percentile(sortedSizes, 0.95)
   let idx = 0
   return display.map((l) => {
-    const ds = l.size / PRICE_SCALE
-    const whale = scaleMax > 0 && ds > scaleMax * 1.5
-    const heatRatio = scaleMax > 0 ? Math.min(ds, scaleMax) / scaleMax : 0.5
+    const whale = scaleMax > 0 && l.size > scaleMax * 1.5
+    const heatRatio = scaleMax > 0 ? Math.min(l.size, scaleMax) / scaleMax : 0.5
     return {
       price: l.price / PRICE_SCALE,
-      size: ds,
-      cumulative: l.cumulative / PRICE_SCALE,
+      size: l.size,
+      cumulative: l.cumulative,
       key: String(l.price),
       whale,
       ticks: [],
@@ -194,9 +193,9 @@ function isBold(price: number) {
 }
 
 function fmtSize(n: number) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  if (n >= 1) return n.toFixed(2)
-  return n.toPrecision(3)
+  return n.toFixed(2)
 }
 
 function lerpRGBA(a: [number, number, number, number], b: [number, number, number, number], t: number) {
@@ -242,6 +241,8 @@ export default function OrderBook() {
   const dataRef = useRef<{
     asks: RowData[]
     bids: RowData[]
+    askCums: number[]
+    bidCums: number[]
     scaleMax: number
     maxCum: number
     spreadY: number
@@ -308,15 +309,19 @@ export default function OrderBook() {
     }
 
     const spreadY = displayAsks.length * ROW_H
-    dataRef.current = { asks: displayAsks, bids: displayBids, scaleMax, maxCum, spreadY, colors }
+    dataRef.current = { asks: displayAsks, bids: displayBids, askCums: askScaleCums, bidCums: bidScaleCums, scaleMax, maxCum, spreadY, colors }
 
     const m = animRef.current
     const seen = new Set<string>()
     const setTarget = (row: RowData, i: number, side: 'ask' | 'bid') => {
       seen.add(row.key)
-      const scaleCum = side === 'ask' ? askScaleCums[i] : bidScaleCums[i]
-      const barTgt  = scaleMax > 0 ? (Math.min(row.size, scaleMax) / scaleMax) * barW : 0
-      const stepTgt = maxCum > 0 ? (scaleCum / maxCum) * barW : 0
+      // Both sides: innermost row (closest to mid) = widest cumulative bar
+      // For asks: askScaleCums[i] already accumulates from outermost → innermost
+      // For bids: reverse bidScaleCums so best bid = widest bar
+      const n = bidScaleCums.length
+      const barCum = side === 'ask' ? askScaleCums[i] : bidScaleCums[n - 1 - i]
+      const barTgt  = maxCum > 0 ? (barCum / maxCum) * barW : 0
+      const stepTgt = maxCum > 0 ? ((side === 'ask' ? askScaleCums[i] : bidScaleCums[i]) / maxCum) * barW : 0
       const ex = m.get(row.key)
       if (ex) {
         ex.barTgt  = barTgt
@@ -342,7 +347,7 @@ export default function OrderBook() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, w, h)
 
-    const { asks, bids, scaleMax, maxCum, spreadY, colors } = d
+    const { asks, bids, askCums, bidCums, scaleMax, maxCum, spreadY, colors } = d
     const m = animRef.current
     const barX = HEAT_W + PW + SW
     const barW = Math.max(0, w - HEAT_W - PW - SW)
@@ -356,9 +361,11 @@ export default function OrderBook() {
       const e = m.get(row.key)
       return e ? Math.max(0, Math.min(barW, e.barCur * (1 + e.noise))) : 0
     }
-    const sizeFor  = (row: RowData) => {
+    const sizeFor  = (row: RowData, i: number, side: 'ask' | 'bid') => {
+      const n = bidCums.length
+      const c = side === 'ask' ? askCums[i] : bidCums[n - 1 - i]
       const e = m.get(row.key)
-      return e ? Math.max(1, Math.round(row.size * (1 + e.noise))) : row.size
+      return e ? Math.max(1, Math.round(c * (1 + e.noise))) : c
     }
     const flashFor = (row: RowData) => {
       const e = m.get(row.key)
@@ -389,7 +396,7 @@ export default function OrderBook() {
     const drawRow = (row: RowData, y: number, side: 'ask' | 'bid', rowIndex: number) => {
       const barWidth = barWFor(row)
       const stops = side === 'ask' ? ASK_STOPS : BID_STOPS
-      const isHovered = hover?.side === side && hover.rowIndex === rowIndex
+      const isHovered = hover?.side === side && rowIndex <= hover.rowIndex
 
       // Flash highlight when level updates
       const flashAlpha = flashFor(row)
@@ -399,11 +406,13 @@ export default function OrderBook() {
           : `rgba(52,211,153,${flashAlpha * 0.16})`
         ctx.fillRect(0, y, w, ROW_H)
       }
-      // Hover row background
-      if (isHovered) {
-        ctx.fillStyle = side === 'ask' ? 'rgba(190,90,30,0.18)' : 'rgba(0,160,120,0.15)'
+      // Hover: flood-fill all levels from mid price to hovered row
+      if (hover?.side === side && rowIndex <= hover.rowIndex) {
+        ctx.fillStyle = side === 'ask' ? 'rgba(190,90,30,0.08)' : 'rgba(0,160,120,0.07)'
         ctx.fillRect(0, y, w, ROW_H)
       }
+      // Brighter highlight on the exact hovered row
+      const isExact = hover?.side === side && rowIndex === hover.rowIndex
 
       const heatRatio = scaleMax > 0 ? Math.min(1, row.size / scaleMax) : 0.5
       ctx.fillStyle = row.whale ? WHALE_FILL : gradColor(stops, heatRatio)
@@ -415,14 +424,14 @@ export default function OrderBook() {
       ctx.font = FONT
       ctx.textBaseline = 'middle'
       ctx.textAlign = 'left'
-      ctx.fillStyle = isHovered
+      ctx.fillStyle = isExact
         ? (side === 'ask' ? '#f59e44' : '#34d399')
         : isBold(row.price) ? colors.primary : colors.tertiary
       ctx.fillText(fmtPrice(row.price), HEAT_W + 6, y + ROW_H / 2 + 1)
 
       ctx.textAlign = 'right'
-      ctx.fillStyle = isHovered ? colors.primary : colors.quaternary
-      ctx.fillText(fmtSize(sizeFor(row)), HEAT_W + PW + SW - 6, y + ROW_H / 2 + 1)
+      ctx.fillStyle = isExact ? colors.primary : colors.quaternary
+      ctx.fillText(fmtSize(sizeFor(row, rowIndex, side)), HEAT_W + PW + SW - 6, y + ROW_H / 2 + 1)
 
       if (Math.round(row.price * 10) % 10 === 0) {
         ctx.fillStyle = colors.border
