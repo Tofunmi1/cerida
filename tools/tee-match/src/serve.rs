@@ -97,6 +97,8 @@ struct Response {
     tx_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    volume_24h: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -320,7 +322,7 @@ pub fn run(
                 "place" => handle_place(&store, &book_store, &fills, &books, &keys, &req),
                 "cancel" => handle_cancel(&store, &book_store, &books, &keys, &req),
                 "market" => handle_market(&store, &book_store, &fills, &books, &keys, &req),
-                "get_market" => handle_get_market(&books, &req),
+                "get_market" => handle_get_market(&books, &fills, &req),
                 other => {
                     log::warning!("Unknown command", "cmd", other, "peer", &peer);
                     Response {
@@ -1307,7 +1309,11 @@ fn handle_market(
 
 
 
-fn handle_get_market(books: &RwLock<HashMap<u64, engine::OrderBook>>, req: &Request) -> Response {
+fn handle_get_market(
+    books: &RwLock<HashMap<u64, engine::OrderBook>>,
+    fills: &db::FillLedger,
+    req: &Request,
+) -> Response {
     let asset = req.asset.unwrap_or(0);
     let books = books.read().unwrap();
     if let Some(book) = books.get(&asset) {
@@ -1317,6 +1323,7 @@ fn handle_get_market(books: &RwLock<HashMap<u64, engine::OrderBook>>, req: &Requ
             best_ask: book.best_ask().map(|(p, s)| format!("{p}x{s}")),
             spread: book.spread(),
             order_count: Some(book.order_count()),
+            volume_24h: Some(fills.volume_24h(asset)),
             depth: Some(
                 book.depth(engine::Side::Bid, 32)
                     .iter()
@@ -1353,6 +1360,7 @@ fn handle_get_market(books: &RwLock<HashMap<u64, engine::OrderBook>>, req: &Requ
         Response {
             ok: true,
             order_count: Some(0),
+            volume_24h: Some(fills.volume_24h(asset)),
             ..Default::default()
         }
     }
@@ -1661,7 +1669,7 @@ pub mod secure {
             asset: params.get("asset").and_then(|v| v.parse().ok()),
             ..Default::default() // rest of fields use defaults
         };
-        let resp = handle_get_market(&state.books, &req);
+        let resp = handle_get_market(&state.books, &state.fills, &req);
         Json(serde_json::json!(resp))
     }
 
@@ -2073,7 +2081,7 @@ pub mod http {
             asset,
             ..Default::default()
         };
-        Json(serde_json::json!(handle_get_market(&state.books, &req)))
+        Json(serde_json::json!(handle_get_market(&state.books, &state.fills, &req)))
     }
 
     #[derive(serde::Deserialize)]

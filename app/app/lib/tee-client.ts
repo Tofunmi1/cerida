@@ -25,6 +25,7 @@ interface TeeResponse {
   best_ask?: string
   spread?: number
   order_count?: number
+  volume_24h?: number
   fills?: Array<{ maker_id: string; price: number; size: number }>
   bids?: OrderBookLevel[]
   asks?: OrderBookLevel[]

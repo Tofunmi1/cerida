@@ -387,6 +387,22 @@ impl FillLedger {
     pub fn count(&self) -> u64 {
         self.counter.load(Ordering::Relaxed)
     }
+
+    pub fn volume_24h(&self, asset_id: u64) -> f64 {
+        let cutoff = engine::now_nanos()
+            - 24 * 60 * 60 * 1_000_000_000;
+        let mut vol = 0.0f64;
+        for item in self.tree.iter() {
+            if let Ok((_, value)) = item {
+                if let Ok(fill) = serde_json::from_slice::<FillEntry>(&value) {
+                    if fill.asset == asset_id && fill.timestamp_ns >= cutoff {
+                        vol += (fill.price as f64 / 1e7) * (fill.size as f64 / 1e7);
+                    }
+                }
+            }
+        }
+        vol
+    }
 }
 
 pub fn open_db(path: &std::path::Path) -> anyhow::Result<sled::Db> {

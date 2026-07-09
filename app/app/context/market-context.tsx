@@ -196,6 +196,7 @@ export function MarketProvider({
   // ── Orderbook state ──────────────────────────────────────────────
   const [bids, setBids] = useState<OrderBookLevel[]>([])
   const [asks, setAsks] = useState<OrderBookLevel[]>([])
+  const [volumeFromTee, setVolumeFromTee] = useState<number | null>(null)
 
   // ── Load Pyth Benchmarks candles when market changes ─────────────
   useEffect(() => {
@@ -314,6 +315,7 @@ export function MarketProvider({
       const resp = await tee.getMarket(currentMarket.assetId)
       if (resp.bids?.length) setBids(resp.bids)
       if (resp.asks?.length) setAsks(resp.asks)
+      if (resp.volume_24h != null) setVolumeFromTee(resp.volume_24h)
     } catch { /* TEE offline — keep last known depth */ }
   }, [currentMarket])
 
@@ -339,9 +341,9 @@ export function MarketProvider({
     const clobLevels = [...bids, ...asks]
     const openInterest = clobLevels.reduce((acc, l) => acc + (l.price / PRICE_SCALE) * (l.size / PRICE_SCALE), 0)
 
-    // 24h volume: sum candle volumes (Pyth Benchmarks v[] is in USD for crypto perps)
-    const rawVolume = candles.reduce((sum, c) => sum + c.volume, 0)
-    const volume24h = rawVolume > 0 ? rawVolume : null
+    // 24h volume: prefer TEE fill data, fall back to Pyth candle volumes
+    const pythVolume = candles.reduce((sum, c) => sum + c.volume, 0)
+    const volume24h = volumeFromTee ?? (pythVolume > 0 ? pythVolume : null)
 
     return {
       symbol,
@@ -359,7 +361,7 @@ export function MarketProvider({
       allPrices,
       symbolPrices,
     }
-  }, [candles, candlesLoading, symbol, livePrice, bids, asks, currentMarket, allPrices, symbolPrices])
+  }, [candles, candlesLoading, symbol, livePrice, bids, asks, currentMarket, allPrices, symbolPrices, volumeFromTee])
 
   return <MarketContext.Provider value={value}>{children}</MarketContext.Provider>
 }
