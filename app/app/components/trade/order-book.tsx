@@ -365,10 +365,9 @@ export default function OrderBook() {
       const e = m.get(row.key)
       return e ? Math.max(0, Math.min(barW, e.barCur * (1 + e.noise))) : 0
     }
-    const sizeFor  = (row: RowData, i: number, side: 'ask' | 'bid') => {
-      const c = side === 'ask' ? askCums[i] : bidCums[i]
+    const sizeFor  = (row: RowData, _i: number, _side: 'ask' | 'bid') => {
       const e = m.get(row.key)
-      return e ? Math.max(1, Math.round(c * (1 + e.noise))) : c
+      return e ? Math.max(1, Math.round(row.size * (1 + e.noise))) : Math.round(row.size)
     }
     const flashFor = (row: RowData) => {
       const e = m.get(row.key)
@@ -528,15 +527,13 @@ export default function OrderBook() {
         // Each level independently fires ~every 2s
         if (Math.random() < dt * 0.0005) {
           v.noiseTgt = (Math.random() - 0.5) * 0.24  // ±12% size jump
+          v.priceNoiseTgt = (Math.random() - 0.5) * 0.00015  // ±0.008% price flicker
           v.flash = 260                                // ms highlight
         }
         // Smooth noise toward its target (fast settle)
         v.noise += (v.noiseTgt - v.noise) * (1 - Math.exp(-dt / 40))
-        // Price flicker: tiny ±0.01% jitter
+        // Price flicker
         v.priceNoise += (v.priceNoiseTgt - v.priceNoise) * (1 - Math.exp(-dt / 50))
-        if (Math.random() < dt * 0.0006) {
-          v.priceNoiseTgt = (Math.random() - 0.5) * 0.00015
-        }
         if (v.flash > 0) v.flash -= dt
       }
       paint()
