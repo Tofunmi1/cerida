@@ -315,11 +315,11 @@ export default function OrderBook() {
     const seen = new Set<string>()
     const setTarget = (row: RowData, i: number, side: 'ask' | 'bid') => {
       seen.add(row.key)
-      // Both sides: innermost row (closest to mid) = widest cumulative bar
-      // For asks: askScaleCums[i] already accumulates from outermost → innermost
-      // For bids: reverse bidScaleCums so best bid = widest bar
-      const n = bidScaleCums.length
-      const barCum = side === 'ask' ? askScaleCums[i] : bidScaleCums[n - 1 - i]
+      // Both sides: bar grows away from mid price (innermost = narrowest, outward = wider)
+      // For asks: askScaleCums[0] = total cum (widest at best ask? no — reverse gives
+      // cum[0]=total, but that's the largest, making best ask the widest.)
+      // Let's just use raw cumulative ordering: innermost = own size, outermost = total
+      const barCum = side === 'ask' ? askScaleCums[i] : bidScaleCums[i]
       const barTgt  = maxCum > 0 ? (barCum / maxCum) * barW : 0
       const stepTgt = maxCum > 0 ? ((side === 'ask' ? askScaleCums[i] : bidScaleCums[i]) / maxCum) * barW : 0
       const ex = m.get(row.key)
@@ -362,8 +362,7 @@ export default function OrderBook() {
       return e ? Math.max(0, Math.min(barW, e.barCur * (1 + e.noise))) : 0
     }
     const sizeFor  = (row: RowData, i: number, side: 'ask' | 'bid') => {
-      const n = bidCums.length
-      const c = side === 'ask' ? askCums[i] : bidCums[n - 1 - i]
+      const c = side === 'ask' ? askCums[i] : bidCums[i]
       const e = m.get(row.key)
       return e ? Math.max(1, Math.round(c * (1 + e.noise))) : c
     }
