@@ -260,18 +260,18 @@ export default function OrderBook() {
   // Determine whether we have real TEE data
   const hasLiveBook = liveBids.length > 0 || liveAsks.length > 0
 
-  // Derive rows from TEE data or seeded fallback
+  // Derive rows from TEE data
   const { askRows, bidRows } = useMemo(() => {
     if (hasLiveBook) {
       // TEE CLOB: asks sorted ascending (best ask = last), bids sorted descending (best bid = first)
       const sortedAsks = [...liveAsks].sort((a, b) => a.price - b.price)
       const sortedBids = [...liveBids].sort((a, b) => b.price - a.price)
       return {
-        askRows: levelsToRows(sortedAsks, true),  // display high-to-low (asks reversed)
-        bidRows: levelsToRows(sortedBids, false),  // display high-to-low (bids natural)
+        askRows: levelsToRows(sortedAsks, true),
+        bidRows: levelsToRows(sortedBids, false),
       }
     }
-    return { askRows: null, bidRows: null }
+    return { askRows: [], bidRows: [] }
   }, [liveBids, liveAsks, hasLiveBook])
 
   function rebuild() {
@@ -283,10 +283,9 @@ export default function OrderBook() {
 
     const rowsPerSide = Math.max(6, Math.min(14, Math.floor(h / ROW_H / 2)))
     const mid = markRef.current
-    const base = dynamicTick(mid) * Math.round(mid / dynamicTick(mid))
 
-    const asks = askRows ?? buildSeededRows(base, 1, rowsPerSide)
-    const bids = bidRows ?? buildSeededRows(base, -1, rowsPerSide)
+    const asks = askRows ?? []
+    const bids = bidRows ?? []
 
     // Trim to fit height
     const displayAsks = asks.slice(0, rowsPerSide)
