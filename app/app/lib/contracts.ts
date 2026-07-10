@@ -13,8 +13,11 @@ import {
 
 export const NETWORK_PASSPHRASE =
   import.meta.env.VITE_NETWORK_PASSPHRASE ?? Networks.TESTNET
-export const RPC_URL =
-  import.meta.env.VITE_SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org'
+
+// Public Stellar testnet RPC — used for all frontend reads/simulations.
+// Never expose a paid Alchemy key in the client bundle (VITE_ vars are public).
+// The TEE server uses its own private RPC URL server-side for TX submission.
+export const RPC_URL = 'https://soroban-testnet.stellar.org'
 
 export const CONTRACT_IDS = {
   perpEngine: import.meta.env.VITE_PERP_ENGINE_ID as string,

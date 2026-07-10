@@ -161,12 +161,20 @@ export default function PositionsPanel() {
 
     let cancelled = false
 
+    // Cache settled positions — status ≥ 2 never changes, no need to re-fetch
+    const settledCache = new Map<string, PositionMeta>()
+
     async function fetchAll() {
       setLoading(true)
       const stored = positionsStore.forWallet(publicKey!)
       const results = await Promise.all(
         stored.map(async (s) => {
+          const cached = settledCache.get(s.commitment)
+          if (cached) return { stored: s, meta: cached }
           const meta = await getPosition(s.commitment, publicKey || undefined)
+          if (meta && meta !== POSITION_NOT_FOUND && Number((meta as PositionMeta).status) >= 2) {
+            settledCache.set(s.commitment, meta as PositionMeta)
+          }
           return { stored: s, meta }
         })
       )
@@ -175,7 +183,7 @@ export default function PositionsPanel() {
     }
 
     fetchAll()
-    const id = window.setInterval(fetchAll, 15_000)
+    const id = window.setInterval(fetchAll, 30_000)
     return () => {
       cancelled = true
       window.clearInterval(id)
