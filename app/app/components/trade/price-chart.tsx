@@ -319,7 +319,7 @@ export default function PriceChart() {
   showVPVRRef.current = showVPVR
   const [hollowCandles, setHollowCandles] = useState(true)
 
-  const { symbol, candles, index, funding } = useMarket()
+  const { symbol, candles, index } = useMarket()
   const { tp, sl, entry } = useLevels()
   const { theme } = useTheme()
   const colors = chartTheme[theme]
@@ -690,7 +690,6 @@ export default function PriceChart() {
 
           <div className="ml-auto hidden items-center gap-3 text-[11px] text-text-tertiary xl:flex">
             <Stat label="Index"   value={index.toLocaleString('en-US', { maximumFractionDigits: 2 })} />
-            <Stat label="Funding" value={`${funding.toFixed(4)}%`} accent />
           </div>
         </div>
 

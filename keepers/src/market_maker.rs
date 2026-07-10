@@ -36,6 +36,7 @@ pub struct MarketConfig {
     pub leverage: u64,
 }
 
+#[derive(Clone)]
 pub struct MmConfig {
     pub tee_addr: String,
     pub markets: Vec<MarketConfig>,
