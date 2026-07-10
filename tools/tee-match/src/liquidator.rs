@@ -77,10 +77,17 @@ pub fn check_and_liquidate(
         None => return Ok(None), // not in TEE DB
     };
 
-    let oracle_price = fetch_oracle_price(&state.asset_id)?;
-    if oracle_price == 0 {
+    // Skip already-closed or zero-size positions before hitting oracle.
+    if state.remaining_size == 0 || state.effective_collateral <= 0 {
         return Ok(None);
     }
+
+    let oracle_price_1e8 = fetch_oracle_price(&state.asset_id)?;
+    if oracle_price_1e8 == 0 {
+        return Ok(None);
+    }
+    // Convert oracle from 1e8 → 1e7 scale (matching stored entry_price / collateral).
+    let oracle_price = oracle_price_1e8 / 10;
 
     // Apply accrued funding before liquidation check.
     let mut state = state;
@@ -130,7 +137,8 @@ pub fn check_and_liquidate(
 
         let mut arr = [0u8; 32];
         let decoded = hex::decode(&reward_note.blinding_hex).unwrap_or(vec![0u8; 32]);
-        arr.copy_from_slice(&decoded[..32]);
+        let n = decoded.len().min(32);
+        arr[..n].copy_from_slice(&decoded[..n]);
         store.insert_note_amount(&reward_note.note_cmt, &crate::db::NoteAmount {
             amount: reward,
             blinding: arr,
@@ -175,7 +183,8 @@ pub fn check_and_liquidate(
 
         let mut arr = [0u8; 32];
         let decoded = hex::decode(&settlement.blinding_hex).unwrap_or(vec![0u8; 32]);
-        arr.copy_from_slice(&decoded[..32]);
+        let n = decoded.len().min(32);
+        arr[..n].copy_from_slice(&decoded[..n]);
         store.insert_note_amount(&settlement.note_cmt, &crate::db::NoteAmount {
             amount: to_note,
             blinding: arr,
@@ -215,9 +224,10 @@ pub fn check_and_liquidate(
 
 /// Fetch the latest price from Pyth Hermes for the given price feed ID (hex string).
 /// Normalises to 8 decimal places (same precision as Pyth native expo=-8).
-/// Returns 0 if the feed ID is empty or the request fails gracefully.
+/// Returns 0 if the feed ID is empty/invalid or the request fails.
 pub fn fetch_oracle_price(price_feed_id: &str) -> Result<u64> {
-    if price_feed_id.is_empty() {
+    // Skip empty or all-zeros feed IDs (legacy positions with no real asset).
+    if price_feed_id.is_empty() || price_feed_id.chars().all(|c| c == '0') {
         return Ok(0);
     }
 
@@ -226,15 +236,24 @@ pub fn fetch_oracle_price(price_feed_id: &str) -> Result<u64> {
     let url = format!("{}/v2/updates/price/latest?ids[]={}", base, price_feed_id);
 
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(8))
         .build()?;
 
-    let resp: serde_json::Value = client.get(&url).send()?.json()?;
+    let body = client
+        .get(&url)
+        .header("Accept-Encoding", "identity")
+        .send()
+        .map_err(|e| anyhow::anyhow!("Pyth request failed: {e}"))?
+        .text()
+        .map_err(|e| anyhow::anyhow!("Pyth read body failed: {e}"))?;
 
-    let parsed = resp["parsed"]
-        .as_array()
-        .and_then(|a| a.first())
-        .ok_or_else(|| anyhow::anyhow!("Hermes: no parsed price in response"))?;
+    let resp: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| anyhow::anyhow!("Pyth JSON parse failed: {e} body={}", &body[..body.len().min(200)]))?;
+
+    let parsed = match resp["parsed"].as_array().and_then(|a| a.first()) {
+        Some(p) => p.clone(),
+        None => return Ok(0), // unknown/unsupported feed — skip gracefully
+    };
 
     let raw_price: i64 = parsed["price"]["price"]
         .as_str()

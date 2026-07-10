@@ -56,6 +56,7 @@ struct Request {
     tp_price: Option<u64>,
     sl_price: Option<u64>,
     recipient: Option<String>,
+    feed_id: Option<String>,
 }
 
 #[derive(Serialize, Default)]
@@ -101,6 +102,8 @@ struct Response {
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     volume_24h: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    funding_rate: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -195,7 +198,7 @@ pub fn run(
     }
 
     // Spawn the funding-rate cron to periodically update the global funding index.
-    crate::funding::spawn(store.clone(), crate::funding::DEFAULT_INTERVAL_SECS);
+    crate::funding::spawn(store.clone(), books.clone(), crate::funding::DEFAULT_INTERVAL_SECS);
 
     // Spawn TP/SL monitor if perp_id is configured
     if let Some(ref perp) = perp_id {
@@ -324,7 +327,7 @@ pub fn run(
                 "place" => handle_place(&store, &book_store, &fills, &books, &keys, &req),
                 "cancel" => handle_cancel(&store, &book_store, &books, &keys, &req),
                 "market" => handle_market(&store, &book_store, &fills, &books, &keys, &req),
-                "get_market" => handle_get_market(&books, &fills, &req),
+                "get_market" => handle_get_market(&books, &fills, &store, &req),
                 other => {
                     log::warning!("Unknown command", "cmd", other, "peer", &peer);
                     Response {
@@ -939,6 +942,13 @@ fn handle_place(
         Err(e) => return err(format!("db error: {e}")),
     };
 
+    // If secrets say this is a market order, honour that regardless of what
+    // the caller passed in order_type (the side encoding raw_side >= 2 is the
+    // source of truth and was set at init time).
+    if secrets.is_market {
+        ot = engine::OrderType::Market;
+    }
+
     let order = secrets_to_order(cmt, &secrets, ot);
     let asset = order.asset;
     log::info!(
@@ -1019,7 +1029,7 @@ fn handle_place(
             let maker_side = f.taker_side.opposite();
             let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
             match crate::position::apply_fill(store, perp, &f, keys) {
-                Some(()) => {
+                Some(_) => {
                     let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
                 }
                 None => {
@@ -1254,7 +1264,7 @@ fn handle_market(
             let maker_side = f.taker_side.opposite();
             let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "pending");
             match crate::position::apply_fill(store, perp, &f, keys) {
-                Some(()) => {
+                Some(_) => {
                     let _ = fills.record(cmt, &f.maker_id, f.price, f.size, asset, "confirmed");
                 }
                 None => {
@@ -1317,11 +1327,19 @@ fn handle_market(
 fn handle_get_market(
     books: &RwLock<HashMap<u64, engine::OrderBook>>,
     fills: &db::FillLedger,
+    store: &db::SecretStore,
     req: &Request,
 ) -> Response {
     let asset = req.asset.unwrap_or(0);
+
+    // Use the cached EMA only — no live oracle fetch here so the response is instant.
+    // The funding cron and liquidator update the EMA in the background.
     let books = books.read().unwrap();
     if let Some(book) = books.get(&asset) {
+        let funding_rate: Option<f64> = req.feed_id.as_deref().and_then(|feed_id| {
+            let stored = store.get_funding_premium_ema(feed_id).unwrap_or(0.0);
+            if stored != 0.0 { Some(stored) } else { None }
+        });
         Response {
             ok: true,
             best_bid: book.best_bid().map(|(p, s)| format!("{p}x{s}")),
@@ -1329,43 +1347,49 @@ fn handle_get_market(
             spread: book.spread(),
             order_count: Some(book.order_count()),
             volume_24h: Some(fills.volume_24h(asset)),
+            funding_rate,
             depth: Some(
                 book.depth(engine::Side::Bid, 32)
                     .iter()
-                    .map(|&(p, s, o)| LevelJson {
-                        price: p,
-                        size: s,
-                        orders: o,
-                    })
+                    .map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o })
                     .collect(),
             ),
             bids: Some(
                 book.depth(engine::Side::Bid, 32)
                     .iter()
-                    .map(|&(p, s, o)| LevelJson {
-                        price: p,
-                        size: s,
-                        orders: o,
-                    })
+                    .map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o })
                     .collect(),
             ),
             asks: Some(
                 book.depth(engine::Side::Ask, 32)
                     .iter()
-                    .map(|&(p, s, o)| LevelJson {
-                        price: p,
-                        size: s,
-                        orders: o,
-                    })
+                    .map(|&(p, s, o)| LevelJson { price: p, size: s, orders: o })
                     .collect(),
+            ),
+            fills: Some(
+                fills.recent(12, asset).into_iter().map(|f| FillJson {
+                    maker_id: f.maker_cmt,
+                    price: f.price,
+                    size: f.size,
+                    match_price: None,
+                    match_size: None,
+                    nullifier_a: None,
+                    nullifier_b: None,
+                }).collect(),
             ),
             ..Default::default()
         }
     } else {
+        // No book for this asset — return oracle-based rate if available.
+        let funding_rate: Option<f64> = req.feed_id.as_deref().and_then(|feed_id| {
+            let stored = store.get_funding_premium_ema(feed_id).unwrap_or(0.0);
+            if stored != 0.0 { Some(stored) } else { None }
+        });
         Response {
             ok: true,
             order_count: Some(0),
             volume_24h: Some(fills.volume_24h(asset)),
+            funding_rate,
             ..Default::default()
         }
     }
@@ -1443,8 +1467,10 @@ pub mod secure {
         crate::liquidator::spawn(liq_store, perp, interval, liq_keys);
         }
 
+        let books_arc = StdArc::new(RwLock::new(books));
+
         // Spawn the funding-rate cron to periodically update the global funding index.
-        crate::funding::spawn(store_arc.clone(), crate::funding::DEFAULT_INTERVAL_SECS);
+        crate::funding::spawn(store_arc.clone(), books_arc.clone(), crate::funding::DEFAULT_INTERVAL_SECS);
 
         // Spawn TP/SL monitor (only when perp_id is configured)
         if let Some(ref perp_inner) = perp_id {
@@ -1453,7 +1479,7 @@ pub mod secure {
 
         let state = SecureState {
             store: store_arc,
-            books: StdArc::new(RwLock::new(books)),
+            books: books_arc,
             book_store: StdArc::new(book_store),
             fills: StdArc::new(fills),
             keys_dir,
@@ -1673,9 +1699,10 @@ pub mod secure {
         let req = Request {
             cmd: "get_market".to_string(),
             asset: params.get("asset").and_then(|v| v.parse().ok()),
-            ..Default::default() // rest of fields use defaults
+            feed_id: params.get("feed_id").cloned(),
+            ..Default::default()
         };
-        let resp = handle_get_market(&state.books, &state.fills, &req);
+        let resp = handle_get_market(&state.books, &state.fills, &state.store, &req);
         Json(serde_json::json!(resp))
     }
 
@@ -1730,6 +1757,8 @@ pub mod http {
         pool_nullifier_hash: String,
         pool_spend_proof: String,
         liq_recipient_note: String,
+        /// Pre-signed deposit_note XDR — submit and wait for confirmation before open_position.
+        deposit_xdr: String,
     }
 
     type RelayQueue = StdArc<std::sync::Mutex<Vec<PendingRelay>>>;
@@ -1835,6 +1864,41 @@ pub mod http {
                         let position_cmt = item.position_cmt.clone();
                         let store_ref = store_for_relay.clone();
                         let result = tokio::task::spawn_blocking(move || {
+                            // If a pre-signed deposit XDR is attached, submit it first and
+                            // wait for on-chain confirmation before open_position_from_note.
+                            // This prevents the race where open_position_from_note fires before
+                            // the note commitment lands on-chain.
+                            if !item.deposit_xdr.is_empty() {
+                                let rpc = e2e::soroban_rpc::SorobanRpc::new();
+                                match rpc.send_transaction(&item.deposit_xdr) {
+                                    Ok(deposit_hash) => {
+                                        log::info!("relay batch: deposit submitted", "hash", &deposit_hash[..deposit_hash.len().min(16)]);
+                                        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                                        loop {
+                                            std::thread::sleep(std::time::Duration::from_secs(2));
+                                            match rpc.get_transaction(&deposit_hash) {
+                                                Ok(Some(e2e::soroban_rpc::TxStatus::Success(_))) => {
+                                                    log::info!("relay batch: deposit confirmed", "hash", &deposit_hash[..deposit_hash.len().min(16)]);
+                                                    break;
+                                                }
+                                                Ok(Some(e2e::soroban_rpc::TxStatus::Failed(e))) => {
+                                                    return Err(anyhow::anyhow!("deposit TX failed on-chain: {e}"));
+                                                }
+                                                Ok(None) => {}
+                                                Err(e) => log::error!("relay batch: deposit poll error", "err", e.to_string()),
+                                            }
+                                            if std::time::Instant::now() >= deadline {
+                                                return Err(anyhow::anyhow!("deposit TX timed out after 60s"));
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // If the deposit was already submitted (duplicate), proceed anyway.
+                                        log::error!("relay batch: deposit submit failed (may already be submitted)", "err", e.to_string());
+                                        std::thread::sleep(std::time::Duration::from_secs(10));
+                                    }
+                                }
+                            }
                             if !item.pool_id.is_empty() {
                                 stellar::relay_open_position_from_pool(
                                     &item.perp,
@@ -2081,13 +2145,13 @@ pub mod http {
         State(state): State<HttpState>,
         axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
     ) -> Json<serde_json::Value> {
-        let asset = params.get("asset").and_then(|v| v.parse().ok());
         let req = Request {
             cmd: "get_market".to_string(),
-            asset,
+            asset: params.get("asset").and_then(|v| v.parse().ok()),
+            feed_id: params.get("feed_id").cloned(),
             ..Default::default()
         };
-        Json(serde_json::json!(handle_get_market(&state.books, &state.fills, &req)))
+        Json(serde_json::json!(handle_get_market(&state.books, &state.fills, &state.store, &req)))
     }
 
     #[derive(serde::Deserialize)]
@@ -2108,6 +2172,10 @@ pub mod http {
         asset_id: Option<String>,
         note_proof: String,
         commit_proof: String,
+        /// Pre-signed deposit_note XDR — if set, relay batch submits this and
+        /// waits for on-chain confirmation before calling open_position_from_note.
+        #[serde(default)]
+        deposit_xdr: Option<String>,
     }
 
     async fn handle_http_relay_open_position(
@@ -2155,7 +2223,11 @@ pub mod http {
             }
         };
         for fill in &book_fills {
-            crate::position::apply_fill(&state.store, &req.perp, fill, &state.keys_dir);
+            let _ = state.fills.record(&req.position_cmt, &fill.maker_id, fill.price, fill.size, asset, "pending");
+            match crate::position::apply_fill(&state.store, &req.perp, fill, &state.keys_dir) {
+                Some(_) => { let _ = state.fills.record(&req.position_cmt, &fill.maker_id, fill.price, fill.size, asset, "confirmed"); }
+                None => { let _ = state.fills.record(&req.position_cmt, &fill.maker_id, fill.price, fill.size, asset, "failed"); }
+            }
         }
         {
             let books = state.books.read().unwrap();
@@ -2189,6 +2261,7 @@ pub mod http {
             pool_nullifier_hash: String::new(),
             pool_spend_proof: String::new(),
             liq_recipient_note: String::new(),
+            deposit_xdr: req.deposit_xdr.unwrap_or_default(),
         };
 
         state.relay_queue.lock().unwrap().push(pending);
@@ -2245,6 +2318,7 @@ pub mod http {
             pool_nullifier_hash: String::new(),
             pool_spend_proof: String::new(),
             liq_recipient_note: String::new(),
+            deposit_xdr: String::new(),
         };
 
         // Store relay params for when this limit order is matched
@@ -2270,7 +2344,11 @@ pub mod http {
 
         // Update position state for each fill before queuing on-chain relays.
         for fill in &book_fills {
-            crate::position::apply_fill(&state.store, &req.perp, fill, &state.keys_dir);
+            let _ = state.fills.record(&cmt, &fill.maker_id, fill.price, fill.size, asset, "pending");
+            match crate::position::apply_fill(&state.store, &req.perp, fill, &state.keys_dir) {
+                Some(_) => { let _ = state.fills.record(&cmt, &fill.maker_id, fill.price, fill.size, asset, "confirmed"); }
+                None => { let _ = state.fills.record(&cmt, &fill.maker_id, fill.price, fill.size, asset, "failed"); }
+            }
         }
 
         // For each fill: relay whichever sides have PendingRelay.
@@ -2383,11 +2461,7 @@ pub mod http {
             }
         };
 
-        for fill in &book_fills {
-            crate::position::apply_fill(&state.store, &req.perp, fill, &state.keys_dir);
-        }
-
-        // Persist book state
+        // Persist book state before going async
         {
             let books = state.books.read().unwrap();
             if let Some(book) = books.get(&asset) {
@@ -2397,10 +2471,39 @@ pub mod http {
             }
         }
 
-        Json(serde_json::json!({
-            "ok": true,
-            "filled": !book_fills.is_empty()
-        }))
+        if book_fills.is_empty() {
+            return Json(serde_json::json!({ "ok": true, "filled": false }));
+        }
+
+        // Settlement involves blocking Stellar TX + ZK proof (~60s total) — run off the async executor.
+        let store_ref = state.store.clone();
+        let perp = req.perp.clone();
+        let keys_dir = state.keys_dir.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut close_tx: Option<String> = None;
+            for fill in &book_fills {
+                match crate::position::apply_fill_result(&store_ref, &perp, fill, &keys_dir) {
+                    Ok(tx) => {
+                        if close_tx.is_none() { close_tx = tx; }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(close_tx)
+        }).await;
+
+        match result {
+            Ok(Ok(tx_hash)) => Json(serde_json::json!({
+                "ok": true,
+                "filled": true,
+                "tx_hash": tx_hash,
+            })),
+            Ok(Err(e)) => {
+                log::error!("close position settlement failed", "err", e.to_string());
+                Json(serde_json::json!({ "ok": false, "error": e.to_string() }))
+            }
+            Err(e) => Json(serde_json::json!({ "ok": false, "error": format!("task panic: {e}") })),
+        }
     }
 
     #[derive(serde::Deserialize)]
@@ -2456,6 +2559,7 @@ pub mod http {
             pool_nullifier_hash: req.pool_nullifier_hash,
             pool_spend_proof: req.spend_proof,
             liq_recipient_note: liq_recipient,
+            deposit_xdr: String::new(),
         };
 
         state.relay_queue.lock().unwrap().push(pending);

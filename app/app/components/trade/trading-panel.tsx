@@ -540,12 +540,8 @@ export default function TradingPanel() {
       const depositNoteTx = await buildDepositNoteTx(publicKey, noteResult.note_cmt, collateralUnits, amountCommitment)
       toast.update(progressId, { description: 'Sign — deposit collateral…', progress: 55 })
       const signedDepositXdr = await sign(depositNoteTx.toXDR())
-      // Queue through TEE batch relay — breaks timing correlation with position open.
-      // TEE shuffles deposits from all users and submits together every 10s.
-      await tee.relayDepositNote(signedDepositXdr)
-      const depositHash = 'queued'
 
-      const relayParams = {
+      const baseRelayParams = {
         perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
         orderbook: import.meta.env.VITE_ORDERBOOK_ID ?? '',
         note_cmt: noteResult.note_cmt,
@@ -561,10 +557,13 @@ export default function TradingPanel() {
 
       if (orderType === 'market') {
         toast.update(progressId, { description: 'Queuing position relay…', progress: 75 })
-        await tee.relayOpenPosition(relayParams)
+        // deposit_xdr included — TEE submits deposit, waits for confirm, then opens position
+        await tee.relayOpenPosition({ ...baseRelayParams, deposit_xdr: signedDepositXdr })
       } else {
         toast.update(progressId, { description: 'Placing limit order…', progress: 75 })
-        await tee.relayLimitOrder(relayParams)
+        // Limit orders: deposit separately (fill may happen much later), then place in CLOB
+        await tee.relayDepositNote(signedDepositXdr)
+        await tee.relayLimitOrder(baseRelayParams)
       }
 
       positionsStore.add({ commitment, wallet: publicKey, symbol, side: sideNum, leverage, openedAt: Date.now(), entryPrice: mark, collateral: margin, size: notional, secret: orderSecret, orderType, limitPrice: orderType !== 'market' ? Number(limitPrice) : undefined })
@@ -672,10 +671,10 @@ export default function TradingPanel() {
         </button>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto no-scrollbar px-3 py-1.5">
         <div className="flex items-center justify-between">
-          <span className="text-[13px] text-text-secondary">Margin</span>
-          <span className="text-[13px] text-text-tertiary">
+          <span className="text-[12px] text-text-secondary">Margin</span>
+          <span className="text-[12px] text-text-tertiary">
             Bal.{' '}
             <span className="text-text-secondary">
               {connected ? formatUsd(balanceDollars) : '—'}
@@ -683,7 +682,7 @@ export default function TradingPanel() {
           </span>
         </div>
 
-        <div className="flex items-center gap-2 rounded-[8px] border border-border-subtle bg-surface-primary px-3 py-1.5">
+        <div className="flex items-center gap-2 rounded-[8px] border border-border-subtle bg-surface-primary px-3 py-1">
           <input
             type="number"
             value={amount}
@@ -694,10 +693,10 @@ export default function TradingPanel() {
             placeholder="0.00"
             min="0"
             step="1"
-            className="min-w-0 flex-1 bg-transparent text-[20px] font-medium tracking-tight text-text-primary outline-none placeholder:text-text-quaternary"
+            className="min-w-0 flex-1 bg-transparent text-[18px] font-medium tracking-tight text-text-primary outline-none placeholder:text-text-quaternary"
             style={{ fontFamily: 'var(--font-mono)' }}
           />
-          <span className="ml-auto flex shrink-0 items-center justify-center rounded-[4px] border border-border-subtle bg-surface-card px-2.5 py-0.5 text-[12px] font-bold leading-none text-text-primary">
+          <span className="ml-auto flex shrink-0 items-center justify-center rounded-[4px] border border-border-subtle bg-surface-card px-2 py-0.5 text-[11px] font-bold leading-none text-text-primary">
             USDC
           </span>
         </div>
@@ -710,7 +709,7 @@ export default function TradingPanel() {
                 setPctSelected(pct === pctSelected ? null : pct)
                 setAmount(((balanceDollars * pct) / 100).toFixed(2))
               }}
-              className={`flex-1 rounded-[5px] py-1.5 text-[13px] font-medium transition-colors ${
+              className={`flex-1 rounded-[5px] py-1 text-[12px] font-medium transition-colors ${
                 pctSelected === pct
                   ? 'bg-surface-hover text-text-primary'
                   : 'bg-surface-primary text-text-tertiary hover:bg-surface-hover/60 hover:text-text-secondary'
@@ -724,7 +723,7 @@ export default function TradingPanel() {
               setPctSelected(100)
               setAmount(balanceDollars.toFixed(2))
             }}
-            className={`flex-1 rounded-[5px] py-1.5 text-[13px] font-medium transition-colors ${
+            className={`flex-1 rounded-[5px] py-1 text-[12px] font-medium transition-colors ${
               pctSelected === 100
                 ? 'bg-surface-hover text-text-primary'
                 : 'bg-surface-primary text-text-tertiary hover:bg-surface-hover/60 hover:text-text-secondary'
@@ -735,7 +734,7 @@ export default function TradingPanel() {
         </div>
 
         {orderType !== 'market' && (
-          <div className="flex items-center gap-2 rounded-[8px] border border-border-subtle bg-surface-primary px-3 py-1.5">
+          <div className="flex items-center gap-2 rounded-[8px] border border-border-subtle bg-surface-primary px-3 py-1">
             <span className="shrink-0 text-[11px] uppercase tracking-widest text-text-tertiary">
               {orderType === 'limit' ? 'Limit' : 'Trigger'}
             </span>
@@ -752,11 +751,10 @@ export default function TradingPanel() {
           </div>
         )}
 
-
         <LeverageSlider value={leverage} onChange={setLeverage} maxValue={50} />
 
         <div className="flex items-center justify-between">
-          <span className="text-[13px] text-text-secondary">Take profit / Stop loss</span>
+          <span className="text-[12px] text-text-secondary">Take profit / Stop loss</span>
           <button
             onClick={() => setTakeProfitEnabled(!takeProfitEnabled)}
             aria-pressed={takeProfitEnabled}
@@ -805,7 +803,7 @@ export default function TradingPanel() {
           )}
         </AnimatePresence>
 
-        <div className="grid gap-1.5 border-t border-border-subtle pt-2 text-[11px] text-text-tertiary">
+        <div className="grid gap-1 border-t border-border-subtle pt-1.5 text-[11px] text-text-tertiary">
           <SummaryRow label="Notional" value={formatUsd(notional)} />
           <SummaryRow label="Est. fee" value={formatUsd(fee)} />
           <SummaryRow label="Liq. price" value={formatUsd(liquidation)} />

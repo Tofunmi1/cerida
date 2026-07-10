@@ -203,7 +203,7 @@ export default function PositionsPanel() {
   return (
     <div className="flex h-full flex-col bg-surface-primary">
       {/* Tab bar */}
-      <div className="flex shrink-0 items-center gap-4 border-b border-border-subtle px-3 py-2">
+      <div className="flex shrink-0 items-center gap-4 border-b border-border-subtle px-3 py-1">
         {(['Positions', 'Orders', 'Trades'] as Tab[]).map((t) => (
           <button
             key={t}
@@ -232,7 +232,8 @@ export default function PositionsPanel() {
 
       {tab === 'Positions' && (
         <>
-          <div className="grid grid-cols-[1fr_80px_80px_80px_80px_80px_70px_60px_64px] shrink-0 border-b border-border-subtle px-3 py-1.5 text-[10px] uppercase tracking-widest text-text-quaternary">
+          <div className="min-h-0 flex-1 overflow-auto">
+          <div className="grid grid-cols-[minmax(120px,1fr)_80px_80px_80px_80px_100px_70px_60px_64px] min-w-[700px] shrink-0 border-b border-border-subtle px-3 py-1.5 text-[10px] uppercase tracking-widest text-text-quaternary sticky top-0 bg-surface-primary z-10">
             <span>Market</span>
             <span className="text-right">Entry</span>
             <span className="text-right">Mark</span>
@@ -244,7 +245,7 @@ export default function PositionsPanel() {
             <span className="text-right">Action</span>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto">
+          <div className="min-w-[700px]">
             {!connected ? (
               <div className="flex h-full items-center justify-center text-[12px] text-text-quaternary">
                 Connect wallet to see positions
@@ -271,7 +272,7 @@ export default function PositionsPanel() {
 
                 return (
                   <div key={cmt} className="border-b border-border-subtle/50 last:border-0">
-                    <div className="grid grid-cols-[1fr_80px_80px_80px_80px_80px_70px_60px_64px] px-3 py-2 text-[11px] tabular-nums hover:bg-surface-hover/30">
+                    <div className="grid grid-cols-[minmax(120px,1fr)_80px_80px_80px_80px_100px_70px_60px_64px] px-3 py-1.5 text-[11px] tabular-nums hover:bg-surface-hover/30">
                       <span className="flex items-center gap-1.5">
                         <span className="font-semibold text-text-secondary">{stored.symbol}</span>
                         <span className={`rounded-[3px] px-1 py-0.5 text-[9px] font-bold uppercase leading-none ${isLong ? 'bg-bullish-green/15 text-bullish-green' : 'bg-bearish-red/15 text-bearish-red'}`}>
@@ -322,7 +323,7 @@ export default function PositionsPanel() {
 
                   return (
                     <div key={cmt} className="border-b border-border-subtle/50 last:border-0">
-                      <div className="grid grid-cols-[1fr_80px_80px_80px_80px_80px_70px_60px_64px] px-3 py-2 text-[11px] tabular-nums hover:bg-surface-hover/30">
+                      <div className="grid grid-cols-[minmax(120px,1fr)_80px_80px_80px_80px_100px_70px_60px_64px] px-3 py-1.5 text-[11px] tabular-nums hover:bg-surface-hover/30">
                         <span className="flex items-center gap-1.5">
                           <span className="font-semibold text-text-secondary">{stored.symbol}</span>
                           <span className={`rounded-[3px] px-1 py-0.5 text-[9px] font-bold uppercase leading-none ${isLong ? 'bg-bullish-green/15 text-bullish-green' : 'bg-bearish-red/15 text-bearish-red'}`}>
@@ -357,6 +358,7 @@ export default function PositionsPanel() {
               </>
             )}
           </div>
+          </div>
         </>
       )}
 
@@ -387,7 +389,7 @@ export default function PositionsPanel() {
                 const cmtShort = `${cmt.slice(0, 6)}…${cmt.slice(-4)}`
                 return (
                   <div key={cmt} className="border-b border-border-subtle/50 last:border-0">
-                    <div className="grid grid-cols-[1fr_80px_80px_80px_80px_80px] px-3 py-2 text-[11px] tabular-nums hover:bg-surface-hover/30">
+                    <div className="grid grid-cols-[1fr_80px_80px_80px_80px_80px] px-3 py-1.5 text-[11px] tabular-nums hover:bg-surface-hover/30">
                       <span className="flex items-center gap-1.5">
                         <span className="font-semibold text-text-secondary">{stored.symbol}</span>
                         <span className={`rounded-[3px] px-1 py-0.5 text-[9px] font-bold uppercase leading-none ${isLong ? 'bg-bullish-green/15 text-bullish-green' : 'bg-bearish-red/15 text-bearish-red'}`}>

@@ -317,6 +317,24 @@ impl SecretStore {
             None => Ok(0),
         }
     }
+
+    pub fn set_funding_premium_ema(&self, asset_id_hex: &str, ema: f64) -> anyhow::Result<()> {
+        let key = format!("funding_ema_{}", asset_id_hex);
+        self.tree.insert(key.as_bytes(), &ema.to_le_bytes())?;
+        self.tree.flush()?;
+        Ok(())
+    }
+
+    pub fn get_funding_premium_ema(&self, asset_id_hex: &str) -> anyhow::Result<f64> {
+        let key = format!("funding_ema_{}", asset_id_hex);
+        match self.tree.get(key.as_bytes())? {
+            Some(value) => {
+                let bytes: [u8; 8] = value.as_ref().try_into()?;
+                Ok(f64::from_le_bytes(bytes))
+            }
+            None => Ok(0.0),
+        }
+    }
 }
 
 // ── Fill Audit Trail ──
@@ -392,6 +410,23 @@ impl FillLedger {
 
     pub fn count(&self) -> u64 {
         self.counter.load(Ordering::Relaxed)
+    }
+
+    /// Return up to `n` most-recent fills (pending or confirmed) for `asset_id`.
+    pub fn recent(&self, n: usize, asset_id: u64) -> Vec<FillEntry> {
+        let mut out: Vec<FillEntry> = self
+            .tree
+            .iter()
+            .rev()
+            .filter_map(|item| {
+                let (_, v) = item.ok()?;
+                let f: FillEntry = serde_json::from_slice(&v).ok()?;
+                if f.asset == asset_id && f.status != "failed" { Some(f) } else { None }
+            })
+            .take(n)
+            .collect();
+        out.reverse();
+        out
     }
 
     pub fn volume_24h(&self, asset_id: u64) -> f64 {

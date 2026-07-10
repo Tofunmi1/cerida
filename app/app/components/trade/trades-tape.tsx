@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMarket } from '../../context/market-context'
+import { MARKET_CATALOG } from '../../context/market-context'
 import { tee } from '../../lib/tee-client'
 
 interface TradeRow {
@@ -39,9 +40,11 @@ function makeRow(base: number, idx: number, ts: number): TradeRow {
 const POLL_MS = 2500
 
 export default function TradesTape() {
-  const { mark, bids, asks } = useMarket()
+  const { mark, bids, asks, symbol } = useMarket()
   const markRef = useRef(mark)
   markRef.current = mark
+  const symbolRef = useRef(symbol)
+  symbolRef.current = symbol
 
   const [rows, setRows] = useState<TradeRow[]>(() => {
     const ts = Date.now()
@@ -57,14 +60,16 @@ export default function TradesTape() {
     async function refresh() {
       if (cancelled) return
       try {
-        const resp = await tee.getMarket()
+        const mkt = MARKET_CATALOG.find(m => m.symbol === symbolRef.current)
+        const resp = await tee.getMarket(mkt?.assetId, mkt?.pythId)
         if (!cancelled && resp.fills && resp.fills.length > 0) {
-          // Real fills from TEE
+          // Real fills from TEE — prices and sizes are in 1e7 scale
+          const PRICE_SCALE = 1e7
           const live: TradeRow[] = resp.fills.map((f, i) => ({
             id: `${f.maker_id}-${i}`,
             side: i % 2 === 0 ? 'Buy' : 'Sell',
-            price: f.price,
-            size: f.size,
+            price: f.price / PRICE_SCALE,
+            size: f.size / PRICE_SCALE,
             time: nowHHMM(),
           }))
           setRows((prev) => {
@@ -93,10 +98,17 @@ export default function TradesTape() {
   }, []) // intentionally no deps — markRef keeps it fresh
 
   function fmtPrice(p: number) {
-    if (p > 10000) return p.toFixed(1)
-    if (p > 100) return p.toFixed(2)
-    if (p > 1) return p.toFixed(3)
+    if (p >= 10000) return p.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+    if (p >= 100) return p.toFixed(2)
+    if (p >= 1) return p.toFixed(3)
     return p.toFixed(4)
+  }
+
+  function fmtSize(s: number) {
+    if (s >= 1000) return s.toFixed(1)
+    if (s >= 1) return s.toFixed(2)
+    if (s >= 0.001) return s.toFixed(4)
+    return s.toPrecision(3)
   }
 
   return (
@@ -117,7 +129,7 @@ export default function TradesTape() {
             <span className={row.side === 'Buy' ? 'text-bullish-green' : 'text-bearish-red'}>
               {fmtPrice(row.price)}
             </span>
-            <span className="text-right text-text-secondary">{row.size.toFixed(3)}</span>
+            <span className="text-right text-text-secondary">{fmtSize(row.size)}</span>
             <span className="text-right text-text-quaternary">{row.time}</span>
           </div>
         ))}

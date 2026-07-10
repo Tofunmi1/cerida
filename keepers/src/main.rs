@@ -98,7 +98,7 @@ struct Cli {
     perp_id: String,
     #[arg(long, default_value = "127.0.0.1:9720")]
     tee_addr: String,
-    #[arg(long, default_value = "60")]
+    #[arg(long, default_value = "15")]
     mm_interval_secs: u64,
     #[arg(long)]
     no_market_maker: bool,

@@ -30,6 +30,7 @@ interface TeeResponse {
   bids?: OrderBookLevel[]
   asks?: OrderBookLevel[]
   depth?: OrderBookLevel[]
+  funding_rate?: number
 }
 
 async function call(endpoint: string, body?: unknown): Promise<TeeResponse> {
@@ -169,8 +170,11 @@ export const tee = {
   },
 
   /** Get market state (32-level depth). Asset 0 = BTC (DEFAULT_ASSET). */
-  async getMarket(asset?: number): Promise<TeeResponse> {
-    const qs = asset !== undefined ? `?asset=${asset}` : ''
+  async getMarket(asset?: number, feedId?: string): Promise<TeeResponse> {
+    const params = new URLSearchParams()
+    if (asset !== undefined) params.set('asset', String(asset))
+    if (feedId) params.set('feed_id', feedId)
+    const qs = params.size ? `?${params}` : ''
     return getCall(`get-market${qs}`)
   },
 
@@ -254,6 +258,7 @@ export const tee = {
     asset_id?: string
     note_proof: string
     commit_proof: string
+    deposit_xdr?: string            // pre-signed deposit_note XDR; TEE submits and waits for confirmation first
   }): Promise<{ queued: boolean; tx_hash?: string }> {
     const resp = await fetch(`${TEE_URL}/relay/open-position`, {
       method: 'POST',
@@ -265,7 +270,7 @@ export const tee = {
     return { queued: !!data.queued, tx_hash: data.tx_hash }
   },
 
-  async pollPositionTx(cmt: string, timeoutMs = 30000): Promise<string | null> {
+  async pollPositionTx(cmt: string, timeoutMs = 120000): Promise<string | null> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 2000))
@@ -285,15 +290,15 @@ export const tee = {
     position_cmt: string
     position_secret: number
     settlement_commitment: string
-  }): Promise<{ filled: boolean }> {
+  }): Promise<{ filled: boolean; tx_hash?: string }> {
     const resp = await fetch(`${TEE_URL}/relay/close-position`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     })
-    const data = await resp.json() as TeeResponse & { filled?: boolean }
+    const data = await resp.json() as TeeResponse & { filled?: boolean; tx_hash?: string }
     if (!data.ok) throw new Error(data.error ?? 'close-position relay failed')
-    return { filled: !!data.filled }
+    return { filled: !!data.filled, tx_hash: data.tx_hash }
   },
 
   /** Claim funds from a settled/liquidated position. */

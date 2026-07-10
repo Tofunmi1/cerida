@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { MARKET_CATALOG, symbolToSlug } from '../context/market-context';
 
@@ -38,6 +38,15 @@ const D = 'rgba(255,255,255,0.45)';
 const B = 'rgba(255,255,255,0.08)';
 
 export default function HomePage() {
+  const [cookieConsent, setCookieConsent] = useState(
+    () => typeof window !== 'undefined' && localStorage.getItem('cookie-consent') === '1',
+  );
+
+  const acceptCookies = () => {
+    localStorage.setItem('cookie-consent', '1');
+    setCookieConsent(true);
+  };
+
   useEffect(() => {
     const els = document.querySelectorAll('[data-reveal]');
     const io = new IntersectionObserver(
@@ -58,6 +67,15 @@ export default function HomePage() {
 
   return (
     <div className="lp-outer">
+      {!cookieConsent && (
+        <div className="lp-cookie">
+          <p>This site uses cookies to improve your experience.</p>
+          <div className="lp-cookie-actions">
+            <button className="lp-cookie-reject">Decline</button>
+            <button className="lp-cookie-accept" onClick={acceptCookies}>Accept All</button>
+          </div>
+        </div>
+      )}
       <div className="lp-shell">
         <style>{`
         /* ── Utilities ── */
@@ -304,6 +322,64 @@ export default function HomePage() {
         @media (prefers-reduced-motion: reduce) {
           .hero-stagger > *, .hero-shot, .dashflow, .live-dot { animation: none !important; }
           [data-reveal] { opacity: 1; transform: none; transition: none; }
+        }
+
+        /* ── Cookie Banner ── */
+        .lp-cookie {
+          position: fixed;
+          bottom: 24px;
+          right: 24px;
+          z-index: 100;
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+          background: #191925;
+          border: 1px solid ${B};
+          border-radius: 16px;
+          padding: 20px 24px;
+          box-shadow: 0 12px 48px rgba(0,0,0,0.65);
+          max-width: 380px;
+          width: calc(100vw - 48px);
+        }
+        .lp-cookie p {
+          margin: 0;
+          font-size: 13px;
+          color: #fff;
+          line-height: 1.5;
+        }
+        .lp-cookie-actions {
+          display: flex;
+          gap: 8px;
+        }
+        .lp-cookie-actions button {
+          flex: 1;
+          font-size: 12px;
+          font-weight: 700;
+          border: none;
+          border-radius: 10px;
+          padding: 10px 16px;
+          cursor: pointer;
+          transition: opacity 0.15s;
+          text-align: center;
+        }
+        .lp-cookie-actions button:hover { opacity: 0.8; }
+        .lp-cookie-accept {
+          color: #0c0c14;
+          background: #fff;
+        }
+        .lp-cookie-reject {
+          color: ${D};
+          background: rgba(255,255,255,0.08);
+        }
+
+        @media (max-width: 480px) {
+          .lp-cookie {
+            bottom: 12px;
+            right: 12px;
+            width: calc(100vw - 24px);
+            max-width: none;
+            padding: 16px 18px;
+          }
         }
       `}</style>
 

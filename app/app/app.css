@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+#root {
+  transform: scale(0.9);
+  transform-origin: top left;
+  width: 111.12%;
+  height: 111.12%;
+  overflow: hidden;
+}
+
 @font-face {
   font-family: 'Berkeley Mono';
   src: url('/fonts/TX-02-Regular.ttf') format('truetype');
@@ -393,4 +401,14 @@ input[type="submit"],
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* Remove number input spinners */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] {
+  -moz-appearance: textfield;
 }

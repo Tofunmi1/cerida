@@ -17,13 +17,30 @@ pub fn apply_fill(
     fill: &engine::Fill,
     keys_dir: &Path,
 ) -> Option<String> {
-    let taker = store.get(&fill.taker_id).ok()??;
-    let maker = store.get(&fill.maker_id).ok()??;
+    match apply_fill_result(store, perp_id, fill, keys_dir) {
+        Ok(tx) => tx,
+        Err(e) => {
+            log::error!("apply_fill error", "err", e.to_string());
+            None
+        }
+    }
+}
+
+/// Like apply_fill but propagates settlement errors so callers can surface them.
+pub fn apply_fill_result(
+    store: &db::SecretStore,
+    perp_id: &str,
+    fill: &engine::Fill,
+    keys_dir: &Path,
+) -> Result<Option<String>> {
+    let taker = store.get(&fill.taker_id).ok().flatten()
+        .ok_or_else(|| anyhow!("taker secrets not found: {}", &fill.taker_id[..16.min(fill.taker_id.len())]))?;
+    let maker = store.get(&fill.maker_id).ok().flatten()
+        .ok_or_else(|| anyhow!("maker secrets not found: {}", &fill.maker_id[..16.min(fill.maker_id.len())]))?;
 
     let mut taker_collateral = allocate_collateral(&taker, fill.size);
     let mut maker_collateral = allocate_collateral(&maker, fill.size);
 
-    // Protocol (MM) sides mirror the user collateral that is entering the trade.
     if taker.protocol {
         taker_collateral = maker_collateral;
     }
@@ -41,10 +58,8 @@ pub fn apply_fill(
         fill.taker_side,
         taker_collateral,
         keys_dir,
-    )
-    .ok()?;
-    // Maker-side errors are TEE-internal (protocol position accounting) — log but
-    // don't discard the user's close_tx by propagating None.
+    )?;
+    // Maker-side errors are TEE-internal (protocol position accounting) — log but don't fail the user.
     if let Err(e) = process_side(
         store,
         perp_id,
@@ -58,7 +73,7 @@ pub fn apply_fill(
     ) {
         log::error!("apply_fill: maker side error", "err", e.to_string());
     }
-    close_tx
+    Ok(close_tx)
 }
 
 fn allocate_collateral(secrets: &db::OrderSecrets, fill_size: u64) -> i128 {
@@ -87,6 +102,19 @@ fn process_side(
             .close_position_cmt
             .as_deref()
             .ok_or_else(|| anyhow!("close order missing position_cmt"))?;
+
+        // The close order always carries recipient (user's Stellar address from fastInit).
+        // Back-fill the position state if it was stored before recipient-propagation was added —
+        // this lets auto-claim work for positions opened under the old code path.
+        if let Some(ref addr) = secrets.recipient {
+            if let Ok(Some(mut state)) = store.get_position_state(pos_cmt) {
+                if state.recipient.is_none() {
+                    state.recipient = Some(addr.clone());
+                    let _ = store.insert_position_state(pos_cmt, &state);
+                }
+            }
+        }
+
         let tx_hash = close_position(store, perp_id, pos_cmt, fill_price, fill_size, keys_dir)?;
         return Ok(Some(tx_hash));
     }
@@ -102,6 +130,7 @@ fn process_side(
             collateral,
             secrets.leverage,
             &asset_id_hex,
+            secrets.asset,
             None,
         )
     } else {
@@ -114,6 +143,7 @@ fn process_side(
             collateral,
             secrets.leverage,
             &asset_id_hex,
+            secrets.asset,
             secrets.recipient.clone(),
         )
     }?;
@@ -126,9 +156,10 @@ fn increase_position(
     side: engine::Side,
     fill_price: u64,
     fill_size: u64,
-    collateral: i128,
+    _collateral: i128,
     leverage: u64,
     asset_id_hex: &str,
+    asset_num: u64,
     recipient: Option<String>,
 ) -> Result<()> {
     let idx = store.get_funding_index(asset_id_hex)?;
@@ -144,7 +175,13 @@ fn increase_position(
     };
 
     let mut state = match store.get_position_state(cmt)? {
-        Some(s) => s,
+        Some(mut s) => {
+            // Back-fill recipient if the state was created before the fix (recipient stored as None).
+            if s.recipient.is_none() {
+                s.recipient = recipient;
+            }
+            s
+        }
         None => db::PositionState {
             collateral: 0,
             matched_price: 0,
@@ -184,11 +221,12 @@ fn increase_position(
 
     state.size = state.size.saturating_add(fill_size);
     state.remaining_size = new_size;
-    state.collateral = state.collateral.saturating_add(collateral.max(0) as u64 as i128);
-    state.effective_collateral = state.effective_collateral.saturating_add(collateral.max(0) as u64 as i128);
+    // Collateral is set once by relay_open_position (the full deposited amount).
+    // Fills only update size/price — do not accumulate fill-proportional collateral here.
     state.matched_price = fill_price;
     state.leverage = leverage.max(1);
     state.side = side as u64;
+    state.asset_num = asset_num;
 
     store.insert_position_state(cmt, &state)?;
     log::info!(
@@ -201,8 +239,8 @@ fn increase_position(
         state.entry_price,
         "size",
         state.remaining_size,
-        "collateral",
-        state.collateral
+        "effective_collateral",
+        state.effective_collateral
     );
     Ok(())
 }
@@ -236,17 +274,14 @@ pub fn close_position(
     // apply_funding_to_state; settlement is simply collateral + trade PnL.
     let settlement_amount = (state.effective_collateral + trade_pnl).max(0);
 
-    // Mark fully closed locally.
-    state.collateral = 0;
-    state.effective_collateral = 0;
-    state.remaining_size = 0;
-    state.size = 0;
-    store.insert_position_state(pos_cmt, &state)?;
-
-    // Save recipient before state is consumed.
+    // Save recipient before state is mutated.
     let recipient = state.recipient.clone();
 
     let note = stellar::create_settlement_note(settlement_amount);
+
+    // Relay first — zero the TEE state only after on-chain confirmation.
+    // If relay fails the error propagates and the state remains intact so
+    // the user can retry.
     let settle_tx = stellar::relay_settle_position(
         perp_id,
         pos_cmt,
@@ -258,6 +293,13 @@ pub fn close_position(
         0,
         0,
     )?;
+
+    // Mark fully closed locally only after relay succeeded.
+    state.collateral = 0;
+    state.effective_collateral = 0;
+    state.remaining_size = 0;
+    state.size = 0;
+    store.insert_position_state(pos_cmt, &state)?;
 
     let mut blinding_arr = [0u8; 32];
     let blinding_bytes = hex::decode(&note.blinding_hex).unwrap_or(vec![0u8; 32]);

@@ -51,9 +51,11 @@ function NavButton({
 export default function Sidebar({
   active,
   onActive,
+  onOpenSettings,
 }: {
   active: string
   onActive: (label: string) => void
+  onOpenSettings?: () => void
 }) {
   const [collapsed, setCollapsed] = useState(true)
 
@@ -135,7 +137,7 @@ export default function Sidebar({
           label="Settings"
           active={active === 'Settings'}
           collapsed={collapsed}
-          onClick={() => onActive('Settings')}
+          onClick={() => { onOpenSettings?.(); onActive('Settings'); }}
         />
       </nav>
 

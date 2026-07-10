@@ -15,8 +15,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub const LEVELS: usize = 32;
-const REFRESH_THRESHOLD: f64 = 0.005; // rebuild grid if mid moves > 0.5%
-const QUOTE_TTL_SECS: u64 = 300;      // cancel orphaned quotes after 5 min
+const REFRESH_THRESHOLD: f64 = 0.0015; // rebuild grid if mid moves > 0.15%
+const QUOTE_TTL_SECS: u64 = 120;       // cancel orphaned quotes after 2 min
 const BATCH_SIZE: usize = 128;        // max commitments per batch-fast-init call
 
 #[derive(Clone, Copy, PartialEq, Eq)]

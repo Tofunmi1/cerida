@@ -44,29 +44,29 @@ export default function MarketBar({
 
   return (
     <>
-      <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border-subtle bg-page px-3">
+      <div className="flex h-10 shrink-0 items-center gap-3 border-b border-border-subtle bg-page px-3">
         <button
           onClick={() => setMarketOpen(true)}
-          className="flex min-w-[210px] items-center justify-between gap-3 rounded-[10px] border border-border-subtle bg-surface-primary px-3 py-2 transition-colors hover:bg-surface-hover"
+          className="flex min-w-[190px] items-center justify-between gap-2 rounded-[8px] border border-border-subtle bg-surface-primary px-2.5 py-1 transition-colors hover:bg-surface-hover"
         >
           <span className="flex min-w-0 items-center gap-2">
             {activeMarket.logo ? (
               <img
                 src={activeMarket.logo}
                 alt={activeMarket.name}
-                className="h-7 w-7 shrink-0 rounded-full object-cover"
+                className="h-5 w-5 shrink-0 rounded-full object-cover"
               />
             ) : (
               <span
-                className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-[10px] font-bold text-white"
+                className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-[9px] font-bold text-white"
                 style={{ backgroundColor: activeMarket.color }}
               >
                 {activeMarket.icon}
               </span>
             )}
             <span className="min-w-0 text-left">
-              <span className="block truncate text-[13px] font-bold text-text-primary">{activeMarket.symbol}</span>
-              <span className="block truncate text-[10px] uppercase tracking-widest text-text-quaternary">
+              <span className="block truncate text-[12px] font-bold text-text-primary">{activeMarket.symbol}</span>
+              <span className="block truncate text-[9px] uppercase tracking-widest text-text-quaternary leading-none">
                 {activeMarket.category}
               </span>
             </span>
@@ -74,7 +74,7 @@ export default function MarketBar({
           <IconChevronDown size={14} stroke={2} className="shrink-0 text-text-tertiary" />
         </button>
 
-        <div className="hidden min-w-0 items-center gap-6 md:flex">
+        <div className="hidden min-w-0 items-center gap-4 md:flex">
           <Stat label="Index (Pyth)">
             {candlesLoading && !mark ? <span className="text-text-quaternary">…</span> : formatUsd(index)}
           </Stat>
@@ -120,7 +120,7 @@ export default function MarketBar({
           <div className="relative">
             <button
               onClick={() => setThemeOpen((value) => !value)}
-              className="flex h-9 items-center gap-2 rounded-[8px] border border-border-subtle bg-surface-primary px-2.5 text-[12px] font-semibold text-text-secondary transition-colors hover:text-text-primary"
+              className="flex h-7 items-center gap-1.5 rounded-[7px] border border-border-subtle bg-surface-primary px-2 text-[11px] font-semibold text-text-secondary transition-colors hover:text-text-primary"
               title="Theme"
             >
               <IconPalette size={15} stroke={1.8} />
@@ -366,7 +366,7 @@ function NavPill({
   return (
     <button
       onClick={onClick}
-      className={`flex h-9 items-center gap-2 rounded-[8px] border px-2.5 text-[12px] font-semibold transition-colors ${
+      className={`flex h-7 items-center gap-1.5 rounded-[7px] border px-2 text-[11px] font-semibold transition-colors ${
         active
           ? 'border-border-subtle bg-surface-card text-text-primary'
           : 'border-border-subtle bg-surface-primary text-text-secondary hover:text-text-primary'

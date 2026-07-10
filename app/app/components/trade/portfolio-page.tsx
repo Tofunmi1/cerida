@@ -197,35 +197,28 @@ export default function PortfolioPage({ onClose }: { onClose: () => void }) {
 
   const walletUsdc = Number(balance) / PRICE_SCALE
 
-  const { shieldedPool, inPositions, unrealizedPnl } = useMemo(() => {
-    if (!connected || !publicKey) return { shieldedPool: null, inPositions: null, unrealizedPnl: null }
+  const { inPositions, unrealizedPnl } = useMemo(() => {
+    if (!connected || !publicKey) return { inPositions: null, unrealizedPnl: null }
 
-    // Shielded pool: notes deposited via portfolio page, not yet spent in a position
-    const notes: Array<{ amount: number }> = JSON.parse(localStorage.getItem('cerida-notes') ?? '[]')
-    const shieldedPool = notes.reduce((sum, n) => sum + n.amount / PRICE_SCALE, 0)
-
-    // In positions: sum of collateral for this wallet's active positions
-    const positions = positionsStore.forWallet(publicKey)
+    // Only count matched (non-pending) positions — entryPrice > 0 indicates a fill occurred
+    const positions = positionsStore.forWallet(publicKey).filter((p) => p.entryPrice > 0)
     const inPositions = positions.reduce((sum, p) => sum + p.collateral, 0)
 
-    // Unrealized PnL: (currentPrice - entry) / entry * size * direction
     const unrealizedPnl = positions.reduce((sum, p) => {
       const currentPrice = symbolPrices.get(p.symbol) ?? p.entryPrice
-      if (p.entryPrice === 0) return sum
       const direction = p.side === 0 ? 1 : -1
       return sum + direction * p.collateral * p.leverage * (currentPrice - p.entryPrice) / p.entryPrice
     }, 0)
 
-    return { shieldedPool, inPositions, unrealizedPnl }
+    return { inPositions, unrealizedPnl }
   }, [connected, publicKey, symbolPrices])
 
   const pnlStr = unrealizedPnl == null ? '—'
     : `${unrealizedPnl >= 0 ? '+' : ''}${formatUsd(unrealizedPnl)}`
 
   const statCards = [
-    { label: 'Wallet USDC',   value: connected ? formatUsd(walletUsdc) : '—' },
-    { label: 'Shielded Pool', value: shieldedPool != null ? formatUsd(shieldedPool) : '—' },
-    { label: 'In Positions',  value: inPositions  != null ? formatUsd(inPositions)  : '—' },
+    { label: 'Wallet USDC',    value: connected ? formatUsd(walletUsdc) : '—' },
+    { label: 'In Positions',   value: inPositions  != null ? formatUsd(inPositions)  : '—' },
     { label: 'Unrealized PnL', value: pnlStr },
   ]
 
@@ -253,7 +246,7 @@ export default function PortfolioPage({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col overflow-auto bg-page px-6 py-5">
-          <div className="mb-6 grid grid-cols-4 gap-3">
+          <div className="mb-6 grid grid-cols-3 gap-3">
             {statCards.map((card) => {
               const isPnl = card.label === 'Unrealized PnL'
               const pnlColor = isPnl && unrealizedPnl != null

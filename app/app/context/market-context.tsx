@@ -8,6 +8,8 @@ import {
   useState,
 } from 'react'
 import { tee, type OrderBookLevel } from '../lib/tee-client'
+
+export type FillRecord = { maker_id: string; price: number; size: number }
 import { fetchCandles, fetchLatestPrices, connectPythWs, type Candle as PythCandle } from '../lib/pyth'
 
 export type Side = 'long' | 'short'
@@ -33,6 +35,7 @@ export interface MarketState {
   candlesLoading: boolean
   bids: OrderBookLevel[]
   asks: OrderBookLevel[]
+  recentFills: FillRecord[]
 }
 
 interface MarketContextValue extends MarketState {
@@ -196,12 +199,15 @@ export function MarketProvider({
   // ── Orderbook state ──────────────────────────────────────────────
   const [bids, setBids] = useState<OrderBookLevel[]>([])
   const [asks, setAsks] = useState<OrderBookLevel[]>([])
+  const [recentFills, setRecentFills] = useState<FillRecord[]>([])
   const [volumeFromTee, setVolumeFromTee] = useState<number | null>(null)
+  const [teeFundingRate, setTeeFundingRate] = useState<number | null>(null)
 
   // ── Load Pyth Benchmarks candles when market changes ─────────────
   useEffect(() => {
     let cancelled = false
     setCandlesLoading(true)
+    setCandles([])          // clear stale market data immediately
     liveCandle.current = null
     setLivePrice(null)
     setBids([])
@@ -312,10 +318,15 @@ export function MarketProvider({
   const pollBook = useCallback(async () => {
     if (!currentMarket) return
     try {
-      const resp = await tee.getMarket(currentMarket.assetId)
+      const resp = await tee.getMarket(currentMarket.assetId, currentMarket.pythId)
       setBids(resp.bids ?? [])
       setAsks(resp.asks ?? [])
+      if (resp.fills && resp.fills.length > 0) setRecentFills(resp.fills as FillRecord[])
       if (resp.volume_24h != null) setVolumeFromTee(resp.volume_24h)
+      if (resp.funding_rate != null) {
+        // EMA smoothing (α=0.25) so the display drifts rather than jumping each poll.
+        setTeeFundingRate(prev => prev == null ? resp.funding_rate! : prev * 0.75 + resp.funding_rate! * 0.25)
+      }
     } catch { /* TEE offline — keep last known depth */ }
   }, [currentMarket])
 
@@ -357,18 +368,19 @@ export function MarketProvider({
       mark,
       index,
       changePct: first > 0 ? ((last - first) / first) * 100 : 0,
-      funding: calcFunding(mark, index),
+      funding: teeFundingRate ?? 0,
       openInterest,
       volume24h,
       candles,
       candlesLoading,
       bids,
       asks,
+      recentFills,
       setSymbol,
       allPrices,
       symbolPrices,
     }
-  }, [candles, candlesLoading, symbol, livePrice, bids, asks, currentMarket, allPrices, symbolPrices, volumeFromTee])
+  }, [candles, candlesLoading, symbol, livePrice, bids, asks, recentFills, currentMarket, allPrices, symbolPrices, volumeFromTee, teeFundingRate])
 
   return <MarketContext.Provider value={value}>{children}</MarketContext.Provider>
 }

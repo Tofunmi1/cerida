@@ -291,6 +291,7 @@ export default function PriceChart() {
   const lastDataRef       = useRef<Candle[]>([])
   const lastBucketRef     = useRef<number | null>(null)
   const lastIntervalRef   = useRef<string>(INTERVALS[0].label)
+  const lastSymbolRef     = useRef<string | null>(null)
   const vpPrimRef         = useRef<VolProfilePrimitive | null>(null)
   const showVPVRRef       = useRef(true)
 
@@ -508,6 +509,11 @@ export default function PriceChart() {
     lastDataRef.current = data
 
     const latest          = data[data.length - 1]!
+    // Force full reset when the market symbol changes so stale data is cleared.
+    const symbolChanged   = lastSymbolRef.current !== null && lastSymbolRef.current !== symbol
+    if (symbolChanged) lastBucketRef.current = null
+    lastSymbolRef.current = symbol
+
     const isFirstLoad     = lastBucketRef.current === null
     const intervalChanged = lastIntervalRef.current !== interval.label
     const newBucket       = lastBucketRef.current !== (latest.time as number)
@@ -520,7 +526,7 @@ export default function PriceChart() {
       volumeRef.current?.setData(volData)
       maFastRef.current?.setData(showMA ? movingAverage(data, 9)  : [])
       maSlowRef.current?.setData(showMA ? movingAverage(data, 21) : [])
-      if (autoFit && (intervalChanged || isFirstLoad)) chartRef.current?.timeScale().fitContent()
+      if (autoFit && (intervalChanged || isFirstLoad || symbolChanged)) chartRef.current?.timeScale().fitContent()
     } else {
       candleRef.current?.update(latest)
       if (showVolume) volumeRef.current?.update({ time: latest.time, value: latest.volume, color: volColor(latest) })
@@ -536,7 +542,7 @@ export default function PriceChart() {
     lastBucketRef.current   = latest.time as number
     setLast(latest)
     updateVP()
-  }, [autoFit, candles, interval, showMA, showVolume])
+  }, [autoFit, candles, interval, showMA, showVolume, symbol])
 
   // ── RSI pane toggle ─────────────────────────────────────────────────────────
   useEffect(() => {

@@ -42,8 +42,8 @@ const TradesTape = lazy(() => import('../../components/trade/trades-tape'))
 
 const COLS = 24
 const TOTAL_ROWS = 12
-const GAP = 6
-const PAD = 6
+const GAP = 4
+const PAD = 4
 
 type WidgetType = 'chart' | 'trade' | 'book' | 'positions' | 'stats' | 'tape'
 
@@ -210,7 +210,7 @@ function MobileTradeLayout({ onNavigate }: { onNavigate: (path: string) => void 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-page">
       {/* ── Header ── */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-primary px-3 py-2">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-primary px-3 py-1">
         <button onClick={() => setMarketOpen(true)}
           className="flex items-center gap-1.5 rounded-[8px] border border-border-subtle bg-surface-card px-2.5 py-1.5">
           {(() => {
@@ -429,13 +429,13 @@ function Widget({
 
   return (
     <div className="panel-widget flex h-full flex-col overflow-hidden rounded-[8px] border border-border-subtle bg-surface-primary">
-      <div className="widget-handle flex h-9 shrink-0 cursor-grab select-none items-center gap-1 border-b border-border-subtle px-2 active:cursor-grabbing">
+      <div className="widget-handle flex h-7 shrink-0 cursor-grab select-none items-center gap-1 border-b border-border-subtle px-2 active:cursor-grabbing">
         <div className="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto">
           {tabs.map((tab, index) => (
             <button
               key={tab.id}
               onClick={() => onSelect(index)}
-              className={`flex shrink-0 items-center gap-1.5 rounded-[6px] px-2 py-1 text-[11px] font-medium uppercase tracking-widest transition-colors ${
+              className={`flex shrink-0 items-center gap-1 rounded-[6px] px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest transition-colors ${
                 active === index
                   ? 'bg-surface-card text-text-primary'
                   : 'text-text-quaternary hover:text-text-secondary'
@@ -461,19 +461,19 @@ function Widget({
               const rect = e.currentTarget.getBoundingClientRect()
               setMenu(menu ? null : { x: rect.left, y: rect.bottom + 4 })
             }}
-            className="grid h-6 w-6 shrink-0 place-items-center rounded-[6px] text-text-quaternary transition-colors hover:bg-surface-card hover:text-text-primary"
+            className="grid h-5 w-5 shrink-0 place-items-center rounded-[6px] text-text-quaternary transition-colors hover:bg-surface-card hover:text-text-primary"
             title="Add tab"
           >
-            <IconPlus size={12} stroke={2.25} />
+            <IconPlus size={10} stroke={2.25} />
           </button>
         </div>
 
         <button
           onClick={onClose}
-          className="ml-auto grid h-6 w-6 shrink-0 place-items-center rounded-[6px] text-text-quaternary transition-colors hover:bg-surface-card hover:text-bearish-red"
+          className="ml-auto grid h-5 w-5 shrink-0 place-items-center rounded-[6px] text-text-quaternary transition-colors hover:bg-surface-card hover:text-bearish-red"
           title="Remove widget"
         >
-          <IconX size={13} stroke={2} />
+          <IconX size={11} stroke={2} />
         </button>
       </div>
 
@@ -588,7 +588,7 @@ function TradeBoard({
     <NavProvider onActive={onActive}>
     <PriceSelectProvider>
     <div className="flex h-screen min-w-0 bg-page">
-      <Sidebar active={active} onActive={onActive} />
+      <Sidebar active={active} onActive={onActive} onOpenSettings={() => setSettingsOpen(true)} />
       <div className="flex min-w-0 flex-1 flex-col">
         {active === 'Portfolio' && <PortfolioPage onClose={() => onActive('Perps')} />}
         {active === 'Pool' && <ShieldedPoolModal onClose={() => onActive('Perps')} />}

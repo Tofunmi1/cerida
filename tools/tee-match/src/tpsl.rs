@@ -41,8 +41,9 @@ pub fn spawn(store: Arc<SecretStore>, perp_id: String, keys_dir: Arc<std::path::
                         continue;
                     }
 
+                    // fetch_oracle_price returns 1e8 scale; prices stored in TEE use 1e7.
                     let oracle_price = match crate::liquidator::fetch_oracle_price(&state.asset_id) {
-                        Ok(p) if p > 0 => p,
+                        Ok(p) if p > 0 => p / 10,
                         _ => continue,
                     };
 
@@ -74,7 +75,7 @@ pub fn spawn(store: Arc<SecretStore>, perp_id: String, keys_dir: Arc<std::path::
 
                     let keys = keys_dir.clone();
                     match position::close_position(&store, &perp_id, &cmt, oracle_price, state.remaining_size, &keys) {
-                        Ok(()) => {
+                        Ok(_tx_hash) => {
                             // Clear TP/SL from position state so it won't trigger again.
                             let mut updated = state;
                             updated.tp_price = 0;

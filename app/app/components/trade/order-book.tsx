@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useMarket } from '../../context/market-context'
+import { useMarket, type FillRecord } from '../../context/market-context'
 import { usePriceSelect } from '../../context/price-select-context'
 import type { OrderBookLevel } from '../../lib/tee-client'
 
@@ -39,10 +39,6 @@ type RowData = {
 type AnimEntry = {
   barCur: number; barTgt: number
   stepCur: number; stepTgt: number
-  noise: number      // current display size multiplier offset
-  noiseTgt: number   // target noise (jumps per level independently)
-  priceNoise: number      // tiny price flicker
-  priceNoiseTgt: number
   flash: number      // ms remaining for row highlight flash
 }
 
@@ -233,7 +229,7 @@ type Tooltip = {
 }
 
 export default function OrderBook() {
-  const { mark, bids: liveBids, asks: liveAsks } = useMarket()
+  const { mark, bids: liveBids, asks: liveAsks, recentFills } = useMarket()
   const { emit } = usePriceSelect()
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -242,6 +238,9 @@ export default function OrderBook() {
   const lastFrameRef = useRef(0)
   const dimsRef = useRef({ w: 0, h: 0, dpr: 1 })
   const markRef = useRef(mark)
+  const lastFillKeyRef = useRef<string>('')
+  // Pulses briefly on each live poll so the spread glows even when data is stable
+  const tickFlashRef = useRef(0)
   const dataRef = useRef<{
     asks: RowData[]
     bids: RowData[]
@@ -315,24 +314,35 @@ export default function OrderBook() {
     const seen = new Set<string>()
     const setTarget = (row: RowData, i: number, side: 'ask' | 'bid') => {
       seen.add(row.key)
-      // Both sides: bar grows away from mid price (innermost = narrowest, outward = wider)
-      // For asks: askScaleCums[0] = total cum (widest at best ask? no — reverse gives
-      // cum[0]=total, but that's the largest, making best ask the widest.)
-      // Let's just use raw cumulative ordering: innermost = own size, outermost = total
-      const barCum = side === 'ask' ? askScaleCums[i] : bidScaleCums[i]
-      const barTgt  = maxCum > 0 ? (barCum / maxCum) * barW : 0
-      const stepTgt = maxCum > 0 ? ((side === 'ask' ? askScaleCums[i] : bidScaleCums[i]) / maxCum) * barW : 0
+      // barTgt  = individual size scaled to barW (histogram bars per level)
+      // stepTgt = cumulative depth scaled to barW (staircase outline)
+      const barTgt  = scaleMax > 0 ? (Math.min(row.size, scaleMax) / scaleMax) * barW : 0
+      const stepTgt = maxCum  > 0 ? ((side === 'ask' ? askScaleCums[i] : bidScaleCums[i]) / maxCum) * barW : 0
       const ex = m.get(row.key)
       if (ex) {
+        const sizeDelta = Math.abs(ex.barTgt - barTgt)
         ex.barTgt  = barTgt
         ex.stepTgt = stepTgt
+        // Flash on meaningful size change; skip tiny rounding noise
+        if (sizeDelta > 0.5) ex.flash = 280
       } else {
-        m.set(row.key, { barCur: 0, barTgt, stepCur: 0, stepTgt, noise: 0, noiseTgt: 0, priceNoise: 0, priceNoiseTgt: 0, flash: 0 })
+        // New level appeared — flash it in
+        m.set(row.key, { barCur: 0, barTgt, stepCur: 0, stepTgt, flash: 280 })
       }
     }
     displayAsks.forEach((row, i) => setTarget(row, i, 'ask'))
     displayBids.forEach((row, i) => setTarget(row, i, 'bid'))
-    for (const k of Array.from(m.keys())) if (!seen.has(k)) m.delete(k)
+    // Levels that disappeared: flash then shrink to 0 before removing
+    for (const k of Array.from(m.keys())) {
+      if (!seen.has(k)) {
+        const ex = m.get(k)!
+        if (ex.barTgt > 0) { ex.barTgt = 0; ex.stepTgt = 0; ex.flash = 280 }
+        else if (ex.barCur < 0.5) m.delete(k)
+      }
+    }
+
+    // Pulse the spread line on every live poll to show the book is active
+    if (hasLiveBook) tickFlashRef.current = 220
 
     startLoop()
   }
@@ -359,15 +369,11 @@ export default function OrderBook() {
     }
     const barWFor  = (row: RowData) => {
       const e = m.get(row.key)
-      return e ? Math.max(0, Math.min(barW, e.barCur * (1 + e.noise))) : 0
-    }
-    const sizeFor  = (row: RowData, _i: number, _side: 'ask' | 'bid') => {
-      const e = m.get(row.key)
-      return e ? Math.max(1, Math.round(row.size * (1 + e.noise))) : Math.round(row.size)
+      return e ? Math.max(0, Math.min(barW, e.barCur)) : 0
     }
     const flashFor = (row: RowData) => {
       const e = m.get(row.key)
-      return e && e.flash > 0 ? e.flash / 220 : 0  // 0–1 intensity
+      return e && e.flash > 0 ? e.flash / 220 : 0
     }
 
     function buildStepPath(rows: RowData[], startY: number) {
@@ -395,9 +401,6 @@ export default function OrderBook() {
       const barWidth = barWFor(row)
       const stops = side === 'ask' ? ASK_STOPS : BID_STOPS
       const isHovered = hover?.side === side && rowIndex <= hover.rowIndex
-      const e = m.get(row.key)
-      const noisyPrice = e ? row.price * (1 + e.priceNoise) : row.price
-
       // Flash highlight when level updates
       const flashAlpha = flashFor(row)
       if (flashAlpha > 0) {
@@ -427,11 +430,11 @@ export default function OrderBook() {
       ctx.fillStyle = isExact
         ? (side === 'ask' ? '#f59e44' : '#34d399')
         : isBold(row.price) ? colors.primary : colors.tertiary
-      ctx.fillText(fmtPrice(noisyPrice), HEAT_W + 6, y + ROW_H / 2 + 1)
+      ctx.fillText(fmtPrice(row.price), HEAT_W + 6, y + ROW_H / 2 + 1)
 
       ctx.textAlign = 'right'
       ctx.fillStyle = isExact ? colors.primary : colors.quaternary
-      ctx.fillText(fmtSize(sizeFor(row, rowIndex, side)), HEAT_W + PW + SW - 6, y + ROW_H / 2 + 1)
+      ctx.fillText(fmtSize(row.size), HEAT_W + PW + SW - 6, y + ROW_H / 2 + 1)
 
       if (Math.round(row.price * 10) % 10 === 0) {
         ctx.fillStyle = colors.border
@@ -442,11 +445,15 @@ export default function OrderBook() {
     asks.forEach((row, i) => drawRow(row, i * ROW_H, 'ask', i))
     bids.forEach((row, i) => drawRow(row, spreadY + i * ROW_H, 'bid', i))
 
-    ctx.lineWidth = 1
+    ctx.lineWidth = 1.5
+    ctx.shadowBlur = 3
+    ctx.shadowColor = ASK_STROKE
     ctx.strokeStyle = ASK_STROKE
     ctx.stroke(askPath)
+    ctx.shadowColor = BID_STROKE
     ctx.strokeStyle = BID_STROKE
     ctx.stroke(bidPath)
+    ctx.shadowBlur = 0
 
     // Spread band
     const bestAsk = asks.at(-1)?.price   // asks display high→low, best ask is last
@@ -454,12 +461,18 @@ export default function OrderBook() {
     const spreadAbs = bestAsk != null && bestBid != null ? bestAsk - bestBid : 0
     const spreadPct = bestBid != null && spreadAbs > 0 ? (spreadAbs / bestBid) * 100 : 0
 
-    ctx.strokeStyle = colors.tertiary
-    ctx.globalAlpha = 0.4
+    // Spread line pulses on every live poll tick
+    const tickPulse = Math.max(0, tickFlashRef.current / 220)
+    ctx.strokeStyle = tickPulse > 0
+      ? `rgba(100,200,255,${0.25 + tickPulse * 0.45})`
+      : colors.tertiary
+    ctx.globalAlpha = tickPulse > 0 ? 0.55 + tickPulse * 0.3 : 0.4
+    if (tickPulse > 0) { ctx.shadowBlur = 4; ctx.shadowColor = 'rgba(100,200,255,0.6)' }
     ctx.beginPath()
     ctx.moveTo(0, spreadY)
     ctx.lineTo(w, spreadY)
     ctx.stroke()
+    ctx.shadowBlur = 0
     ctx.globalAlpha = 1
 
     if (spreadAbs > 0) {
@@ -480,8 +493,7 @@ export default function OrderBook() {
 
     const drawWallLabel = (row: RowData | undefined, y: number, color: string) => {
       if (!row) return
-      const we = m.get(row.key)
-      const wallPrice = we ? row.price * (1 + we.priceNoise) : row.price
+      const wallPrice = row.price
       ctx.strokeStyle = color
       ctx.globalAlpha = 0.3
       ctx.setLineDash([2, 3])
@@ -515,23 +527,13 @@ export default function OrderBook() {
     const frame = (now: number) => {
       const dt = Math.min(48, now - lastFrameRef.current)
       lastFrameRef.current = now
-      const ease = 1 - Math.exp(-dt / 70)
+      const ease = 1 - Math.exp(-dt / 140)
       for (const v of animRef.current.values()) {
-        // Smooth bar/step toward real target
         v.barCur  += (v.barTgt  - v.barCur)  * ease
         v.stepCur += (v.stepTgt - v.stepCur) * ease
-        // Each level independently fires ~every 2s
-        if (Math.random() < dt * 0.0005) {
-          v.noiseTgt = (Math.random() - 0.5) * 0.24  // ±12% size jump
-          v.priceNoiseTgt = (Math.random() - 0.5) * 0.00015  // ±0.008% price flicker
-          v.flash = 260                                // ms highlight
-        }
-        // Smooth noise toward its target (fast settle)
-        v.noise += (v.noiseTgt - v.noise) * (1 - Math.exp(-dt / 40))
-        // Price flicker
-        v.priceNoise += (v.priceNoiseTgt - v.priceNoise) * (1 - Math.exp(-dt / 50))
         if (v.flash > 0) v.flash -= dt
       }
+      if (tickFlashRef.current > 0) tickFlashRef.current -= dt
       paint()
       rafRef.current = requestAnimationFrame(frame)
     }
@@ -631,6 +633,26 @@ export default function OrderBook() {
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
     }
   }, [])
+
+  // Flash order book levels when new fills arrive from the TEE
+  useEffect(() => {
+    if (!recentFills.length) return
+    const key = recentFills.map(f => `${f.price}:${f.size}`).join(',')
+    if (key === lastFillKeyRef.current) return
+    lastFillKeyRef.current = key
+    const d = dataRef.current
+    const m = animRef.current
+    if (!d) return
+    for (const fill of recentFills) {
+      const fillPrice = fill.price / PRICE_SCALE
+      for (const row of [...d.asks, ...d.bids]) {
+        if (Math.abs(row.price - fillPrice) / fillPrice < 0.001) {
+          const e = m.get(row.key)
+          if (e) e.flash = 350
+        }
+      }
+    }
+  }, [recentFills])
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-surface-primary">

@@ -4,12 +4,18 @@ export type OrderPrivacy = 'public' | 'private'
 
 const STORAGE_KEY = 'cerida-settings'
 
-interface StoredSettings {
+export interface StoredSettings {
   orderPrivacy: OrderPrivacy
+  defaultLeverage: number
+  slippageTolerance: number
+  defaultOrderType: 'market' | 'limit'
 }
 
 const DEFAULTS: StoredSettings = {
-  orderPrivacy: 'public',
+  orderPrivacy: 'private',
+  defaultLeverage: 10,
+  slippageTolerance: 0.5,
+  defaultOrderType: 'market',
 }
 
 function loadStored(): StoredSettings {
@@ -19,7 +25,10 @@ function loadStored(): StoredSettings {
     if (!raw) return DEFAULTS
     const parsed = JSON.parse(raw)
     return {
-      orderPrivacy: parsed.orderPrivacy === 'private' ? 'private' : 'public',
+      orderPrivacy: parsed.orderPrivacy === 'private' ? 'private' : 'private',
+      defaultLeverage: typeof parsed.defaultLeverage === 'number' ? parsed.defaultLeverage : DEFAULTS.defaultLeverage,
+      slippageTolerance: typeof parsed.slippageTolerance === 'number' ? parsed.slippageTolerance : DEFAULTS.slippageTolerance,
+      defaultOrderType: parsed.defaultOrderType === 'limit' ? 'limit' : 'market',
     }
   } catch {
     return DEFAULTS
@@ -27,20 +36,24 @@ function loadStored(): StoredSettings {
 }
 
 interface SettingsContextValue {
-  orderPrivacy: OrderPrivacy
-  setOrderPrivacy: (value: OrderPrivacy) => void
+  settings: StoredSettings
+  updateSetting: <K extends keyof StoredSettings>(key: K, value: StoredSettings[K]) => void
 }
 
 const SettingsContext = createContext<SettingsContextValue | undefined>(undefined)
 
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
-  const [orderPrivacy, setOrderPrivacy] = useState<OrderPrivacy>(() => loadStored().orderPrivacy)
+  const [settings, setSettings] = useState<StoredSettings>(() => loadStored())
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ orderPrivacy }))
-  }, [orderPrivacy])
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings))
+  }, [settings])
 
-  const value = useMemo(() => ({ orderPrivacy, setOrderPrivacy }), [orderPrivacy])
+  const updateSetting = <K extends keyof StoredSettings>(key: K, value: StoredSettings[K]) => {
+    setSettings((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const value = useMemo(() => ({ settings, updateSetting }), [settings])
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>
 }

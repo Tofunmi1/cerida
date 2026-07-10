@@ -179,32 +179,49 @@ pub fn relay_open_position(
         scval_proof(commit_proof_json)?,
     ])?;
 
-    // Store position state in TEE DB only if it doesn't already exist
-    // (e.g., the order already filled in the CLOB before the on-chain relay ran).
-    if store.get_position_state(position_cmt_hex)?.is_none() {
-        let (side, entry_price, leverage, size, _, _, _, _) = unseal_position_params(sealed_params)?;
-        let position_state = crate::db::PositionState {
-            collateral: collateral_amount,
-            matched_price: 0,
-            funding_at_open: 0,
-            effective_collateral: collateral_amount,
-            entry_price,
-            leverage,
-            side,
-            partial_liq_done: false,
-            asset_id: asset_id_hex.to_string(),
-            size,
-            last_funding_index: 0,
-            protocol: false,
-            remaining_size: size,
-            asset_num: 0,
-            open_time_ns: crate::engine::now_nanos(),
-            tp_price: 0,
-            sl_price: 0,
-            recipient: None,
-        };
-        store.insert_position_state(position_cmt_hex, &position_state)?;
-    }
+    // relay_open_position is the authoritative source for position size and collateral.
+    // open_position_from_note locked the full note on-chain; fills only determine entry price.
+    // We always overwrite collateral and remaining_size so that:
+    //   - PnL is computed on the full order notional (correct leverage exposure)
+    //   - Settlement returns the full deposited collateral ± PnL
+    let (side, _hint_entry, leverage, order_size, _, _, _, _) = unseal_position_params(sealed_params)?;
+    let recipient = store.get(position_cmt_hex).ok().flatten().and_then(|s| s.recipient.clone());
+    let position_state = match store.get_position_state(position_cmt_hex)? {
+        Some(mut s) => {
+            s.collateral = collateral_amount;
+            s.effective_collateral = collateral_amount;
+            // Reset to full order notional so PnL is leveraged correctly.
+            s.size = order_size;
+            s.remaining_size = order_size;
+            if s.recipient.is_none() {
+                s.recipient = recipient;
+            }
+            s
+        }
+        None => {
+            crate::db::PositionState {
+                collateral: collateral_amount,
+                matched_price: 0,
+                funding_at_open: 0,
+                effective_collateral: collateral_amount,
+                entry_price: 0,
+                leverage,
+                side,
+                partial_liq_done: false,
+                asset_id: asset_id_hex.to_string(),
+                size: order_size,
+                last_funding_index: 0,
+                protocol: false,
+                remaining_size: order_size,
+                asset_num: 0,
+                open_time_ns: crate::engine::now_nanos(),
+                tp_price: 0,
+                sl_price: 0,
+                recipient,
+            }
+        }
+    };
+    store.insert_position_state(position_cmt_hex, &position_state)?;
 
     log::info!("Relay open_position complete", "hash", &tx_hash[..16], "took", log::duration_secs(&start.elapsed()));
     Ok(tx_hash)
@@ -358,31 +375,45 @@ pub fn relay_open_position_from_pool(
         scval_proof(commit_proof_json)?,
     ])?;
 
-    // Store position state in TEE DB only if it doesn't already exist.
-    if store.get_position_state(position_cmt_hex)?.is_none() {
-        let (side, entry_price, leverage, size, _, _, _, _) = unseal_position_params(sealed_params)?;
-        let position_state = crate::db::PositionState {
-            collateral: collateral_amount,
-            matched_price: 0,
-            funding_at_open: 0,
-            effective_collateral: collateral_amount,
-            entry_price,
-            leverage,
-            side,
-            partial_liq_done: false,
-            asset_id: asset_id_hex.to_string(),
-            size,
-            last_funding_index: 0,
-            protocol: false,
-            remaining_size: size,
-            asset_num: 0,
-            open_time_ns: crate::engine::now_nanos(),
-            tp_price: 0,
-            sl_price: 0,
-            recipient: None,
-        };
-        store.insert_position_state(position_cmt_hex, &position_state)?;
-    }
+    // Same rationale as relay_open_position: always set collateral and remaining_size
+    // from the authoritative relay call, not from partial CLOB fills.
+    let (side, _hint_entry, leverage, order_size, _, _, _, _) = unseal_position_params(sealed_params)?;
+    let recipient = store.get(position_cmt_hex).ok().flatten().and_then(|s| s.recipient.clone());
+    let position_state = match store.get_position_state(position_cmt_hex)? {
+        Some(mut s) => {
+            s.collateral = collateral_amount;
+            s.effective_collateral = collateral_amount;
+            s.size = order_size;
+            s.remaining_size = order_size;
+            if s.recipient.is_none() {
+                s.recipient = recipient;
+            }
+            s
+        }
+        None => {
+            crate::db::PositionState {
+                collateral: collateral_amount,
+                matched_price: 0,
+                funding_at_open: 0,
+                effective_collateral: collateral_amount,
+                entry_price: 0,
+                leverage,
+                side,
+                partial_liq_done: false,
+                asset_id: asset_id_hex.to_string(),
+                size: order_size,
+                last_funding_index: 0,
+                protocol: false,
+                remaining_size: order_size,
+                asset_num: 0,
+                open_time_ns: crate::engine::now_nanos(),
+                tp_price: 0,
+                sl_price: 0,
+                recipient,
+            }
+        }
+    };
+    store.insert_position_state(position_cmt_hex, &position_state)?;
 
     log::info!("Pool-based position opened", "hash", &tx_hash[..16], "took", log::duration_secs(&start.elapsed()));
     Ok(tx_hash)
