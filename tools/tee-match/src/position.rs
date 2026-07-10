@@ -10,12 +10,13 @@ pub const FUNDING_SCALE: i128 = 1_000_000_000;
 /// - Opening sides increase/create positions.
 /// - Closing sides settle the linked position.
 /// - Protocol (MM) sides update the per-asset protocol counterparty position.
+/// Returns the settlement tx_hash if a position was closed during this fill.
 pub fn apply_fill(
     store: &db::SecretStore,
     perp_id: &str,
     fill: &engine::Fill,
     keys_dir: &Path,
-) -> Option<()> {
+) -> Option<String> {
     let taker = store.get(&fill.taker_id).ok()??;
     let maker = store.get(&fill.maker_id).ok()??;
 
@@ -30,7 +31,7 @@ pub fn apply_fill(
         maker_collateral = taker_collateral;
     }
 
-    process_side(
+    let close_tx = process_side(
         store,
         perp_id,
         &fill.taker_id,
@@ -42,7 +43,9 @@ pub fn apply_fill(
         keys_dir,
     )
     .ok()?;
-    process_side(
+    // Maker-side errors are TEE-internal (protocol position accounting) — log but
+    // don't discard the user's close_tx by propagating None.
+    if let Err(e) = process_side(
         store,
         perp_id,
         &fill.maker_id,
@@ -52,9 +55,10 @@ pub fn apply_fill(
         fill.taker_side.opposite(),
         maker_collateral,
         keys_dir,
-    )
-    .ok()?;
-    Some(())
+    ) {
+        log::error!("apply_fill: maker side error", "err", e.to_string());
+    }
+    close_tx
 }
 
 fn allocate_collateral(secrets: &db::OrderSecrets, fill_size: u64) -> i128 {
@@ -75,7 +79,7 @@ fn process_side(
     side: engine::Side,
     collateral: i128,
     keys_dir: &Path,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let asset_id_hex = secrets.asset_id_hex.clone().unwrap_or_default();
 
     if secrets.is_close {
@@ -83,12 +87,13 @@ fn process_side(
             .close_position_cmt
             .as_deref()
             .ok_or_else(|| anyhow!("close order missing position_cmt"))?;
-        return close_position(store, perp_id, pos_cmt, fill_price, fill_size, keys_dir);
+        let tx_hash = close_position(store, perp_id, pos_cmt, fill_price, fill_size, keys_dir)?;
+        return Ok(Some(tx_hash));
     }
 
     if secrets.protocol {
         let key = db::SecretStore::protocol_position_key(&asset_id_hex);
-        return increase_position(
+        increase_position(
             store,
             &key,
             side,
@@ -97,21 +102,22 @@ fn process_side(
             collateral,
             secrets.leverage,
             &asset_id_hex,
-            None, // protocol positions have no recipient
-        );
-    }
-
-    increase_position(
-        store,
-        cmt,
-        side,
-        fill_price,
-        fill_size,
-        collateral,
-        secrets.leverage,
-        &asset_id_hex,
-        secrets.recipient.clone(),
-    )
+            None,
+        )
+    } else {
+        increase_position(
+            store,
+            cmt,
+            side,
+            fill_price,
+            fill_size,
+            collateral,
+            secrets.leverage,
+            &asset_id_hex,
+            secrets.recipient.clone(),
+        )
+    }?;
+    Ok(None)
 }
 
 fn increase_position(
@@ -211,13 +217,13 @@ pub fn close_position(
     exit_price: u64,
     _close_size: u64,
     keys_dir: &Path,
-) -> Result<()> {
+) -> Result<String> {
     let mut state = store
         .get_position_state(pos_cmt)?
         .ok_or_else(|| anyhow!("close_position: position {} not found", pos_cmt))?;
 
     if state.remaining_size == 0 {
-        return Ok(());
+        return Ok(String::new());
     }
 
     // Settle any accrued funding into effective_collateral first.
@@ -241,7 +247,7 @@ pub fn close_position(
     let recipient = state.recipient.clone();
 
     let note = stellar::create_settlement_note(settlement_amount);
-    stellar::relay_settle_position(
+    let settle_tx = stellar::relay_settle_position(
         perp_id,
         pos_cmt,
         2, // Closed
@@ -302,7 +308,7 @@ pub fn close_position(
         settlement_amount
     );
 
-    Ok(())
+    Ok(settle_tx)
 }
 
 pub fn compute_trade_pnl(side: u64, entry_price: u64, exit_price: u64, size: u64) -> i128 {

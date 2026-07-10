@@ -120,7 +120,7 @@ export default function PositionsPanel() {
       })
 
       toast.update(progressId, { description: 'Matching close order…', progress: 70 })
-      await tee.relayClosePosition({
+      const { tx_hash } = await tee.relayClosePosition({
         perp: import.meta.env.VITE_PERP_ENGINE_ID ?? '',
         close_cmt: closeInit.commitment,
         position_cmt: cmt,
@@ -136,7 +136,13 @@ export default function PositionsPanel() {
         title: `${symbol} ${pos.side === 0 ? 'Long' : 'Short'} closed`,
         description: undefined,
         progress: undefined,
-        duration: 5000,
+        duration: tx_hash ? null : 5000,
+        ...(tx_hash && {
+          action: {
+            label: 'View TX',
+            onClick: () => window.open(`https://stellar.expert/explorer/testnet/tx/${tx_hash}`, '_blank', 'noopener'),
+          },
+        }),
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
