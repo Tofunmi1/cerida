@@ -67,7 +67,7 @@ export const MARKET_CATALOG: MarketDefinition[] = [
     symbol: 'XRP-PERP', name: 'XRP', category: 'Crypto',
     basePrice: 0.52, icon: 'XRP', color: '#346aa9',
     assetId: 1,
-    pythId: 'ec5d399846a9209f3fe5881d70aae9268c94339ff9a0ae1c6aebcb7f40e78acd',
+    pythId: 'ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8',
   },
   {
     symbol: 'XLM-PERP', name: 'Stellar', category: 'Crypto',
@@ -94,7 +94,7 @@ export const MARKET_CATALOG: MarketDefinition[] = [
     basePrice: 70.0, icon: 'OIL', color: '#0f766e',
     logo: '/logos/crude-oil--big.svg',
     assetId: 5,
-    pythId: 'fe650f0367d4a7ef9815a593ea15d36593f0643aaaf0149bb04be67ab851decd',
+    pythId: '925ca92ff005ae943c158e3563f59698ce7e75c5a8c8dd43303a0a154887b3e6',
   },
   {
     symbol: 'GOLD-PERP', name: 'Gold', category: 'RWA',
@@ -338,7 +338,9 @@ export function MarketProvider({
     const bestBid = bids.length ? Math.max(...bids.map(b => b.price)) : null
     const bestAsk = asks.length ? Math.min(...asks.map(a => a.price)) : null
     const mid = (bestBid && bestAsk) ? (bestBid + bestAsk) / 2 / PRICE_SCALE : null
-    const mark = mid ?? index
+    // Ignore book mid when it deviates >1.5% from Pyth index (stale TEE book).
+    const bookDeviation = (mid && index > 0) ? Math.abs(mid - index) / index : 0
+    const mark = (mid && bookDeviation < 0.015) ? mid : index
 
     // Open interest estimated from CLOB book depth: Σ(price × size) / PRICE_SCALE²
     // price is in 7-decimal scale (1e7), size is in contract units (also 1e7 based)

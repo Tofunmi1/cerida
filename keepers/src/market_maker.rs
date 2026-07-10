@@ -134,7 +134,13 @@ fn fair_mid(pyth_mid: u64, best_bid: Option<u64>, best_ask: Option<u64>) -> u64 
             if pyth_mid > bid && pyth_mid < ask {
                 pyth_mid
             } else {
-                (bid + ask) / 2
+                let book_mid = (bid + ask) / 2;
+                // Pyth has moved >2% away from the book — book is stale, trust Pyth.
+                if price_change_ratio(pyth_mid, book_mid) > 0.02 {
+                    pyth_mid
+                } else {
+                    book_mid
+                }
             }
         }
         // One-sided wall: stay with Pyth when it is on the sane side,

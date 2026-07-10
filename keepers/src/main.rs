@@ -39,7 +39,7 @@ static MARKETS: &[Market] = &[
     Market {
         symbol: "XRP-PERP",
         asset_id: 1,
-        pyth_id: "ec5d399846a9209f3fe5881d70aae9268c94339ff9a0ae1c6aebcb7f40e78acd",
+        pyth_id: "ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8",
         base_price: 11_200_000,         // $1.12
         category: market_maker::Category::Crypto,
         base_size: 50_000_000,
@@ -75,7 +75,7 @@ static MARKETS: &[Market] = &[
     Market {
         symbol: "OIL-PERP",
         asset_id: 5,
-        pyth_id: "fe650f0367d4a7ef9815a593ea15d36593f0643aaaf0149bb04be67ab851decd",
+        pyth_id: "925ca92ff005ae943c158e3563f59698ce7e75c5a8c8dd43303a0a154887b3e6",
         base_price: 700_000_000,        // $70
         category: market_maker::Category::Rwa,
         base_size: 5_000_000,
