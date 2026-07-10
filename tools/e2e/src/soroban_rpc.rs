@@ -905,6 +905,21 @@ pub fn source_pubkey_of(identity: &str) -> Result<String> {
     source_pubkey(identity)
 }
 
+/// Derive the public key from a raw Stellar secret key (S...) string.
+pub fn pubkey_from_secret(secret: &str) -> Result<String> {
+    use ed25519_dalek::SigningKey;
+    let key = stellar_strkey::Strkey::from_string(secret)
+        .map_err(|e| anyhow::anyhow!("invalid secret key: {e}"))?;
+    match key {
+        stellar_strkey::Strkey::PrivateKeyEd25519(seed) => {
+            let pk_bytes = SigningKey::from_bytes(&seed.0).verifying_key().to_bytes();
+            let pk_strkey = stellar_strkey::ed25519::PublicKey(pk_bytes);
+            Ok(stellar_strkey::Strkey::PublicKeyEd25519(pk_strkey).to_string())
+        }
+        _ => anyhow::bail!("expected Ed25519 private key strkey"),
+    }
+}
+
 fn source_pubkey(identity: &str) -> Result<String> {
     let out = std::process::Command::new("stellar")
         .args(["keys", "address", identity])

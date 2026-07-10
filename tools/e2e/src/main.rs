@@ -664,16 +664,26 @@ fn main() -> Result<()> {
         }
 
         Command::SetTeeAccount { perp_id } => {
-            use e2e::soroban_rpc::{scval_address, SorobanRpc};
+            use e2e::soroban_rpc::{pubkey_from_secret, scval_address, SorobanRpc};
             eprintln!("━━━ Set TEE Account ━━━");
-            let source_pk = stellar::source_pubkey()?;
-            eprintln!("  SOURCE pubkey: {}", source_pk);
+            let admin_pk = stellar::source_pubkey()?;
+            eprintln!("  admin pubkey: {}", admin_pk);
+            // If STELLAR_SOURCE_SECRET is set, derive the TEE signing pubkey from it.
+            // This matches what the TEE container uses at runtime (signing_source reads the env var).
+            let tee_pk = if let Ok(secret) = std::env::var("STELLAR_SOURCE_SECRET") {
+                let pk = pubkey_from_secret(&secret)?;
+                eprintln!("  TEE pubkey (from STELLAR_SOURCE_SECRET): {}", pk);
+                pk
+            } else {
+                eprintln!("  TEE pubkey (same as admin — STELLAR_SOURCE_SECRET not set): {}", admin_pk);
+                admin_pk.clone()
+            };
             let rpc = SorobanRpc::new();
             rpc.invoke_xdr(&perp_id, stellar::SOURCE, "set_tee_account", vec![
-                scval_address(&source_pk)?,
-                scval_address(&source_pk)?,
+                scval_address(&admin_pk)?,
+                scval_address(&tee_pk)?,
             ])?;
-            eprintln!("  ✓ TEE account updated to SOURCE key");
+            eprintln!("  ✓ TEE account updated to {}", tee_pk);
             eprintln!("    settle_position / settle_partial will now pass require_tee_auth");
         }
 
