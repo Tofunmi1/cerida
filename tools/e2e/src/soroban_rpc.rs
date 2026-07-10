@@ -4,7 +4,7 @@ use sha2::{Sha256, Digest};
 use std::time::{Duration, Instant};
 use stellar_xdr::*;
 
-const DEFAULT_RPC_URL: &str = "https://stellar-testnet.g.alchemy.com/v2/FqjaGAy9IMENhdv2i_3UUVDPZnNClYNq";
+const DEFAULT_RPC_URL: &str = "https://stellar-testnet.g.alchemy.com/v2/lT6Z7-nwZ3J20d6_LC7dz";
 const MAX_POLL_SECS: u64 = 180;
 
 pub fn rpc_url() -> String {

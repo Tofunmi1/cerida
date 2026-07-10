@@ -12,7 +12,7 @@
 | Contract | `CCT476K37KCWZFXWMXXPUKH2FWJESOJVLMSGS2DKCFZFYSZII42XY4VW` (Stellar testnet) |
 | TEE signing key | `SCPJ6HPSZJIALU42CPOQVYRHXTQZ3BNYD3DYYVBL7WMTADWKLBYZ7KE7` (SOURCE = RELAYER) |
 | TEE pubkey | `GAZ7LYN2ROIKRVKK4BIL5S4PVRED2YD6YNB4BA5LYB4TSQGN4BZKHTTP` |
-| RPC | `https://stellar-testnet.g.alchemy.com/v2/FqjaGAy9IMENhdv2i_3UUVDPZnNClYNq` |
+| RPC | `https://stellar-testnet.g.alchemy.com/v2/lT6Z7-nwZ3J20d6_LC7dz` |
 | Vercel project | `cerida` (`prj_88pdAswbfwaAY2h5jvhAvaloAABQ`), production branch `x` |
 | Live URL | `ceridapp.xyz` |
 | Git branch | Always commit to `x` — never `main` |
@@ -117,7 +117,7 @@ gcloud compute ssh keepers-vm-2 --project=cer-perp-tee-2 --zone=us-central1-b --
   TEE_ADDR=\$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/keeper-env-TEE_ADDR -H Metadata-Flavor:Google)
   sudo docker run -d --name keepers --restart=always \
     -e ORACLE_SECRET=\$ORACLE_SECRET \
-    -e SOROBAN_RPC_URL=https://stellar-testnet.g.alchemy.com/v2/FqjaGAy9IMENhdv2i_3UUVDPZnNClYNq \
+    -e SOROBAN_RPC_URL=https://stellar-testnet.g.alchemy.com/v2/lT6Z7-nwZ3J20d6_LC7dz \
     \$IMAGE --perp-id \$PERP_ID --tee-addr \$TEE_ADDR
 "
 ```
@@ -129,7 +129,7 @@ cd contracts && cargo build --target wasm32v1-none --release -p perp-engine
 
 # Upgrade
 STELLAR_SOURCE_SECRET=SCPJ6HPSZJIALU42CPOQVYRHXTQZ3BNYD3DYYVBL7WMTADWKLBYZ7KE7 \
-SOROBAN_RPC_URL=https://stellar-testnet.g.alchemy.com/v2/FqjaGAy9IMENhdv2i_3UUVDPZnNClYNq \
+SOROBAN_RPC_URL=https://stellar-testnet.g.alchemy.com/v2/lT6Z7-nwZ3J20d6_LC7dz \
 ./tools/e2e/target/debug/e2e upgrade --perp-id CCT476K37KCWZFXWMXXPUKH2FWJESOJVLMSGS2DKCFZFYSZII42XY4VW
 
 # After any upgrade, reset the TEE account or settle_position breaks:

@@ -3,7 +3,7 @@ use rand::Rng;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const DEFAULT_RPC_URL: &str = "https://stellar-testnet.g.alchemy.com/v2/FqjaGAy9IMENhdv2i_3UUVDPZnNClYNq";
+const DEFAULT_RPC_URL: &str = "https://stellar-testnet.g.alchemy.com/v2/lT6Z7-nwZ3J20d6_LC7dz";
 
 pub fn rpc_url() -> String {
     std::env::var("SOROBAN_RPC_URL").unwrap_or_else(|_| DEFAULT_RPC_URL.to_string())

@@ -36,7 +36,7 @@ steps:
             TEE_ADDR=\$$(curl -sf http://metadata.google.internal/computeMetadata/v1/instance/attributes/keeper-env-TEE_ADDR -H Metadata-Flavor:Google)
             sudo docker run -d --name keepers --restart=always \
               -e ORACLE_SECRET=\$$ORACLE_SECRET \
-              -e SOROBAN_RPC_URL=https://stellar-testnet.g.alchemy.com/v2/FqjaGAy9IMENhdv2i_3UUVDPZnNClYNq \
+              -e SOROBAN_RPC_URL=https://stellar-testnet.g.alchemy.com/v2/lT6Z7-nwZ3J20d6_LC7dz \
               $$IMAGE --perp-id \$$PERP_ID --tee-addr \$$TEE_ADDR
             echo Keepers container updated
           "
