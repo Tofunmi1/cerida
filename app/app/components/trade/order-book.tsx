@@ -257,22 +257,18 @@ export default function OrderBook() {
 
   markRef.current = mark
 
-  // Determine whether we have real TEE data
+  // Determine whether we have real TEE data (for the Live/Depth label)
   const hasLiveBook = liveBids.length > 0 || liveAsks.length > 0
 
-  // Derive rows from TEE data
+  // Derive rows from TEE data; seeded fallback is applied per-side in rebuild()
   const { askRows, bidRows } = useMemo(() => {
-    if (hasLiveBook) {
-      // TEE CLOB: asks sorted ascending (best ask = last), bids sorted descending (best bid = first)
-      const sortedAsks = [...liveAsks].sort((a, b) => a.price - b.price)
-      const sortedBids = [...liveBids].sort((a, b) => b.price - a.price)
-      return {
-        askRows: levelsToRows(sortedAsks, true),
-        bidRows: levelsToRows(sortedBids, false),
-      }
+    const sortedAsks = [...liveAsks].sort((a, b) => a.price - b.price)
+    const sortedBids = [...liveBids].sort((a, b) => b.price - a.price)
+    return {
+      askRows: levelsToRows(sortedAsks, true),
+      bidRows: levelsToRows(sortedBids, false),
     }
-    return { askRows: [], bidRows: [] }
-  }, [liveBids, liveAsks, hasLiveBook])
+  }, [liveBids, liveAsks])
 
   function rebuild() {
     const canvas = canvasRef.current
@@ -283,9 +279,10 @@ export default function OrderBook() {
 
     const rowsPerSide = Math.max(6, Math.min(14, Math.floor(h / ROW_H / 2)))
     const mid = markRef.current
+    const base = dynamicTick(mid) * Math.round(mid / dynamicTick(mid))
 
-    const asks = askRows ?? []
-    const bids = bidRows ?? []
+    const asks = askRows.length > 0 ? askRows : buildSeededRows(base, 1, rowsPerSide)
+    const bids = bidRows.length > 0 ? bidRows : buildSeededRows(base, -1, rowsPerSide)
 
     // Trim to fit height
     const displayAsks = asks.slice(0, rowsPerSide)

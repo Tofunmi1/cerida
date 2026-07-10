@@ -313,8 +313,8 @@ export function MarketProvider({
     if (!currentMarket) return
     try {
       const resp = await tee.getMarket(currentMarket.assetId)
-      if (resp.bids?.length) setBids(resp.bids)
-      if (resp.asks?.length) setAsks(resp.asks)
+      setBids(resp.bids ?? [])
+      setAsks(resp.asks ?? [])
       if (resp.volume_24h != null) setVolumeFromTee(resp.volume_24h)
     } catch { /* TEE offline — keep last known depth */ }
   }, [currentMarket])
